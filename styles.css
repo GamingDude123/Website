@@ -1,0 +1,54 @@
+html{
+    
+}
+input[type='radio'] { 
+    transform: scale(1);
+    margin-right: 4px;
+ }
+.navbar{
+    background: rgb(209, 14, 14);
+    color: green;
+}
+.jumbotron{
+    background-color: rgb(1, 34, 82);
+    background-image: url(images/xboxcontroller.png);
+    height: 500px;
+    background-repeat: repeat-x;
+    position: relative;
+    background-size: inherit;
+    background-position-x:-170px;
+    background-position-y: center ;
+    text-align: center;
+}
+
+.display-4, #lead{
+    color: rgb(255, 255, 255);
+    text-shadow: 2px 2px #070150;
+}
+.display-4{
+    margin-top: 100px;
+}
+
+.fitimg{
+    height: 500px;
+    width: 500px;
+}
+
+#tetris{
+    background: rgb(114, 203, 59) !important;
+}
+
+#Tetris{
+    background: rgb(114, 203, 59) !important;
+}
+
+#Roblox{
+    background: rgb(0, 0, 0) !important;
+}
+
+#minecraft{
+    background: rgb(10, 87, 29) !important;
+}
+#supermariobros{
+    background: rgb(219, 143, 80) !important;
+}

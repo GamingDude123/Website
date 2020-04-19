@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en" >
+  <head>
+    <!-- Required meta tags -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+    <link rel="stylesheet" href="styles.css">
+    <title>Quiz Page</title>
+    <style>
+        body {
+          margin: 0;
+          /*font-family: "Lato", sans-serif;*/
+        }
+        
+        .sidebar {
+          margin: 0;
+          padding: 0;
+          width: 200px;
+          background-color: #754217;
+          position: fixed;
+          height: 100%;
+          overflow: auto;
+        }
+        
+        .sidebar a {
+          display: block;
+          color: rgb(3, 70, 11);
+          padding: 16px;
+          text-decoration: none;
+        }
+         
+        .sidebar a.active {
+          background-color:  rgb(6, 87, 10);
+          color: white;
+        }
+        
+        .sidebar a:hover:not(.active) {
+          background-color: rgb(153, 76, 13);
+          color:white;
+        }
+        
+        div.content {
+          margin-left: 200px;
+          padding: 1px 16px;
+          height: 1000px;
+        }
+        
+        @media screen and (max-width: 700px) {
+          .sidebar {
+            width: 100%;
+            height: auto;
+            position: relative;
+          }
+          .sidebar a {float: left;}
+          div.content {margin-left: 0;}
+        }
+        
+        @media screen and (max-width: 400px) {
+          .sidebar a {
+            text-align: center;
+            float: none;
+          }
+        }
+        </style>
+  </head>
+  <body>
+    <!--navar-->
+    <nav class="navbar  navbar-expand-lg  navbar-dark sticky-top " id="minecraft" >
+      <a class="navbar-brand" href="index.html">
+        <img width="30" height="30" src="https://cdn.clipart.email/8998af93739c64d1da1b816c0edbd822_library-of-video-game-controller-image-freeuse-library-png-files-_920-960.png" class="d-inline-block align-top" alt=""> Gaming History 
+     </a>
+       
+      <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+      </button>
+     
+       <div class="collapse navbar-collapse" id="navbarSupportedContent">
+         <ul class="navbar-nav mr-auto">
+           <li class="nav-item ">
+             <a class="nav-link" href="index.html ">Home <span class="sr-only">(current)</span></a>
+           </li>
+           <li class="nav-item ">
+            <a class="nav-link" href="tetris.html ">Game Backstories <span class="sr-only">(current)</span></a>
+          </li>
+           <li class="nav-item active ">
+            <a class="nav-link" href="quiz.html ">Quizzes <span class="sr-only">(current)</span></a>
+          </li>
+         </ul>   
+       </div>
+     </nav>
+
+     <div class="sidebar">
+        <a  href="quiztetris.html">Tetris</a>
+        <a  href="quizroblox.html">Roblox</a>
+        <a class="active" href="#Minecraft">Minecraft</a>
+        <a href="quizsupermariobros.html">SuperMarioBros</a>
+      </div>
+      
+      <div class="content">
+        <h2>Minecraft Quiz</h2>
+       
+      </div>
+
+         <!-- Optional JavaScript -->
+    <!-- jQuery first, then Popper.js, then Bootstrap JS -->
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js" integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js" integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1" crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
+  </body>
+</html>
