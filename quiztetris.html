@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" >
+<html lang="en" id="tetrisquizhtml" >
   <head>
     <!-- Required meta tags -->
     <meta charset="utf-8">
@@ -65,7 +65,7 @@
         }
         </style>
   </head>
-  <body>
+  <body >
     <!--navar-->
     <nav class="navbar  navbar-expand-lg  navbar-dark sticky-top " id="tetris" >
       <a class="navbar-brand" href="index.html">
@@ -99,12 +99,10 @@
       </div>
       
       <div class="content">
-        <h2>Tetris Quiz</h2>
-        <h1 class="quizheader"> Quiz Questions</h1>
+
+        <h1 class="quizheader"> Tetris Quiz</h1>
     
-        <div class="container">
-          <div class="row">
-            <div class="col-sm">
+      
         <p>
           <form name="quiz" class="quiz">
             <p>
@@ -150,67 +148,38 @@
                     <p><b>
                         <hr>
                         Question 5.
-                        <br>How did Tetris get its name?<br></b>
+                        <br>Where was the creator of Tetris from?<br></b>
                       <blockquote>
-                        <input type="radio" name="q5" value="Wrong5">7 feet<br>
-                        <input type="radio" name="q5" value="Correct5">Combining the creators favorite sport and a Greek word for “four”<br>
-                        <input type="radio" name="q5" value="Wrong5">6 feet<br>
-                        <input type="radio" name="q5" value="Wrong5">1972<br>
+                        <input type="radio" name="q5" value="Correct5">Moscow, Russia<br>
+                        <input type="radio" name="q5" value="Wrong5">Chicago, Illinois<br>
+                        <input type="radio" name="q5" value="Wrong5">NYC, New York<br>
+                        <input type="radio" name="q5" value="Wrong5">Topeka, Kansas<br>
                       </blockquote>
                       <p><b>
                           <hr>
                           Question 6.
-                          <br>What is Josies favorite fruit?<br></b>
+                          <br>Why did the creator of Tetris call it Tetris?<br></b>
                         <blockquote>
-                          <input type="radio" name="q6" value="Pineapple">Pineapple<br>
-                          <input type="radio" name="q6" value="Watermelon">Watermelon<br>
-                          <input type="radio" name="q6" value="Mango">Mango<br>
-                          <input type="radio" name="q6" value="1972">1972<br>
+                          <input type="radio" name="q6" value="Wrong6">Because he or she just thought it was interesting<br>
+                          <input type="radio" name="q6" value="Correct6">Because he or she combined a greek word meaning four and their favorite sport
+                          <br>
+                          <input type="radio" name="q6" value="Wrong6">Because of the colorful colors<br>
+                          <input type="radio" name="q6" value="Wrong6">Because the game had blocks in it<br>
                         </blockquote>
                         <p><b>
                             Question 7.
-                            <br>What is the scientific name for a pineapple?<br></b>
+                            <br>Has Tetris ever been discontinued? <br></b>
                           <blockquote>
-                            <input type="radio" name="q7" value="Ananas comosus">Ananas comosus<br>
-                            <input type="radio" name="q7" value="Ananas">Ananas<br>
-                            <input type="radio" name="q7" value="Pineapple">Pineapple<br>
-                            <input type="radio" name="q7" value="1972">1972<br>
+                            <input type="radio" name="q7" value="Correct7">Yes<br>
+                            <input type="radio" name="q7" value="wrong7">No<br>
+                            <input type="hidden" name="q7" value="Pineapple"><br>
+                            <input type="hidden" name="q7" value="1972"><br>
                           </blockquote>
                           <p><b>
-                              <hr>
-                              Question 8.
-                              <br>When does the word pineapple date back to?<br></b>
-                            <blockquote>
-                              <input type="radio" name="q8" value="1885">1885<br>
-                              <input type="radio" name="q8" value="1945">1945<br>
-                              <input type="radio" name="q8" value="1493">1493<br>
-                              <input type="radio" name="q8" value="1972">1972<br>
-                            </blockquote>
-                            <p><b>
-                                <hr>
-                                Question 9.
-                                <br> Who invented the word pineapple?<br></b>
-                              <blockquote>
-                                <input type="radio" name="q9" value="André Thevet"> André Thevet<br>
-                                <input type="radio" name="q9" value="Christopher Columbus">Christopher Columbus<br>
-                                <input type="radio" name="q9" value="Josie">Josie<br>
-                                <input type="radio" name="q9" value="1972">1972<br>
-                              </blockquote>
-                              <p><b>
-                                  <hr>
-                                  Question 10.
-                                  <br> what is the word pineapple refered to as the stem of the fruit?<br></b>
-                                <blockquote>
-                                  <input type="radio" name="q10" value="Tuft">Tuft<br>
-                                  <input type="radio" name="q10" value="Ananas">Ananas<br>
-                                  <input type="radio" name="q10" value="Pineapple">Pineapple<br>
-                                  <input type="radio" name="q10" value="1972">1972<br>
-                                </blockquote>
-                                <p><b>
-                                              <input type="button" value="Grade Me" onClick="getScore(this.form);">
+                                              <input type="button" value="How Did I Do?" onClick="getScore(this.form);">
                                               <input type="reset" value="Clear">
                                               <p>
-                                                Number of score out of 10 = <input type=text size 15 name="mark">
+                                                Number of score out of 7 = <input type=text size 15 name="mark">
                                                 Score in percentage = <input type=text size=15 name="percentage"><br>
           </form>
           <p>
@@ -220,7 +189,7 @@
       
       <script>
     
-        var numQues = 10;
+        var numQues = 7;
     
         var numChoi = 4;
     
@@ -236,15 +205,10 @@
     
         answers[4] = "Correct5";
     
-        answers[5] = "Pineapple";
+        answers[5] = "Correct6";
     
-        answers[6] = "Ananas comosus";
-    
-        answers[7] = "1493";
-    
-        answers[8] = "Christopher Columbus ";
-    
-        answers[9] = "Tuft";
+        answers[6] = "Correct7";
+
     
       
     
@@ -295,10 +259,7 @@
         }
     
       </script>
-      </div>
-      <div class="col-sm"></div>
-      <div class="col-sm"></div>
-    </div>
+     
       </div>
       </div>
 

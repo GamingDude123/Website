@@ -65,7 +65,7 @@
         }
         </style>
   </head>
-  <body>
+  <body class="">
     <!--navar-->
     <nav class="navbar  navbar-expand-lg  navbar-dark sticky-top " id="supermariobros" >
       <a class="navbar-brand" href="index.html">
@@ -99,8 +99,172 @@
       </div>
       
       <div class="content">
-        <h2>Super Mario Bros. Quiz</h2>
-       
+        <h1 class="quizheader"> Super Mario Bros Quiz</h1>
+        <div class="container">
+          <div class="row">
+            <div class="col-sm">
+        <p>
+          <form name="quiz" class="quiz">
+            <p>
+              <b>Question 1.
+                <br>In what year was Super Mario Bros. created?<br></b>
+              <blockquote>
+                <input type="radio" name="q1" value="wrong1">2013<br>
+                <input type="radio" name="q1" value="Correct1">1985<br>
+                <input type="radio" name="q1" value="wrong1">2002<br>
+                <input type="radio" name="q1" value="wrong1">1992<br>
+              </blockquote>
+              <p><b>
+                  <hr>
+                  Question 2.
+                  <br>Who created Super Mario Bros.?<br></b>
+                <blockquote>
+                  <input type="radio" name="q2" value="Correct2">Shigeru Miyamoto<br>
+                  <input type="radio" name="q2" value="wrong2">Barack Obama<br>
+                  <input type="radio" name="q2" value="wrong2">Harry Hong<br>
+                  <input type="radio" name="q2" value="wrong2">Jack Herz<br>
+                  
+                </blockquote>
+                <p><b>
+                    <hr>
+                    Question 3.
+                    <br>Where was the creator of Super Mario Bros. from?<br></b>
+                  <blockquote>
+                    <input type="radio" name="q3" value="Wrong3">Houston, Texas<br>
+                    <input type="radio" name="q3" value="Wrong3">Chicago, Illinois<br>
+                    <input type="radio" name="q3" value="Correct3">Sonobe, Japan<br>
+                    <input type="radio" name="q3" value="Wrong3">Stockholm, Sweden<br>
+                  </blockquote>
+                  <p><b>
+                      <hr>
+                      Question 4.
+                      <br>What was Super Mario Bros.’s original name?<br></b>
+                    <blockquote>
+                      <input type="radio" name="q4" value="Wrong4">Lucky Jump<br>
+                      <input type="radio" name="q4" value="Wrong4">Mario Mayhem<br>
+                      <input type="radio" name="q4" value="Wrong4">Blockheads<br>
+                      <input type="radio" name="q4" value="Correct4">Jumpman<br>
+                    </blockquote>
+                    <p><b>
+                        <hr>
+                        Question 5.
+                        <br>Why was the game called Super Mario Bros?<br></b>
+                      <blockquote>
+                        <input type="radio" name="q5" value="Correct5">Since it had the name “Mario” in it, it made the creator(s) think of their landlord, Mario Segale<br>
+                        <input type="radio" name="q5" value="Wrong5">Since the game had the word “Bros” in it, it maybe made the two video game characters feel like brothers<br>
+                        <input type="radio" name="q5" value="Wrong5">Since the name had the word “Super” in it, it felt like an energetic word to use for a video game<br>
+                        <input type="radio" name="q5" value="Wrong5">It just had a good ring to it<br>
+                      </blockquote>
+                      <p><b>
+                          <hr>
+                          Question 6.
+                          <br>Who was the person that voice-acted Mario?<br></b>
+                        <blockquote>
+                          <input type="radio" name="q6" value="Wrong6">Nancy Cartwright<br>
+                          <input type="radio" name="q6" value="Wrong6">Eric Juan
+                          <br>
+                          <input type="radio" name="q6" value="Correct6">Charles Martinet<br>
+                          <input type="radio" name="q6" value="Wrong6">Donald Trump<br>
+                        </blockquote>
+                        <p><b>
+                            Question 7.
+                            <br>Which company owns Mario? <br></b>
+                          <blockquote>
+                            <input type="radio" name="q7" value="wrong7">Zoom Inc.<br>
+                            <input type="radio" name="q7" value="wrong7">Google LLC<br>
+                            <input type="radio" name="q7" value="Correct7">Atari<br>
+                            <input type="radio" name="q7" value="Correct7"> Nintendo<br>
+                          </blockquote>
+                          <p><b>
+                                              <input type="button" value="How Did I Do?" onClick="getScore(this.form);">
+                                              <input type="reset" value="Clear">
+                                              <p>
+                                                Number of score out of 7 = <input type=text size 15 name="mark">
+                                                Score in percentage = <input type=text size=15 name="percentage"><br>
+          </form>
+          <p>
+            <form method="post" name="Form" onsubmit="" action="">
+            </form>
+      
+      
+      <script>
+    
+        var numQues = 7;
+    
+        var numChoi = 4;
+    
+        var answers = new Array(10);
+    
+        answers[0] = "Correct1";
+    
+        answers[1] = "Correct2";
+    
+        answers[2] = "Correct3";
+    
+        answers[3] = "Correct4";
+    
+        answers[4] = "Correct5";
+    
+        answers[5] = "Correct6";
+    
+        answers[6] = "Correct7";
+
+    
+      
+    
+        function getScore(form) {
+    
+          var score = 0;
+    
+          var currElt;
+    
+          var currSelection;
+    
+          for (i = 0; i < numQues; i++) {
+    
+            currElt = i * numChoi;
+    
+            answered = false;
+    
+            for (j = 0; j < numChoi; j++) {
+    
+              currSelection = form.elements[currElt + j];
+    
+              if (currSelection.checked) {
+    
+                answered = true;
+    
+                if (currSelection.value == answers[i]) {
+    
+                  score++;
+    
+                  break;
+    
+                }
+    
+              }
+    
+            }
+    
+            if (answered === false) { alert("Do answer all the questions, Please"); return false; }
+    
+          }
+    
+          var scoreper = Math.round(score / numQues * 100);
+    
+          form.percentage.value = scoreper + "%";
+    
+          form.mark.value = score;
+    
+        }
+    
+      </script>
+      </div>
+      <div class="col-sm"></div>
+      <div class="col-sm"></div>
+    </div>
+      </div>
+      </div>
       </div>
 
          <!-- Optional JavaScript -->

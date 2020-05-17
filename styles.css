@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Encode+Sans:wght@600&display=swap');
+
 html{
     
 }
@@ -51,4 +53,8 @@ input[type='radio'] {
 }
 #supermariobros{
     background: rgb(219, 143, 80) !important;
+}
+
+#aboutfont{
+    font-family: 'Encode Sans', sans-serif;
 }

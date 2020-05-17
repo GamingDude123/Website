@@ -99,8 +99,172 @@
       </div>
       
       <div class="content">
-        <h2>Minecraft Quiz</h2>
-       
+        <h1 class="quizheader"> Minecraft Quiz</h1>
+        <div class="container">
+          <div class="row">
+            <div class="col-sm">
+        <p>
+          <form name="quiz" class="quiz">
+            <p>
+              <b>Question 1.
+                <br>In what year was Minecraft created?<br></b>
+              <blockquote>
+                <input type="radio" name="q1" value="wrong1">1986<br>
+                <input type="radio" name="q1" value="Correct1">2009<br>
+                <input type="radio" name="q1" value="wrong1">2013<br>
+                <input type="radio" name="q1" value="wrong1">2002<br>
+              </blockquote>
+              <p><b>
+                  <hr>
+                  Question 2.
+                  <br>Who created Minecraft?<br></b>
+                <blockquote>
+                  <input type="radio" name="q2" value="wrong2">Jack Herz<br>
+                  <input type="radio" name="q2" value="Correct2">Markus Persson<br>
+                  <input type="radio" name="q2" value="wrong2">Alexey Pajitnov<br>
+                  <input type="radio" name="q2" value="wrong2">Harry Hong<br>
+                  
+                </blockquote>
+                <p><b>
+                    <hr>
+                    Question 3.
+                    <br>Where was Minecraft originally made?<br></b>
+                  <blockquote>
+                    <input type="radio" name="q3" value="Wrong3">Russia<br>
+                    <input type="radio" name="q3" value="Wrong3">Denmark<br>
+                    <input type="radio" name="q3" value="Correct3">Sweden<br>
+                    <input type="radio" name="q3" value="Wrong3">Argentina<br>
+                  </blockquote>
+                  <p><b>
+                      <hr>
+                      Question 4.
+                      <br>What was Minecraft’s original name?<br></b>
+                    <blockquote>
+                      <input type="radio" name="q4" value="Wrong4">Mining It Through<br>
+                      <input type="radio" name="q4" value="Wrong4">Blocked Up<br>
+                      <input type="radio" name="q4" value="Wrong4">Diamonds and Gold<br>
+                      <input type="radio" name="q4" value="Correct4">Cave Game<br>
+                    </blockquote>
+                    <p><b>
+                        <hr>
+                        Question 5.
+                        <br>Who was the first person to play Minecraft?<br></b>
+                      <blockquote>
+                        <input type="radio" name="q5" value="wrong5">DanTDM<br>
+                        <input type="radio" name="q5" value="Correct5">Steve<br>
+                        <input type="radio" name="q5" value="Wrong5">Ssundee<br>
+                        <input type="radio" name="q5" value="Wrong5">Ethoslab<br>
+                      </blockquote>
+                      <p><b>
+                          <hr>
+                          Question 6.
+                          <br>What was the creator of Minecraft's nickname<br></b>
+                        <blockquote>
+                          <input type="radio" name="q6" value="Wrong6">Marked<br>
+                          <input type="radio" name="q6" value="Wrong6">The guy who created Minecraft
+                          <br>
+                          <input type="radio" name="q6" value="Correct6">Notch<br>
+                          <input type="radio" name="q6" value="Wrong6">Marker<br>
+                        </blockquote>
+                        <p><b>
+                            Question 7.
+                            <br>How many people play Minecraft a day?? <br></b>
+                          <blockquote>
+                            <input type="radio" name="q7" value="wrong7">10,000<br>
+                            <input type="radio" name="q7" value="wrong7">1,000,000<br>
+                            <input type="radio" name="q7" value="Correct7">4,000,000<br>
+                            <input type="radio" name="q7" value="wrong7"> 10,000,000<br>
+                          </blockquote>
+                          <p><b>
+                                              <input type="button" value="How Did I Do?" onClick="getScore(this.form);">
+                                              <input type="reset" value="Clear">
+                                              <p>
+                                                Number of score out of 7 = <input type=text size 15 name="mark">
+                                                Score in percentage = <input type=text size=15 name="percentage"><br>
+          </form>
+          <p>
+            <form method="post" name="Form" onsubmit="" action="">
+            </form>
+      
+      
+      <script>
+    
+        var numQues = 7;
+    
+        var numChoi = 4;
+    
+        var answers = new Array(10);
+    
+        answers[0] = "Correct1";
+    
+        answers[1] = "Correct2";
+    
+        answers[2] = "Correct3";
+    
+        answers[3] = "Correct4";
+    
+        answers[4] = "Correct5";
+    
+        answers[5] = "Correct6";
+    
+        answers[6] = "Correct7";
+
+    
+      
+    
+        function getScore(form) {
+    
+          var score = 0;
+    
+          var currElt;
+    
+          var currSelection;
+    
+          for (i = 0; i < numQues; i++) {
+    
+            currElt = i * numChoi;
+    
+            answered = false;
+    
+            for (j = 0; j < numChoi; j++) {
+    
+              currSelection = form.elements[currElt + j];
+    
+              if (currSelection.checked) {
+    
+                answered = true;
+    
+                if (currSelection.value == answers[i]) {
+    
+                  score++;
+    
+                  break;
+    
+                }
+    
+              }
+    
+            }
+    
+            if (answered === false) { alert("Do answer all the questions, Please"); return false; }
+    
+          }
+    
+          var scoreper = Math.round(score / numQues * 100);
+    
+          form.percentage.value = scoreper + "%";
+    
+          form.mark.value = score;
+    
+        }
+    
+      </script>
+      </div>
+      <div class="col-sm"></div>
+      <div class="col-sm"></div>
+    </div>
+      </div>
+      </div>
       </div>
 
          <!-- Optional JavaScript -->
