@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Wii Channel Arcade</title>
+  <meta name="description" content="A Wii Menu styled pocket arcade that emulates your own game files right on your phone.">
+
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#009ee0">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Arcade">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap">
+  <link rel="stylesheet" href="css/wii.css">
+</head>
+<body>
+
+  <header class="wii-topbar">
+    <span class="topbar-side"></span>
+    <span class="topbar-time">
+      <span class="wii-date" id="date"></span>
+      <span class="wii-clock" id="clock"></span>
+    </span>
+    <span class="topbar-side is-right">
+      <button class="wii-btn is-small" id="btn-edit" hidden>Edit</button>
+    </span>
+  </header>
+
+  <main class="wii-stage">
+    <div class="channel-grid" id="grid" aria-label="Channels"></div>
+  </main>
+
+  <nav class="wii-bottombar">
+    <button class="wii-btn" id="btn-wii" title="Settings">
+      Wii
+      <span class="btn-sub">settings</span>
+    </button>
+    <button class="wii-btn" id="btn-sd" title="Your games">
+      SD Card
+      <span class="btn-sub" id="sd-sub">no games yet</span>
+    </button>
+    <button class="wii-btn is-wide" id="btn-board" title="Dolphin Command Center">
+      Message Board
+      <span class="btn-sub">Wii &amp; Wii U shelf</span>
+    </button>
+  </nav>
+
+  <!-- No `accept` list on purpose: iOS greys out files whose extensions it
+       has no UTI for, which is most ROM formats. See js/systems.js. -->
+  <input type="file" id="file-input" class="hidden" multiple>
+
+  <script src="js/systems.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/wii-ui.js"></script>
+  <script src="js/menu.js"></script>
+</body>
+</html>

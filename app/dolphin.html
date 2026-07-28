@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Dolphin Command Center</title>
+  <meta name="description" content="Track your Wii and Wii U library, keep per-game Dolphin settings, and launch the emulator.">
+
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#009ee0">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap">
+  <link rel="stylesheet" href="css/wii.css">
+  <style>
+    .dc-head {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(232,242,248,0.92) 100%);
+      border-bottom: 1px solid rgba(140, 165, 180, 0.35);
+      backdrop-filter: blur(6px);
+    }
+    .dc-head h1 { flex: 1; margin: 0; font-size: 17px; color: var(--wii-blue-dark); }
+
+    /* Column layout so the bottom bar sits at the bottom of the viewport even
+       when the shelf is nearly empty. */
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
+    .dc-wrap {
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      width: 100%;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 12px 12px 24px;
+    }
+
+    .dc-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .dc-stat {
+      padding: 10px 8px;
+      border: 2px solid #fff;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.72);
+      text-align: center;
+      box-shadow: 0 2px 6px rgba(80,110,130,0.14);
+    }
+    .dc-stat b { display: block; font-size: 22px; line-height: 1.1; color: var(--wii-blue-dark); }
+    .dc-stat span { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); }
+
+    .dc-filters { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 10px; }
+    .chip {
+      flex: 0 0 auto;
+      padding: 6px 13px;
+      border: 2px solid #cdd8df;
+      border-radius: 999px;
+      background: #fff;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ink-soft);
+      cursor: pointer;
+    }
+    .chip.is-on { border-color: var(--wii-blue); background: var(--wii-blue); color: #fff; }
+
+    .dc-card {
+      display: flex;
+      gap: 12px;
+      width: 100%;
+      margin-bottom: 10px;
+      padding: 10px;
+      border: 3px solid var(--tile-border);
+      border-radius: 12px;
+      background: var(--tile-face);
+      box-shadow: 0 2px 5px rgba(80,110,130,0.18);
+      text-align: left;
+      font-family: inherit;
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+    .dc-card:hover, .dc-card:focus-visible {
+      border-color: var(--wii-blue);
+      box-shadow: 0 0 12px var(--wii-blue-glow);
+      outline: none;
+    }
+    .dc-card:active { transform: scale(0.985); }
+
+    .dc-art {
+      flex: 0 0 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 84px;
+      border-radius: 7px;
+      color: #fff;
+      font-size: 19px;
+      font-weight: 800;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.45);
+    }
+    .dc-body { flex: 1; min-width: 0; }
+    /* These are spans inside a <button>, so they need to be told to stack. */
+    .dc-title, .dc-meta, .dc-notes { display: block; }
+    .dc-title { font-size: 15px; font-weight: 700; line-height: 1.25; }
+    .dc-meta { margin-top: 3px; font-size: 11px; color: var(--ink-soft); }
+    .dc-notes {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--ink);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .pill {
+      display: inline-block;
+      margin-right: 5px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #fff;
+    }
+    .pill.backlog { background: #94a3b8; }
+    .pill.playing { background: #0ea5e9; }
+    .pill.beaten  { background: #16a34a; }
+    .pill.dropped { background: #b45309; }
+    .pill.wii     { background: #64748b; }
+    .pill.wiiu    { background: #0f766e; }
+
+    .dc-empty {
+      padding: 30px 18px;
+      border: 3px dashed #d8e2e8;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.5);
+      text-align: center;
+      color: var(--ink-soft);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .stars { font-size: 15px; letter-spacing: 2px; color: #f59e0b; }
+  </style>
+</head>
+<body>
+
+  <header class="dc-head">
+    <button class="wii-btn" id="btn-home" style="min-width:0;padding:0 14px;height:38px">◀</button>
+    <h1>Dolphin Command Center</h1>
+    <button class="wii-btn" id="btn-guide" style="min-width:0;padding:0 14px;height:38px">?</button>
+  </header>
+
+  <main class="dc-wrap">
+    <div class="dc-stats">
+      <div class="dc-stat"><b id="stat-total">0</b><span>titles</span></div>
+      <div class="dc-stat"><b id="stat-beaten">0</b><span>beaten</span></div>
+      <div class="dc-stat"><b id="stat-hours">0h</b><span>played</span></div>
+    </div>
+
+    <div class="dc-filters" id="filters">
+      <button class="chip is-on" data-filter="all">All</button>
+      <button class="chip" data-filter="wii">Wii</button>
+      <button class="chip" data-filter="wiiu">Wii U</button>
+      <button class="chip" data-filter="playing">Playing</button>
+      <button class="chip" data-filter="backlog">Backlog</button>
+      <button class="chip" data-filter="beaten">Beaten</button>
+    </div>
+
+    <div id="shelf"></div>
+  </main>
+
+  <nav class="wii-bottombar">
+    <button class="wii-btn" id="btn-launch">
+      Launch Dolphin
+      <span class="btn-sub">android</span>
+    </button>
+    <button class="wii-btn is-wide is-primary" id="btn-add">+ Add a title</button>
+  </nav>
+
+  <script src="js/systems.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/wii-ui.js"></script>
+  <script src="js/dolphin.js"></script>
+</body>
+</html>
