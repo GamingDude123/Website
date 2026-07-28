@@ -43,6 +43,12 @@ const WiiMusic = (function () {
   let playing = false;
   let enabled = localStorage.getItem("wii-music") !== "off";
 
+  /* An audio file the user picked from their own device. It lives in
+     IndexedDB alongside the games and is never uploaded anywhere — the app
+     ships no music of its own beyond the loop synthesised below. */
+  let customTrack = null;
+  let customUrl = null;
+
   function midiToFreq(note) {
     return 440 * Math.pow(2, (note - 69) / 12);
   }
@@ -174,8 +180,66 @@ const WiiMusic = (function () {
     }
   }
 
+  /* ---------- Your own music file ---------------------------------------- */
+
+  function customElement() {
+    if (customTrack && !customUrl) {
+      customUrl = URL.createObjectURL(customTrack.blob);
+      const el = new Audio(customUrl);
+      el.loop = true;
+      el.volume = 0.45;
+      customTrack.audio = el;
+    }
+    return customTrack ? customTrack.audio : null;
+  }
+
+  function setCustomTrack(file) {
+    return Settings.set("custom-music", { name: file.name, blob: file }).then(() => {
+      stop(0.2);
+      if (customUrl) {
+        URL.revokeObjectURL(customUrl);
+        customUrl = null;
+      }
+      customTrack = { name: file.name, blob: file, audio: null };
+      if (enabled) start();
+      return customTrack;
+    });
+  }
+
+  function clearCustomTrack() {
+    return Settings.set("custom-music", null).then(() => {
+      stop(0.2);
+      if (customUrl) {
+        URL.revokeObjectURL(customUrl);
+        customUrl = null;
+      }
+      customTrack = null;
+      if (enabled) start();
+    });
+  }
+
+  function customName() {
+    return customTrack ? customTrack.name : null;
+  }
+
+  /* ---------- Transport --------------------------------------------------- */
+
   function start() {
     if (playing || !enabled) return;
+
+    // A file the user supplied wins over the built-in loop.
+    const track = customElement();
+    if (track) {
+      playing = true;
+      track.currentTime = track.currentTime || 0;
+      const attempt = track.play();
+      if (attempt && attempt.catch) {
+        // Autoplay was refused; wait for the next gesture rather than throw.
+        attempt.catch(() => { playing = false; });
+      }
+      return;
+    }
+
     if (!setup()) return;
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
 
@@ -192,6 +256,12 @@ const WiiMusic = (function () {
   function stop(fadeSeconds) {
     if (!playing) return;
     playing = false;
+
+    if (customTrack && customTrack.audio) {
+      customTrack.audio.pause();
+      return;
+    }
+
     clearInterval(timer);
     timer = null;
     if (!master) return;
@@ -213,7 +283,9 @@ const WiiMusic = (function () {
     const begin = () => {
       document.removeEventListener("pointerdown", begin);
       document.removeEventListener("keydown", begin);
-      start();
+      // Wait for the saved track to load, so a chosen file isn't skipped in
+      // favour of the built-in loop on a fast tap.
+      ready.then(start);
     };
     document.addEventListener("pointerdown", begin);
     document.addEventListener("keydown", begin);
@@ -266,6 +338,13 @@ const WiiMusic = (function () {
     });
   }
 
+  /* Restore a previously chosen track, then arm the first-gesture autostart. */
+  const ready = Settings.get("custom-music", null).then((saved) => {
+    if (saved && saved.blob) {
+      customTrack = { name: saved.name, blob: saved.blob, audio: null };
+    }
+  }).catch(() => null);
+
   armAutostart();
 
   return {
@@ -273,6 +352,10 @@ const WiiMusic = (function () {
     stop: stop,
     renderOffline: renderOffline,
     setEnabled: setEnabled,
+    setCustomTrack: setCustomTrack,
+    clearCustomTrack: clearCustomTrack,
+    customName: customName,
+    ready: ready,
     get enabled() { return enabled; },
     get playing() { return playing; }
   };
