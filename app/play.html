@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Playing — Wii Channel Arcade</title>
+  <meta name="theme-color" content="#101418">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/wii.css">
+  <style>
+    body {
+      background: #0d1116;
+      color: #e6edf3;
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      overflow: hidden;
+      padding-top: env(safe-area-inset-top);
+    }
+    body::before { display: none; }
+
+    .play-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      height: 40px;
+      padding: 0 8px;
+      background: linear-gradient(180deg, #1b232b 0%, #121820 100%);
+      border-bottom: 1px solid #2b3642;
+    }
+
+    .play-bar .title {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #cbd5e1;
+    }
+
+    .play-bar button {
+      height: 28px;
+      padding: 0 12px;
+      border: 1px solid #3a4753;
+      border-radius: 999px;
+      background: #232d38;
+      color: #e6edf3;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .play-bar button:active { transform: scale(0.95); }
+
+    #game {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      background: #000;
+    }
+
+    .play-status {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      height: 100%;
+      padding: 24px;
+      text-align: center;
+    }
+    .play-status h1 { font-size: 19px; margin: 0; }
+    .play-status p { font-size: 14px; color: #93a4b5; margin: 0; max-width: 34em; line-height: 1.55; }
+    .play-status a {
+      margin-top: 6px;
+      padding: 10px 20px;
+      border-radius: 999px;
+      background: var(--wii-blue);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .spinner {
+      width: 34px;
+      height: 34px;
+      border: 4px solid #2b3642;
+      border-top-color: var(--wii-blue);
+      border-radius: 50%;
+      animation: spin 900ms linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+  <div class="play-bar">
+    <button type="button" id="btn-back">◀ Menu</button>
+    <span class="title" id="play-title">Loading…</span>
+    <button type="button" id="btn-full">⛶</button>
+  </div>
+
+  <div id="game">
+    <div class="play-status" id="status">
+      <div class="spinner"></div>
+      <p>Loading game…</p>
+    </div>
+  </div>
+
+  <script src="js/systems.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/wii-ui.js"></script>
+  <script src="js/play.js"></script>
+</body>
+</html>

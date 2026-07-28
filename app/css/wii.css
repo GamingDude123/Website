@@ -1,0 +1,408 @@
+/* ==========================================================================
+   Wii Channel Arcade — shared Wii Menu styling
+   ========================================================================== */
+
+:root {
+  --wii-blue: #009ee0;
+  --wii-blue-dark: #0079ab;
+  --wii-blue-glow: rgba(0, 190, 255, 0.75);
+  --sky-top: #cfe2ec;
+  --sky-mid: #eef6fb;
+  --sky-bottom: #dfeaf1;
+  --tile-face: #fdfdfd;
+  --tile-border: #c8d4dc;
+  --bar-top: #f4f7f9;
+  --bar-bottom: #cfd8de;
+  --ink: #4a545c;
+  --ink-soft: #8d99a2;
+  --danger: #d9534f;
+
+  --tile-gap: 10px;
+  --bar-height: 74px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: "M PLUS Rounded 1c", "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+  background: linear-gradient(180deg, var(--sky-top) 0%, var(--sky-mid) 42%, var(--sky-mid) 62%, var(--sky-bottom) 100%);
+  background-attachment: fixed;
+  -webkit-user-select: none;
+  user-select: none;
+  /* Respect notches and home indicators when installed to the home screen. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+/* The faint horizontal sheen the real Wii Menu has across the middle. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 55% at 50% 45%, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0) 70%);
+  z-index: 0;
+}
+
+/* ---------- Top clock bar ------------------------------------------------ */
+
+.wii-topbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 14px;
+  padding: 10px 16px 8px;
+  border-bottom: 1px solid rgba(140, 165, 180, 0.35);
+  text-shadow: 0 1px 0 #fff;
+}
+
+.wii-date { font-size: 15px; color: var(--ink-soft); letter-spacing: 0.02em; }
+
+.wii-clock {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.wii-clock .sec { font-size: 16px; color: var(--ink-soft); }
+
+/* Colon blinks once per second, like the console does. */
+.wii-clock .colon { animation: blink 1s steps(1, end) infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+
+/* ---------- Channel grid ------------------------------------------------- */
+
+.wii-stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - var(--bar-height));
+  min-height: calc(100dvh - var(--bar-height));
+  padding: var(--tile-gap);
+}
+
+.channel-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  /* Rows hug the tiles' 4:3 aspect ratio; stretching them leaves gaps. */
+  grid-auto-rows: auto;
+  gap: var(--tile-gap);
+  align-content: start;
+}
+
+@media (min-width: 620px) {
+  .channel-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* A channel: white glossy face, thick soft border, springy press. */
+.channel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  aspect-ratio: 4 / 3;
+  padding: 8px 6px;
+  border: 3px solid var(--tile-border);
+  border-radius: 9px;
+  background: var(--tile-face);
+  box-shadow: 0 2px 5px rgba(80, 110, 130, 0.22), inset 0 0 0 1px #fff;
+  cursor: pointer;
+  overflow: hidden;
+  text-align: center;
+  transition: transform 120ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  transform: translateZ(0);
+}
+
+/* Glossy highlight sweeping the top half of every channel. */
+.channel::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 42% 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.12) 100%);
+  pointer-events: none;
+}
+
+.channel:hover,
+.channel:focus-visible {
+  transform: scale(1.06);
+  border-color: var(--wii-blue);
+  box-shadow: 0 0 14px var(--wii-blue-glow), 0 4px 10px rgba(80, 110, 130, 0.3);
+  outline: none;
+  z-index: 3;
+}
+
+.channel:active { transform: scale(0.97); }
+
+.channel-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  flex: 1;
+  border-radius: 5px;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  padding: 4px;
+}
+
+/* Auto-generated box art: the game's initials over a system-tinted gradient. */
+.channel-art .initials {
+  font-size: clamp(18px, 7vw, 34px);
+  letter-spacing: 0.06em;
+  line-height: 1.05;
+  word-break: break-word;
+}
+
+.channel-art .glyph { font-size: clamp(24px, 9vw, 40px); }
+
+.channel-label {
+  width: 100%;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channel-sub {
+  font-size: 9px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* The disc slot channel gets the blue glow treatment permanently. */
+.channel.is-disc { border-color: #a9d8ee; }
+.channel.is-disc .channel-art {
+  background: linear-gradient(160deg, #eaf7ff 0%, #bfe6fa 100%);
+  color: var(--wii-blue-dark);
+  text-shadow: none;
+}
+
+.channel.is-empty {
+  border-style: dashed;
+  border-color: #d8e2e8;
+  background: rgba(255, 255, 255, 0.35);
+  box-shadow: none;
+  cursor: default;
+}
+.channel.is-empty::after { display: none; }
+.channel.is-empty:hover { transform: none; box-shadow: none; border-color: #d8e2e8; }
+
+/* Small playtime badge in the corner of a game channel. */
+.channel-badge {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 2;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+/* ---------- Bottom bar --------------------------------------------------- */
+
+.wii-bottombar {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: var(--bar-height);
+  padding: 0 14px calc(env(safe-area-inset-bottom) * 0.6);
+  background: linear-gradient(180deg, var(--bar-top) 0%, var(--bar-bottom) 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 -3px 10px rgba(90, 120, 140, 0.18);
+}
+
+.wii-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+  height: 46px;
+  padding: 0 16px;
+  border: 2px solid #b9c6ce;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffffff 0%, #e4ebef 100%);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.wii-btn:hover,
+.wii-btn:focus-visible {
+  border-color: var(--wii-blue);
+  box-shadow: 0 0 12px var(--wii-blue-glow);
+  outline: none;
+}
+
+.wii-btn:active { transform: scale(0.95); }
+
+.wii-btn.is-wide { flex: 1; max-width: 260px; }
+
+/* The one action a panel actually wants you to take. */
+.wii-btn.is-primary {
+  border-color: var(--wii-blue-dark);
+  background: linear-gradient(180deg, #35bdf0 0%, var(--wii-blue) 100%);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 60, 90, 0.35);
+}
+
+.wii-btn.is-primary .btn-sub { color: rgba(255, 255, 255, 0.85); }
+
+.wii-btn .btn-sub {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  letter-spacing: 0.02em;
+}
+
+/* ---------- Panels (settings / disc slot / dialogs) ---------------------- */
+
+.panel-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(30, 50, 65, 0.45);
+  backdrop-filter: blur(3px);
+  animation: fade-in 160ms ease;
+}
+
+@keyframes fade-in { from { opacity: 0; } }
+
+.panel {
+  width: min(560px, 100%);
+  max-height: 84vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px;
+  border: 3px solid #fff;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #eef4f8 100%);
+  box-shadow: 0 18px 45px rgba(20, 40, 55, 0.45);
+  animation: pop-in 200ms cubic-bezier(0.2, 1.3, 0.5, 1);
+}
+
+@keyframes pop-in { from { transform: scale(0.9); opacity: 0; } }
+
+.panel h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  color: var(--wii-blue-dark);
+}
+
+.panel p { font-size: 14px; line-height: 1.55; }
+
+.panel .muted { color: var(--ink-soft); font-size: 13px; }
+
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* ---------- Forms -------------------------------------------------------- */
+
+label.field {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.field input,
+.field select,
+.field textarea {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 10px 12px;
+  border: 2px solid #cdd8df;
+  border-radius: 10px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: normal;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.field textarea { min-height: 78px; resize: vertical; }
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  border-color: var(--wii-blue);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 158, 224, 0.18);
+}
+
+/* ---------- Utility ------------------------------------------------------ */
+
+.hidden { display: none !important; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--bar-height) + 18px);
+  z-index: 40;
+  transform: translateX(-50%);
+  max-width: 88vw;
+  padding: 11px 18px;
+  border-radius: 999px;
+  background: rgba(35, 55, 70, 0.94);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  box-shadow: 0 6px 20px rgba(20, 40, 55, 0.4);
+  animation: pop-in 200ms cubic-bezier(0.2, 1.3, 0.5, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
