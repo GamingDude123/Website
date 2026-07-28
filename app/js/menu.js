@@ -454,6 +454,8 @@
 
         '<label class="toggle"><input type="checkbox" data-sound' +
         (WiiUI.soundOn ? " checked" : "") + "><span>Menu sounds</span></label>" +
+        '<label class="toggle"><input type="checkbox" data-music' +
+        (WiiMusic.enabled ? " checked" : "") + "><span>Menu music</span></label>" +
         '<label class="toggle"><input type="checkbox" data-haptics' +
         (WiiUI.hapticsOn ? " checked" : "") + "><span>Vibration</span></label>" +
 
@@ -482,6 +484,10 @@
 
       modal.el.querySelector("[data-sound]").addEventListener("change", (event) => {
         WiiUI.setSound(event.target.checked);
+        WiiUI.play("click");
+      });
+      modal.el.querySelector("[data-music]").addEventListener("change", (event) => {
+        WiiMusic.setEnabled(event.target.checked);
         WiiUI.play("click");
       });
       modal.el.querySelector("[data-haptics]").addEventListener("change", (event) => {
