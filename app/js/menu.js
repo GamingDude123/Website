@@ -1,14 +1,17 @@
-/* The channel grid: every game you add becomes its own channel, like a Wii. */
+/* The channel grid: every game you add becomes its own channel, like a Wii.
+ *
+ * Tapping a channel plays it. Options (rename, delete, info) live behind a
+ * press-and-hold, or the Edit button for people who won't discover that. */
 
 (function () {
   const grid = document.getElementById("grid");
   const fileInput = document.getElementById("file-input");
+  const editButton = document.getElementById("btn-edit");
   const esc = WiiUI.escapeHtml;
 
-  const MIN_TILES = 12;
   let library = [];
+  let editMode = false;
 
-  fileInput.setAttribute("accept", ACCEPT_ATTR);
   WiiUI.startClock(document.getElementById("date"), document.getElementById("clock"));
 
   /* ---------- Rendering -------------------------------------------------- */
@@ -26,8 +29,17 @@
       "</span>" +
       '<span class="channel-label">' + esc(options.label) + "</span>" +
       '<span class="channel-sub">' + esc(options.sub) + "</span>";
+
     el.addEventListener("pointerenter", () => WiiUI.play("hover"));
+
+    let longPressed = () => false;
+    if (options.onHold) {
+      longPressed = WiiUI.onLongPress(el, options.onHold);
+    }
+
     el.addEventListener("click", () => {
+      // A completed hold already opened the options; don't also activate.
+      if (longPressed()) return;
       WiiUI.feedback("click");
       options.onOpen();
     });
@@ -40,13 +52,14 @@
 
   function render() {
     grid.textContent = "";
+    grid.classList.toggle("is-editing", editMode);
 
     grid.appendChild(tile({
       className: "is-disc",
       art: "linear-gradient(160deg,#eaf7ff 0%,#bfe6fa 100%)",
       glyph: "💿",
       label: "Disc Channel",
-      sub: "insert game",
+      sub: "add a game",
       onOpen: () => fileInput.click()
     }));
 
@@ -58,30 +71,50 @@
       onOpen: () => { location.href = "dolphin.html"; }
     }));
 
+    // Ring the game you played most recently, so picking up where you left
+    // off doesn't mean hunting the grid.
+    const lastPlayed = library.reduce(
+      (best, game) => (game.lastPlayed > (best ? best.lastPlayed : 0) ? game : best),
+      null
+    );
+
     library.forEach((game) => {
       const system = SYSTEM_BY_CORE[game.core];
       grid.appendChild(tile({
+        className: "is-game" +
+          (lastPlayed && game.id === lastPlayed.id ? " is-recent" : ""),
         art: gradient(system ? system.art : ["#94a3b8", "#475569"]),
         initials: initialsFor(game.title),
         label: game.title,
         sub: system ? system.short : game.core,
         badge: game.playSeconds ? formatDuration(game.playSeconds) : "",
-        onOpen: () => openChannel(game.id)
+        onOpen: () => (editMode ? openOptions(game.id) : startGame(game)),
+        onHold: () => openOptions(game.id)
       }));
     });
 
-    // Pad the page out so the grid keeps its shape when the library is small.
-    for (let i = grid.children.length; i < MIN_TILES; i++) {
+    // Pad out the last row so the grid keeps a tidy rectangle, with a couple
+    // of rows minimum when the library is small.
+    const columns = window.innerWidth >= 620 ? 4 : 3;
+    const minimum = columns * 2;
+    let count = grid.children.length;
+    const target = Math.max(minimum, Math.ceil(count / columns) * columns);
+    for (let i = count; i < target; i++) {
       const empty = document.createElement("div");
       empty.className = "channel is-empty";
       empty.setAttribute("aria-hidden", "true");
       grid.appendChild(empty);
     }
+
+    editButton.textContent = editMode ? "Done" : "Edit";
+    editButton.classList.toggle("is-primary", editMode);
+    editButton.hidden = library.length === 0;
   }
 
   function refresh() {
     return Games.all().then((games) => {
       library = games;
+      if (!library.length) editMode = false;
       render();
       updateStorageLabel();
     });
@@ -89,15 +122,20 @@
 
   function updateStorageLabel() {
     const used = library.reduce((total, game) => total + (game.size || 0), 0);
-    const label = document.getElementById("sd-sub");
-    label.textContent = library.length
+    document.getElementById("sd-sub").textContent = library.length
       ? library.length + " game" + (library.length === 1 ? "" : "s") + " · " + formatBytes(used)
-      : "library";
+      : "no games yet";
   }
 
-  /* ---------- Channel preview (the Wii's "channel page") ----------------- */
+  function startGame(game) {
+    WiiUI.play("boot");
+    WiiUI.buzz([12, 40, 18]);
+    location.href = "play.html?id=" + encodeURIComponent(game.id);
+  }
 
-  function openChannel(id) {
+  /* ---------- Channel options -------------------------------------------- */
+
+  function openOptions(id) {
     Games.get(id).then((game) => {
       if (!game) return;
       const system = SYSTEM_BY_CORE[game.core];
@@ -108,20 +146,19 @@
           (game.playSeconds ? " · played " + formatDuration(game.playSeconds) : "") +
         "</p>" +
         (system && system.heavy
-          ? '<p class="muted">Heads up: this system is demanding. Expect some slowdown on ' +
+          ? '<p class="muted">This system is demanding — expect some slowdown on ' +
             "older phones.</p>"
           : "") +
         '<div class="panel-actions">' +
-          '<button class="wii-btn is-wide is-primary" data-start>▶ Start</button>' +
+          '<button class="wii-btn is-wide is-primary" data-start>▶ Play</button>' +
           '<button class="wii-btn" data-rename>Rename</button>' +
-          '<button class="wii-btn" data-delete>Delete</button>' +
+          '<button class="wii-btn is-danger" data-delete>Delete</button>' +
           '<button class="wii-btn" data-close>Back</button>' +
         "</div>"
       );
 
       modal.el.querySelector("[data-start]").addEventListener("click", () => {
-        WiiUI.feedback("boot", [12, 40, 18]);
-        location.href = "play.html?id=" + encodeURIComponent(game.id);
+        startGame(game);
       });
 
       modal.el.querySelector("[data-rename]").addEventListener("click", () => {
@@ -151,7 +188,7 @@
       '<label class="field">Title<input type="text" data-title value="' +
         esc(game.title) + '" maxlength="60"></label>' +
       '<div class="panel-actions">' +
-        '<button class="wii-btn" data-save>Save</button>' +
+        '<button class="wii-btn is-primary" data-save>Save</button>' +
         '<button class="wii-btn" data-close>Cancel</button>' +
       "</div>"
     );
@@ -178,44 +215,77 @@
   fileInput.addEventListener("change", () => {
     const files = Array.from(fileInput.files || []);
     fileInput.value = "";
-    if (files.length) handleFiles(files);
+    if (files.length) importFiles(files);
   });
 
-  function handleFiles(files) {
-    // One at a time so an unknown extension can prompt without racing.
-    const next = () => {
-      const file = files.shift();
-      if (!file) {
-        refresh();
-        return;
+  /* Files are handled one at a time so an unknown extension can prompt without
+     racing the next file's prompt. */
+  function importFiles(files) {
+    const total = files.length;
+    const overlay = total > 1 || files[0].size > 4 * 1024 * 1024
+      ? WiiUI.busy("Adding " + files[0].name + "…")
+      : null;
+    let added = 0;
+    let skipped = 0;
+
+    function next(index) {
+      if (index >= total) {
+        if (overlay) overlay.close();
+        return refresh().then(() => {
+          if (added) {
+            WiiUI.play("insert");
+            WiiUI.buzz([10, 30, 10]);
+          }
+          if (added && skipped) {
+            WiiUI.toast(added + " added, " + skipped + " already in your library");
+          } else if (skipped && !added) {
+            WiiUI.toast(skipped === 1 ? "That game is already here" : "Those games are already here");
+          } else if (added > 1) {
+            WiiUI.toast(added + " games added");
+          }
+        });
       }
-      handleFile(file).then(next);
-    };
-    next();
+
+      const file = files[index];
+      if (overlay) {
+        overlay.update(total > 1
+          ? "Adding " + (index + 1) + " of " + total + " — " + file.name
+          : "Adding " + file.name + "…");
+      }
+
+      return handleFile(file).then((result) => {
+        if (result === "added") added++;
+        if (result === "duplicate") skipped++;
+        return next(index + 1);
+      });
+    }
+
+    next(0);
   }
 
   function handleFile(file) {
-    const detected = detectSystem(file.name);
+    return Games.findDuplicate(file).then((existing) => {
+      if (existing) return "duplicate";
 
-    if (detected.kind === "system") {
-      return addGame(file, detected.system.core);
-    }
-
-    if (detected.kind === "dolphin") {
-      return offerDolphin(file);
-    }
-
-    return askSystem(file);
+      const detected = detectSystem(file.name, file.size);
+      if (detected.kind === "system") return addGame(file, detected.system.core);
+      if (detected.kind === "dolphin") return offerDolphin(file);
+      return askSystem(file);
+    });
   }
 
   function addGame(file, core) {
     return Games.add(file, core).then((record) => {
-      WiiUI.feedback("insert", [10, 30, 10]);
+      // A single quiet add still deserves confirmation.
       WiiUI.toast("“" + record.title + "” added");
-      return refresh();
+      return "added";
     }).catch((err) => {
       WiiUI.play("error");
-      WiiUI.toast("Couldn't save that file: " + (err && err.name ? err.name : "unknown error"), 4200);
+      const name = err && err.name === "QuotaExceededError"
+        ? "There isn't enough storage left on this device for that file."
+        : "Couldn't save that file: " + (err && err.name ? err.name : "unknown error");
+      WiiUI.toast(name, 4600);
+      return "failed";
     });
   }
 
@@ -232,25 +302,23 @@
         "<p>Want to add the title to your Dolphin shelf so you can track it and " +
         "keep its settings?</p>" +
         '<div class="panel-actions">' +
-          '<button class="wii-btn" data-add>Add to shelf</button>' +
+          '<button class="wii-btn is-primary" data-add>Add to shelf</button>' +
           '<button class="wii-btn" data-close>No thanks</button>' +
         "</div>",
-        { onClose: resolve }
+        { onClose: () => resolve("skipped") }
       );
       modal.el.querySelector("[data-add]").addEventListener("click", () => {
         WiiUI.feedback("click");
         const platform = /\.(wud|wux|wua)$/i.test(file.name) ? "wiiu" : "wii";
-        Shelf.add({ title: prettyTitle(file.name), platform: platform })
-          .then(() => {
-            modal.close();
-            WiiUI.toast("Added to your Dolphin shelf");
-            resolve();
-          });
+        Shelf.add({ title: prettyTitle(file.name), platform: platform }).then(() => {
+          WiiUI.toast("Added to your Dolphin shelf");
+          modal.close();
+        });
       });
     });
   }
 
-  /* `.iso` could be PlayStation or Wii; `.zip` could be anything. Ask. */
+  /* Only reached for genuinely ambiguous files, like a bare .zip. */
   function askSystem(file) {
     return new Promise((resolve) => {
       const options = SYSTEMS
@@ -259,20 +327,22 @@
       const modal = WiiUI.panel(
         "<h2>Which console?</h2>" +
         '<p class="muted">' + esc(file.name) + " · " + formatBytes(file.size) + "</p>" +
-        "<p>This file's extension doesn't say which system it's for. Pick one:</p>" +
+        "<p>This file's name doesn't say which system it's for. Pick one:</p>" +
         '<label class="field">Console<select data-core>' + options + "</select></label>" +
         '<div class="panel-actions">' +
-          '<button class="wii-btn" data-add>Add channel</button>' +
+          '<button class="wii-btn is-primary" data-add>Add channel</button>' +
           '<button class="wii-btn" data-dolphin>It\'s a Wii game</button>' +
           '<button class="wii-btn" data-close>Skip</button>' +
         "</div>",
-        { onClose: resolve }
+        { onClose: () => resolve("skipped") }
       );
       modal.el.querySelector("[data-add]").addEventListener("click", () => {
         WiiUI.feedback("click");
         const core = modal.el.querySelector("[data-core]").value;
-        modal.close();
-        addGame(file, core).then(resolve);
+        addGame(file, core).then((result) => {
+          modal.close();
+          resolve(result);
+        });
       });
       modal.el.querySelector("[data-dolphin]").addEventListener("click", () => {
         WiiUI.feedback("click");
@@ -282,7 +352,43 @@
     });
   }
 
-  /* ---------- Bottom bar ------------------------------------------------- */
+  /* ---------- First run --------------------------------------------------- */
+
+  function showWelcome() {
+    const modal = WiiUI.panel(
+      "<h2>Welcome to your Arcade</h2>" +
+      "<p>This is a Wii Menu for your pocket. Every game you add becomes its own " +
+      "channel — tap one to play it.</p>" +
+      "<p class='muted'><strong>1.</strong> Tap the Disc Channel and pick a game " +
+      "file from your phone.<br>" +
+      "<strong>2.</strong> Tap its channel to play. Touch controls appear " +
+      "automatically.<br>" +
+      "<strong>3.</strong> Add this page to your home screen and it runs " +
+      "fullscreen, offline, with its own icon.</p>" +
+      "<p class='muted'>No games come with the app and none are downloaded — it " +
+      "plays files you add yourself, and they never leave your phone.</p>" +
+      '<div class="panel-actions">' +
+        '<button class="wii-btn is-wide is-primary" data-add>Add my first game</button>' +
+        '<button class="wii-btn" data-close>Look around</button>' +
+      "</div>",
+      { dismissable: false, noAutofocus: true }
+    );
+    modal.el.querySelector("[data-add]").addEventListener("click", () => {
+      WiiUI.feedback("click");
+      modal.close();
+      fileInput.click();
+    });
+    Settings.set("seen-welcome", true);
+  }
+
+  /* ---------- Bottom bar and header --------------------------------------- */
+
+  editButton.addEventListener("click", () => {
+    WiiUI.feedback("click");
+    editMode = !editMode;
+    render();
+    if (editMode) WiiUI.toast("Tap a channel to rename or delete it");
+  });
 
   document.getElementById("btn-board").addEventListener("click", () => {
     WiiUI.feedback("click");
@@ -305,28 +411,29 @@
       const rows = library.length
         ? library.map((game) => {
             const system = SYSTEM_BY_CORE[game.core];
-            return '<tr><td style="padding:6px 0">' + esc(game.title) +
-              '<br><span class="muted">' + esc(system ? system.short : game.core) +
-              " · " + formatBytes(game.size) + "</span></td></tr>";
+            return '<li><span>' + esc(game.title) + "</span>" +
+              '<span class="muted">' + esc(system ? system.short : game.core) +
+              " · " + formatBytes(game.size) + "</span></li>";
           }).join("")
-        : '<tr><td class="muted" style="padding:6px 0">No games yet. Tap the Disc ' +
-          "Channel to add one.</td></tr>";
+        : '<li class="muted">Nothing yet — tap “Add a game” below.</li>';
 
-      WiiUI.panel(
+      const modal = WiiUI.panel(
         "<h2>SD Card</h2>" +
         '<p class="muted">' + library.length + " game" + (library.length === 1 ? "" : "s") +
-        " · " + formatBytes(used) + " stored" +
+        " · " + formatBytes(used) + " used" +
         (estimate && estimate.quota
-          ? " · about " + formatBytes(estimate.quota) + " available on this device"
+          ? " of about " + formatBytes(estimate.quota) + " available"
           : "") +
         "</p>" +
-        '<table style="width:100%;border-collapse:collapse;font-size:14px">' + rows + "</table>" +
+        '<ul class="file-list">' + rows + "</ul>" +
         '<div class="panel-actions">' +
-          '<button class="wii-btn is-wide" data-add>Insert a game</button>' +
+          '<button class="wii-btn is-wide is-primary" data-add>Add a game</button>' +
           '<button class="wii-btn" data-close>Close</button>' +
         "</div>"
-      ).el.querySelector("[data-add]").addEventListener("click", () => {
+      );
+      modal.el.querySelector("[data-add]").addEventListener("click", () => {
         WiiUI.feedback("click");
+        modal.close();
         fileInput.click();
       });
     });
@@ -337,39 +444,40 @@
       const biosList = biosFiles.length
         ? biosFiles.map((entry) => {
             const system = SYSTEM_BY_CORE[entry.core];
-            return "<li>" + esc(system ? system.short : entry.core) + " — " +
-              esc(entry.filename) + "</li>";
+            return "<li><span>" + esc(system ? system.short : entry.core) + "</span>" +
+              '<span class="muted">' + esc(entry.filename) + "</span></li>";
           }).join("")
-        : '<li class="muted">None loaded</li>';
+        : '<li class="muted">None loaded — most systems don\'t need one.</li>';
 
       const modal = WiiUI.panel(
         "<h2>Wii Settings</h2>" +
-        '<label class="field" style="text-transform:none;font-weight:500">' +
-          '<input type="checkbox" data-sound style="width:auto;display:inline;margin-right:8px"' +
-          (WiiUI.soundOn ? " checked" : "") + ">Menu sounds</label>" +
-        '<label class="field" style="text-transform:none;font-weight:500">' +
-          '<input type="checkbox" data-haptics style="width:auto;display:inline;margin-right:8px"' +
-          (WiiUI.hapticsOn ? " checked" : "") + ">Vibration</label>" +
 
-        "<h2 style='font-size:16px;margin-top:18px'>BIOS files</h2>" +
-        '<p class="muted">PlayStation and Lynx games need a BIOS file from your own ' +
-        "console. Everything else runs without one.</p>" +
-        '<ul style="font-size:13px;padding-left:18px">' + biosList + "</ul>" +
+        '<label class="toggle"><input type="checkbox" data-sound' +
+        (WiiUI.soundOn ? " checked" : "") + "><span>Menu sounds</span></label>" +
+        '<label class="toggle"><input type="checkbox" data-haptics' +
+        (WiiUI.hapticsOn ? " checked" : "") + "><span>Vibration</span></label>" +
+
+        "<h3>BIOS files</h3>" +
+        '<p class="muted">PlayStation and Lynx games need a BIOS file from your ' +
+        "own console. Everything else runs without one.</p>" +
+        '<ul class="file-list">' + biosList + "</ul>" +
         '<button class="wii-btn" data-bios>Add BIOS file</button>' +
 
-        "<h2 style='font-size:16px;margin-top:18px'>Install to home screen</h2>" +
-        '<p class="muted"><strong>iPhone:</strong> Share button → Add to Home Screen.<br>' +
-        "<strong>Android:</strong> ⋮ menu → Install app. Then it opens fullscreen with " +
-        "no browser bar, and works offline.</p>" +
+        "<h3>Install to your home screen</h3>" +
+        '<p class="muted"><strong>iPhone:</strong> Share button → Add to Home ' +
+        "Screen.<br><strong>Android:</strong> ⋮ menu → Install app.<br>" +
+        "It then opens fullscreen with no browser bar, and works offline.</p>" +
 
-        "<h2 style='font-size:16px;margin-top:18px'>About your games</h2>" +
-        '<p class="muted">This app ships no games and downloads none. It only runs ' +
-        "files you add yourself, and they never leave your device — everything is " +
-        "stored locally in your browser.</p>" +
+        "<h3>About your games</h3>" +
+        '<p class="muted">This app ships no games and downloads none. It only ' +
+        "runs files you add yourself, and they never leave your device — " +
+        "everything is stored locally in your browser.</p>" +
 
         '<div class="panel-actions">' +
+          '<button class="wii-btn" data-guide>Show the welcome guide</button>' +
           '<button class="wii-btn" data-close>Close</button>' +
-        "</div>"
+        "</div>",
+        { noAutofocus: true }
       );
 
       modal.el.querySelector("[data-sound]").addEventListener("change", (event) => {
@@ -385,6 +493,11 @@
         modal.close();
         addBios();
       });
+      modal.el.querySelector("[data-guide]").addEventListener("click", () => {
+        WiiUI.feedback("click");
+        modal.close();
+        showWelcome();
+      });
     });
   }
 
@@ -399,7 +512,7 @@
       '<label class="field">For<select data-core>' + options + "</select></label>" +
       '<label class="field">File<input type="file" data-file></label>' +
       '<div class="panel-actions">' +
-        '<button class="wii-btn" data-save>Save</button>' +
+        '<button class="wii-btn is-primary" data-save>Save</button>' +
         '<button class="wii-btn" data-close>Cancel</button>' +
       "</div>"
     );
@@ -420,13 +533,23 @@
   /* ---------- Boot ------------------------------------------------------- */
 
   requestPersistentStorage();
-  refresh();
+
+  refresh().then(() => Settings.get("seen-welcome", false)).then((seen) => {
+    if (!seen) showWelcome();
+  });
+
+  // Re-render on rotation so the row padding matches the new column count.
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(render, 150);
+  });
 
   // Dropping a ROM onto the window works on desktop, which makes testing easy.
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", (event) => {
     event.preventDefault();
     const files = Array.from(event.dataTransfer.files || []);
-    if (files.length) handleFiles(files);
+    if (files.length) importFiles(files);
   });
 })();

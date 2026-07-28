@@ -64,6 +64,45 @@
       background: #000;
     }
 
+    /* Reclaim the bar's height once the game is running. */
+    .play-bar {
+      transition: height 180ms ease, opacity 160ms ease;
+      overflow: hidden;
+    }
+    body.is-immersive .play-bar {
+      height: 0;
+      opacity: 0;
+      border-bottom-width: 0;
+    }
+
+    /* Always-visible grab handle: the way back when the bar is hidden. */
+    #bar-handle {
+      position: fixed;
+      top: calc(env(safe-area-inset-top) + 2px);
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 30;
+      width: 62px;
+      height: 16px;
+      padding: 0;
+      border: 0;
+      border-radius: 0 0 9px 9px;
+      background: rgba(120, 140, 160, 0.45);
+      cursor: pointer;
+      transition: background 160ms ease;
+    }
+    #bar-handle::after {
+      content: "";
+      display: block;
+      width: 26px;
+      height: 3px;
+      margin: 6px auto;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.85);
+    }
+    #bar-handle:hover { background: rgba(140, 165, 190, 0.7); }
+    body:not(.is-immersive) #bar-handle { top: calc(env(safe-area-inset-top) + 40px); }
+
     .play-status {
       display: flex;
       flex-direction: column;
@@ -87,15 +126,8 @@
       text-decoration: none;
     }
 
-    .spinner {
-      width: 34px;
-      height: 34px;
-      border: 4px solid #2b3642;
-      border-top-color: var(--wii-blue);
-      border-radius: 50%;
-      animation: spin 900ms linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Darker rim than the shared one, to suit the black player page. */
+    .spinner { border-color: #2b3642; border-top-color: var(--wii-blue); }
   </style>
 </head>
 <body>
@@ -105,6 +137,8 @@
     <span class="title" id="play-title">Loading…</span>
     <button type="button" id="btn-full">⛶</button>
   </div>
+
+  <button type="button" id="bar-handle" aria-label="Show or hide the menu bar"></button>
 
   <div id="game">
     <div class="play-status" id="status">

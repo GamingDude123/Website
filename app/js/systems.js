@@ -103,12 +103,16 @@ function extensionOf(filename) {
 }
 
 /* Returns {kind: "system", system} | {kind: "dolphin"} | {kind: "unknown"}.
-   `.iso` and `.zip` are deliberately unknown — an ISO could be PlayStation or
-   Wii, and a zip could be anything, so the user picks. */
-function detectSystem(filename) {
+   A `.zip` could be anything, so the user picks. A `.iso` could be PlayStation
+   or Wii — but a PS1 disc tops out around 700 MB and a Wii disc is 4.7 GB, so
+   size settles it without asking. */
+const WII_ISO_MIN_BYTES = 900 * 1024 * 1024;
+
+function detectSystem(filename, size) {
   const ext = extensionOf(filename);
   if (!ext) return { kind: "unknown" };
   if (DOLPHIN_EXT.indexOf(ext) !== -1) return { kind: "dolphin" };
+  if (ext === "iso" && size > WII_ISO_MIN_BYTES) return { kind: "dolphin" };
   for (const sys of SYSTEMS) {
     if (sys.ext.indexOf(ext) !== -1) return { kind: "system", system: sys };
   }
@@ -125,15 +129,20 @@ function prettyTitle(filename) {
   return name || "Game";
 }
 
-/* Up to three initials for the auto-generated box art. */
+/* Up to three initials for the auto-generated box art. Filler words are
+   dropped so "Legend of Zelda" reads LZ rather than LOZ. */
+const FILLER_WORDS = ["of", "the", "and", "a", "an", "in", "to", "for", "vs"];
+
 function initialsFor(title) {
-  const words = String(title).split(/[\s:.-]+/).filter(Boolean);
+  let words = String(title).split(/[\s:.\-_]+/).filter(Boolean);
+  const meaty = words.filter((word) => FILLER_WORDS.indexOf(word.toLowerCase()) === -1);
+  if (meaty.length) words = meaty;
+  if (!words.length) return "?";
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return words.slice(0, 3).map((w) => w[0].toUpperCase()).join("");
+  return words.slice(0, 3).map((word) => word[0].toUpperCase()).join("");
 }
 
-const ACCEPT_ATTR = SYSTEMS
-  .reduce((all, sys) => all.concat(sys.ext), [])
-  .concat(DOLPHIN_EXT, ["iso", "zip", "7z", "bin"])
-  .map((ext) => "." + ext)
-  .join(",");
+/* Note: the file input deliberately has no `accept` list. iOS resolves accept
+   entries to UTIs, and it has no UTI for .sfc, .z64, .gba and friends — so
+   listing them greys those very files out in the Files picker. Everything is
+   validated after selection instead. */

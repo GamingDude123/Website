@@ -7,6 +7,13 @@ It's a PWA, so there's no app store involved: open it in your phone's browser,
 add it to the home screen, and it launches fullscreen with its own icon and
 works offline.
 
+## How you use it
+
+Tap the Disc Channel, pick a game file, and it becomes a channel. **Tap that
+channel to play it** — that's the whole loop. Press and hold a channel (or hit
+**Edit** in the top bar) to rename or delete it. The game you played last keeps
+a blue ring so you can find it again at a glance.
+
 ## The two halves
 
 **The arcade** — NES, SNES, Game Boy / Color, Game Boy Advance, N64, DS,
@@ -48,6 +55,12 @@ IndexedDB storage on your phone.
 
 - Cores that need `SharedArrayBuffer` (PSP, DOS, 3DS) are deliberately left
   out. They require COOP/COEP response headers, which GitHub Pages can't send.
+- The file input has no `accept` list on purpose. iOS resolves accept entries
+  to UTIs and has none for `.sfc`, `.z64`, `.gba` and friends, so listing them
+  greys out the very files you're trying to pick. Files are validated after
+  selection instead.
+- A `.iso` over 900 MB is treated as a Wii disc rather than PlayStation, since
+  a PS1 disc tops out near 700 MB. Smaller ones still ask.
 - The first launch of a system downloads its core from the EmulatorJS CDN.
   After that the service worker serves it from cache, so it works offline.
 - PlayStation and Lynx need a BIOS file from your own console — add one under

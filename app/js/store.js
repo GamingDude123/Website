@@ -86,24 +86,32 @@ const Games = {
     return tx("games", "readonly", (store) => store.get(id));
   },
 
+  /* Read-modify-write inside one transaction. Resolves on commit, not on the
+     put's success, so a caller that immediately re-reads sees the new value. */
   update(id, patch) {
     return openDB().then((db) => new Promise((resolve, reject) => {
       const transaction = db.transaction("games", "readwrite");
       const store = transaction.objectStore("games");
       const request = store.get(id);
+      let updated = null;
       request.onsuccess = () => {
         const record = request.result;
-        if (!record) {
-          resolve(null);
-          return;
-        }
+        if (!record) return;
         Object.assign(record, patch);
         store.put(record);
-        resolve(record);
+        updated = record;
       };
-      request.onerror = () => reject(request.error);
+      transaction.oncomplete = () => resolve(updated);
       transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
     }));
+  },
+
+  /* Same file, same size, already imported. Used to skip silent duplicates. */
+  findDuplicate(file) {
+    return Games.all().then((games) => games.filter(
+      (game) => game.filename === file.name && game.size === file.size
+    )[0] || null);
   },
 
   /* Adds elapsed play time without clobbering a concurrent update. */
@@ -219,7 +227,11 @@ function formatBytes(bytes) {
     value /= 1024;
     unit++;
   }
-  return (value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)) + " " + units[unit];
+  // One decimal for small values, but never a pointless "4.0 MB".
+  const rounded = value < 10 && unit > 0
+    ? value.toFixed(1).replace(/\.0$/, "")
+    : String(Math.round(value));
+  return rounded + " " + units[unit];
 }
 
 function formatDuration(seconds) {

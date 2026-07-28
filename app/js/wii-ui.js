@@ -135,13 +135,16 @@ const WiiUI = (function () {
 
   function confirm(message, confirmLabel) {
     return new Promise((resolve) => {
+      // Both paths must go through close(), or the panel's Escape handler stays
+      // bound to the document. A flag decides the answer instead.
+      let answer = false;
       const modal = panel(
         "<h2>Hold on</h2><p>" + escapeHtml(message) + "</p>" +
         '<div class="panel-actions">' +
+        '<button class="wii-btn is-danger" data-ok>' + escapeHtml(confirmLabel || "Do it") + "</button>" +
         '<button class="wii-btn" data-cancel>Cancel</button>' +
-        '<button class="wii-btn" data-ok>' + escapeHtml(confirmLabel || "Do it") + "</button>" +
         "</div>",
-        { onClose: () => resolve(false) }
+        { onClose: () => resolve(answer) }
       );
       modal.el.querySelector("[data-cancel]").addEventListener("click", () => {
         feedback("back");
@@ -149,11 +152,68 @@ const WiiUI = (function () {
       });
       modal.el.querySelector("[data-ok]").addEventListener("click", () => {
         feedback("click");
-        // Detach the close handler's resolve(false) before resolving true.
-        modal.backdrop.remove();
-        resolve(true);
+        answer = true;
+        modal.close();
       });
     });
+  }
+
+  /* A blocking overlay for work that takes long enough to notice, like
+     importing a 32 MB ROM. Returns a handle so callers can retitle it. */
+  function busy(message) {
+    const el = document.createElement("div");
+    el.className = "panel-backdrop is-busy";
+    el.innerHTML = '<div class="busy-box"><div class="spinner"></div>' +
+      '<p class="busy-text"></p></div>';
+    el.querySelector(".busy-text").textContent = message || "Working…";
+    document.body.appendChild(el);
+    return {
+      update(text) {
+        const node = el.querySelector(".busy-text");
+        if (node) node.textContent = text;
+      },
+      close() { el.remove(); }
+    };
+  }
+
+  /* Press-and-hold, used as a shortcut to a channel's options. Cancels if the
+     finger moves, so it never fires mid-scroll. */
+  function onLongPress(element, callback, ms) {
+    let timer = null;
+    let startX = 0;
+    let startY = 0;
+    let fired = false;
+
+    function cancel() {
+      clearTimeout(timer);
+      timer = null;
+    }
+
+    element.addEventListener("pointerdown", (event) => {
+      if (event.button && event.button !== 0) return;
+      fired = false;
+      startX = event.clientX;
+      startY = event.clientY;
+      timer = setTimeout(() => {
+        fired = true;
+        buzz(18);
+        callback();
+      }, ms || 480);
+    });
+
+    element.addEventListener("pointermove", (event) => {
+      if (!timer) return;
+      if (Math.abs(event.clientX - startX) > 10 || Math.abs(event.clientY - startY) > 10) {
+        cancel();
+      }
+    });
+
+    element.addEventListener("pointerup", cancel);
+    element.addEventListener("pointercancel", cancel);
+    element.addEventListener("pointerleave", cancel);
+
+    // Let the caller suppress the click that follows a completed long press.
+    return () => fired;
   }
 
   let toastTimer = null;
@@ -195,6 +255,8 @@ const WiiUI = (function () {
     startClock: startClock,
     panel: panel,
     confirm: confirm,
+    busy: busy,
+    onLongPress: onLongPress,
     toast: toast,
     escapeHtml: escapeHtml,
     setSound: setSound,

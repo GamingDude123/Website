@@ -22,8 +22,14 @@
 <body>
 
   <header class="wii-topbar">
-    <span class="wii-date" id="date"></span>
-    <span class="wii-clock" id="clock"></span>
+    <span class="topbar-side"></span>
+    <span class="topbar-time">
+      <span class="wii-date" id="date"></span>
+      <span class="wii-clock" id="clock"></span>
+    </span>
+    <span class="topbar-side is-right">
+      <button class="wii-btn is-small" id="btn-edit" hidden>Edit</button>
+    </span>
   </header>
 
   <main class="wii-stage">
@@ -31,10 +37,13 @@
   </main>
 
   <nav class="wii-bottombar">
-    <button class="wii-btn" id="btn-wii" title="Settings">Wii</button>
-    <button class="wii-btn" id="btn-sd" title="Storage">
+    <button class="wii-btn" id="btn-wii" title="Settings">
+      Wii
+      <span class="btn-sub">settings</span>
+    </button>
+    <button class="wii-btn" id="btn-sd" title="Your games">
       SD Card
-      <span class="btn-sub" id="sd-sub">library</span>
+      <span class="btn-sub" id="sd-sub">no games yet</span>
     </button>
     <button class="wii-btn is-wide" id="btn-board" title="Dolphin Command Center">
       Message Board
@@ -42,6 +51,8 @@
     </button>
   </nav>
 
+  <!-- No `accept` list on purpose: iOS greys out files whose extensions it
+       has no UTI for, which is most ROM formats. See js/systems.js. -->
   <input type="file" id="file-input" class="hidden" multiple>
 
   <script src="js/systems.js"></script>

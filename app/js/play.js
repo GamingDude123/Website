@@ -47,6 +47,29 @@
     }
   });
 
+  /* ---------- Bar visibility --------------------------------------------- */
+
+  /* Once a game is running the 40px bar is worth reclaiming, especially in
+     landscape. A grab handle stays put so it's always obvious how to return. */
+  const handle = document.getElementById("bar-handle");
+
+  function hideBar() {
+    document.body.classList.add("is-immersive");
+  }
+
+  function showBar() {
+    document.body.classList.remove("is-immersive");
+  }
+
+  handle.addEventListener("click", () => {
+    WiiUI.play("hover");
+    if (document.body.classList.contains("is-immersive")) {
+      showBar();
+    } else {
+      hideBar();
+    }
+  });
+
   /* ---------- Play time -------------------------------------------------- */
 
   /* Written every 30s and whenever the page is hidden, because a write started
@@ -93,6 +116,12 @@
       showStatus("Game not found", "It may have been deleted from this device.");
       return;
     }
+    if (!game.blob) {
+      showStatus("That game's file is missing",
+        "The channel is still here but its file isn't. Delete the channel and add " +
+        "the game again.");
+      return;
+    }
 
     const system = SYSTEM_BY_CORE[game.core];
     titleEl.textContent = game.title;
@@ -100,6 +129,16 @@
 
     // A BIOS is only needed by a couple of systems; pass it when we have one.
     return Bios.get(game.core).then((bios) => {
+      if (system && system.bios && !bios) {
+        showStatus(
+          "This one needs a BIOS file",
+          system.name + " games need a BIOS file (" + system.bios + ") dumped from " +
+          "your own console. Add one under the Wii button → Settings, then try again."
+        );
+        WiiUI.play("error");
+        return;
+      }
+
       window.EJS_player = "#game";
       window.EJS_core = game.core;
       window.EJS_gameUrl = asFile(game.blob, game.filename || game.title);
@@ -119,6 +158,8 @@
       window.EJS_onGameStart = () => {
         statusEl.remove();
         startPlaytime();
+        // Hand the screen over to the game; the bar comes back on demand.
+        setTimeout(hideBar, 3500);
         if (system && system.heavy) {
           WiiUI.toast("Heavy system — if it stutters, try the emulator's settings menu", 4200);
         } else if (window.innerHeight > window.innerWidth) {
