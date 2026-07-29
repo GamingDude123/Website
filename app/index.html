@@ -21,35 +21,75 @@
 </head>
 <body>
 
-  <header class="wii-topbar">
-    <span class="topbar-side"></span>
-    <span class="topbar-time">
-      <span class="wii-date" id="date"></span>
-      <span class="wii-clock" id="clock"></span>
-    </span>
-    <span class="topbar-side is-right">
-      <button class="wii-btn is-small" id="btn-edit" hidden>Edit</button>
-    </span>
-  </header>
+  <!-- Both screens live in one document so switching between them never
+       reloads the page — a reload would restart the menu music. -->
 
-  <main class="wii-stage">
-    <div class="channel-grid" id="grid" aria-label="Channels"></div>
-  </main>
+  <div class="view" id="view-menu">
+    <header class="wii-topbar">
+      <span class="topbar-side"></span>
+      <span class="topbar-time">
+        <span class="wii-date" id="date"></span>
+        <span class="wii-clock" id="clock"></span>
+      </span>
+      <span class="topbar-side is-right">
+        <button class="wii-btn is-small" id="btn-edit" hidden>Edit</button>
+      </span>
+    </header>
 
-  <nav class="wii-bottombar">
-    <button class="wii-btn" id="btn-wii" title="Settings">
-      Wii
-      <span class="btn-sub">settings</span>
-    </button>
-    <button class="wii-btn" id="btn-sd" title="Your games">
-      SD Card
-      <span class="btn-sub" id="sd-sub">no games yet</span>
-    </button>
-    <button class="wii-btn is-wide" id="btn-board" title="Dolphin Command Center">
-      Message Board
-      <span class="btn-sub">Wii &amp; Wii U shelf</span>
-    </button>
-  </nav>
+    <main class="wii-stage">
+      <div class="channel-grid" id="grid" aria-label="Channels"></div>
+    </main>
+
+    <nav class="wii-bottombar">
+      <button class="wii-btn" id="btn-wii" title="Settings">
+        Wii
+        <span class="btn-sub">settings</span>
+      </button>
+      <button class="wii-btn" id="btn-sd" title="Your games">
+        SD Card
+        <span class="btn-sub" id="sd-sub">no games yet</span>
+      </button>
+      <button class="wii-btn is-wide" id="btn-board" title="Dolphin Command Center">
+        Message Board
+        <span class="btn-sub">Wii &amp; Wii U shelf</span>
+      </button>
+    </nav>
+  </div>
+
+  <div class="view" id="view-dolphin" hidden>
+    <header class="dc-head">
+      <button class="wii-btn is-small" id="btn-home">◀</button>
+      <h1>Dolphin Command Center</h1>
+      <button class="wii-btn is-small" id="btn-guide">?</button>
+    </header>
+
+    <main class="dc-wrap">
+      <div class="dc-stats">
+        <div class="dc-stat"><b id="stat-total">0</b><span>titles</span></div>
+        <div class="dc-stat"><b id="stat-beaten">0</b><span>beaten</span></div>
+        <div class="dc-stat"><b id="stat-hours">0h</b><span>played</span></div>
+      </div>
+
+      <div class="dc-filters" id="filters">
+        <button class="chip is-on" data-filter="all">All</button>
+        <button class="chip" data-filter="wii">Wii</button>
+        <button class="chip" data-filter="wiiu">Wii U</button>
+        <button class="chip" data-filter="playing">Playing</button>
+        <button class="chip" data-filter="backlog">Backlog</button>
+        <button class="chip" data-filter="beaten">Beaten</button>
+      </div>
+
+      <div id="shelf"></div>
+    </main>
+
+    <nav class="wii-bottombar">
+      <button class="wii-btn" id="btn-launch">
+        Launch Dolphin
+        <span class="btn-sub">android</span>
+      </button>
+      <button class="wii-btn is-wide is-primary" id="btn-add">+ Add a title</button>
+    </nav>
+  </div>
 
   <!-- No `accept` list on purpose: iOS greys out files whose extensions it
        has no UTI for, which is most ROM formats. See js/systems.js. -->
@@ -59,6 +99,7 @@
   <script src="js/store.js"></script>
   <script src="js/wii-ui.js"></script>
   <script src="js/music.js"></script>
+  <script src="js/dolphin.js"></script>
   <script src="js/menu.js"></script>
 </body>
 </html>

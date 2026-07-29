@@ -68,7 +68,7 @@
       glyph: "🐬",
       label: "Dolphin Center",
       sub: "wii / wii u",
-      onOpen: () => { location.href = "dolphin.html"; }
+      onOpen: () => DolphinView.show()
     }));
 
     // Ring the game you played most recently, so picking up where you left
@@ -392,7 +392,7 @@
 
   document.getElementById("btn-board").addEventListener("click", () => {
     WiiUI.feedback("click");
-    location.href = "dolphin.html";
+    DolphinView.show();
   });
 
   document.getElementById("btn-sd").addEventListener("click", () => {
