@@ -1,11 +1,16 @@
 """Builds 'Kart Dash', an original NES kart racing game.
 
-A real race rather than a dodge: three rivals run the same track, everyone has
-a distance along it, and where a rival appears on screen is worked out from how
-far ahead or behind you it is. Drive over an item box for a speed boost, clip a
-rival and you spin out. Three laps, and your position updates as you overtake.
+There is an actual road, drawn into the background: tarmac with a white line
+down each side and grass beyond it. Run onto the grass and you bog down, so
+staying on the racing line is the whole game.
 
-Controls: left and right steer. That's it — the kart drives itself.
+Hold B through a corner to drift. Drifting steers harder and charges a
+mini-turbo; let go once it's charged and you get a burst of speed. Item boxes
+give a boost too. Clip a rival and you spin out.
+
+Three laps against three rivals, with your position updating as you overtake.
+
+Controls: left/right steer, B drift.
 
 Original code and art. Not a copy of any existing game.
 """
@@ -19,39 +24,50 @@ from nesasm import Asm, tile, split16, BLANK, DIGIT_ROWS, ines, with_vectors
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kart-dash.nes")
 
 # ---- Zero page ------------------------------------------------------------
-PX = 0x10          # player lane position
-PSPEED = 0x11      # units of track per frame
-BOOST = 0x12       # frames of boost left
-SPIN = 0x13        # frames of spin-out left
+PX = 0x10
+PSPEED = 0x11
+BOOST = 0x12
+SPIN = 0x13
 PDIST_LO, PDIST_HI = 0x14, 0x15
 
-RX = 0x16          # rival lane positions      (3)
-RSPEED = 0x19      # rival speeds              (3)
-RDIST_LO = 0x1C    # rival distance, low byte  (3)
-RDIST_HI = 0x1F    # rival distance, high byte (3)
+RX = 0x16          # rival lane            (3)
+RSPEED = 0x19      # rival speed           (3)
+RDIST_LO = 0x1C    # rival distance low    (3)
+RDIST_HI = 0x1F    # rival distance high   (3)
 
 ITEMX = 0x22
 ITEM_LO, ITEM_HI = 0x23, 0x24
 LAP, POS = 0x25, 0x26
-SEED, BTN, FRAME = 0x27, 0x28, 0x29
-STRIPE = 0x2A      # four road markings        (4)
+SEED, BTN = 0x27, 0x28
+DRIFT = 0x29       # how far the mini-turbo is charged
+STRIPE = 0x2A      # centre-line dashes    (4)
 TMP_LO, TMP_HI = 0x2E, 0x2F
 FINISHED = 0x30
-RY = 0x31          # rival screen row, worked out each frame (3)
+RY = 0x31          # rival screen row      (3)
 ITEMY = 0x34
 
 RIVALS = 3
 STRIPES = 4
 
-CENTRE = 150       # the player's fixed row; everything else is relative to it
-BASE_SPEED = 2
-BOOST_SPEED = 5
+CENTRE = 150
+BASE_SPEED = 3
+BOOST_SPEED = 7
 SPIN_SPEED = 1
+GRASS_SPEED = 1        # bogged down off the tarmac
 BOOST_FRAMES = 90
+TURBO_FRAMES = 45
 SPIN_FRAMES = 50
+DRIFT_MAX = 60
+DRIFT_READY = 24       # charge needed before releasing pays off
 OFFSCREEN = 250
-LAP_SHIFT = 3      # a lap is 8 high-bytes of distance, about 17 seconds
-FINAL_HI = 24      # three laps
+LAP_SHIFT = 3
+FINAL_HI = 24
+
+# The road runs from tile 4 to tile 27, so x=32 to x=223. The kart is 16 wide.
+ROAD_LEFT = 40
+ROAD_RIGHT = 200
+STEER_LEFT = 10        # you *can* leave the road; it just costs you
+STEER_RIGHT = 230
 
 # ---- OAM ------------------------------------------------------------------
 OAM = 0x0200
@@ -66,7 +82,9 @@ PPUCTRL, PPUMASK, PPUSTATUS = 0x2000, 0x2001, 0x2002
 OAMADDR, PPUSCROLL, PPUADDR, PPUDATA = 0x2003, 0x2005, 0x2006, 0x2007
 OAMDMA, JOY1 = 0x4014, 0x4016
 
-# ---- Art ------------------------------------------------------------------
+BTN_RIGHT, BTN_LEFT, BTN_B = 0x01, 0x02, 0x40
+
+# ---- Sprite art -----------------------------------------------------------
 KART = [
     "0001111111111000",
     "0011111111111100",
@@ -86,12 +104,11 @@ KART = [
     "0001111111111000",
 ]
 
-STRIPE_TILE = tile([
+DASH_TILE = tile([
     "00022000", "00022000", "00022000", "00022000",
     "00022000", "00022000", "00000000", "00000000",
 ])
 
-# Item box: a bordered square with a mark in the middle.
 ITEM_TILE = tile([
     "01111110",
     "10000001",
@@ -103,15 +120,38 @@ ITEM_TILE = tile([
     "01111110",
 ])
 
+# ---- Background art -------------------------------------------------------
+ROAD_TILE = tile(["00000000"] * 8)                     # bare tarmac
+LEFT_EDGE = tile(["22000000"] * 8)                     # white line, left side
+RIGHT_EDGE = tile(["00000022"] * 8)                    # white line, right side
+GRASS_TILE = tile([
+    "11111111",
+    "11121111",
+    "11111111",
+    "11111121",
+    "11111111",
+    "12111111",
+    "11111111",
+    "11111112",
+])
+
+T_ROAD, T_LEFT, T_RIGHT, T_GRASS = 0x20, 0x21, 0x22, 0x23
+
+# One row of the nametable: grass, white line, tarmac, white line, grass.
+ROW = ([T_GRASS] * 4 + [T_LEFT] + [T_ROAD] * 22 + [T_RIGHT] + [T_GRASS] * 4)
+assert len(ROW) == 32
+# Attributes: 0x55 puts all four quadrants on palette 1 (grass), 0x00 on 0.
+ATTR_ROW = [0x55] + [0x00] * 6 + [0x55]
+
 PALETTE = [
-    0x00, 0x0F, 0x10, 0x30,
-    0x00, 0x0F, 0x10, 0x30,
-    0x00, 0x0F, 0x10, 0x30,
-    0x00, 0x0F, 0x10, 0x30,
-    0x00, 0x16, 0x30, 0x0F,      # 0: player, red
-    0x00, 0x11, 0x30, 0x0F,      # 1: rivals, blue
-    0x00, 0x30, 0x30, 0x30,      # 2: markings and digits, white
-    0x00, 0x2A, 0x28, 0x0F,      # 3: item box, green and gold
+    0x00, 0x10, 0x30, 0x0F,      # bg 0: tarmac, kerb white
+    0x00, 0x1A, 0x2A, 0x0F,      # bg 1: grass
+    0x00, 0x10, 0x30, 0x0F,
+    0x00, 0x10, 0x30, 0x0F,
+    0x00, 0x16, 0x30, 0x0F,      # sprite 0: player, red
+    0x00, 0x11, 0x30, 0x0F,      # sprite 1: rivals, blue
+    0x00, 0x30, 0x30, 0x30,      # sprite 2: dashes and digits
+    0x00, 0x2A, 0x28, 0x0F,      # sprite 3: item box
 ]
 
 
@@ -120,31 +160,36 @@ def build_chr():
     chr_rom += BLANK                    # $00
     for quad in split16(KART):          # $01..$04
         chr_rom += quad
-    chr_rom += STRIPE_TILE              # $05
+    chr_rom += DASH_TILE                # $05
     chr_rom += ITEM_TILE                # $06
-    while len(chr_rom) < 0x10 * 16:
+    while len(chr_rom) < 0x20 * 16:
         chr_rom += BLANK
-    for rows in DIGIT_ROWS:             # $10..$19
+    chr_rom += ROAD_TILE                # $20
+    chr_rom += LEFT_EDGE                # $21
+    chr_rom += RIGHT_EDGE               # $22
+    chr_rom += GRASS_TILE               # $23
+    while len(chr_rom) < 0x10 * 16 + 0x100:
+        chr_rom += BLANK
+    # Digits live at $30 so they clear the background tiles.
+    while len(chr_rom) < 0x30 * 16:
+        chr_rom += BLANK
+    for rows in DIGIT_ROWS:             # $30..$39
         chr_rom += tile(rows)
     chr_rom += BLANK * (512 - len(chr_rom) // 16)
     return bytes(chr_rom[:8192])
 
 
+DIGIT_BASE = 0x30
+
+
 def build_prg():
     a = Asm(0x8000)
 
-    def add16(lo, hi, amount_zp=None, amount_imm=None):
-        """dest += amount, carrying into the high byte."""
-        a.zp("lda", lo).op("clc")
-        if amount_zp is not None:
-            a.zp("adc", amount_zp)
-        else:
-            a.imm("adc", amount_imm)
-        a.zp("sta", lo)
+    def add16(lo, hi, amount_zp):
+        a.zp("lda", lo).op("clc").zp("adc", amount_zp).zp("sta", lo)
         a.zp("lda", hi).imm("adc", 0).zp("sta", hi)
 
     def sub16_into_tmp(lo, hi):
-        """TMP = (lo,hi) - player distance, as a 16-bit signed value."""
         a.zp("lda", lo).op("sec").zp("sbc", PDIST_LO).zp("sta", TMP_LO)
         a.zp("lda", hi).zp("sbc", PDIST_HI).zp("sta", TMP_HI)
 
@@ -178,6 +223,7 @@ def build_prg():
     a.label("vblank2")
     a.abs("bit", PPUSTATUS).branch("bpl", "vblank2")
 
+    # ---- palette ----------------------------------------------------------
     a.abs("lda", PPUSTATUS)
     a.imm("lda", 0x3F).abs("sta", PPUADDR)
     a.imm("lda", 0x00).abs("sta", PPUADDR)
@@ -187,30 +233,54 @@ def build_prg():
     a.abs("sta", PPUDATA)
     a.op("inx").imm("cpx", 32).branch("bne", "pal_loop")
 
+    # ---- draw the road ----------------------------------------------------
+    # Every row of the track looks the same, so one 32-byte row is written
+    # thirty times. Rendering is still off, so this can take its time.
+    a.abs("lda", PPUSTATUS)
+    a.imm("lda", 0x20).abs("sta", PPUADDR)
+    a.imm("lda", 0x00).abs("sta", PPUADDR)
+    a.imm("ldy", 30)
+    a.label("row_loop")
+    a.imm("ldx", 0)
+    a.label("col_loop")
+    a.absx("lda", "row_data")
+    a.abs("sta", PPUDATA)
+    a.op("inx").imm("cpx", 32).branch("bne", "col_loop")
+    a.op("dey").branch("bne", "row_loop")
+
+    a.imm("lda", 0x23).abs("sta", PPUADDR)
+    a.imm("lda", 0xC0).abs("sta", PPUADDR)
+    a.imm("ldy", 8)
+    a.label("attr_row")
+    a.imm("ldx", 0)
+    a.label("attr_col")
+    a.absx("lda", "attr_data")
+    a.abs("sta", PPUDATA)
+    a.op("inx").imm("cpx", 8).branch("bne", "attr_col")
+    a.op("dey").branch("bne", "attr_row")
+
     # ---- starting grid ----------------------------------------------------
     a.imm("lda", 120).zp("sta", PX)
     a.imm("lda", BASE_SPEED).zp("sta", PSPEED)
     a.imm("lda", 0).zp("sta", PDIST_LO).zp("sta", PDIST_HI)
     a.imm("lda", 0).zp("sta", BOOST).zp("sta", SPIN).zp("sta", FINISHED)
+    a.imm("lda", 0).zp("sta", DRIFT)
     a.imm("lda", 1).zp("sta", LAP).zp("sta", POS)
     a.imm("lda", 0x7D).zp("sta", SEED)
 
-    # Rivals line up just ahead, each a little quicker or slower than you.
     for i in range(RIVALS):
-        a.imm("lda", 70 + i * 45).zp("sta", RX + i)
-        a.imm("lda", 40 + i * 30).zp("sta", RDIST_LO + i)
+        a.imm("lda", [60, 110, 165][i]).zp("sta", RX + i)
+        a.imm("lda", 50 + i * 35).zp("sta", RDIST_LO + i)
         a.imm("lda", 0).zp("sta", RDIST_HI + i)
-        a.imm("lda", [2, 2, 3][i]).zp("sta", RSPEED + i)
+        a.imm("lda", [3, 3, 4][i]).zp("sta", RSPEED + i)
 
     for i in range(STRIPES):
         a.imm("lda", i * 60).zp("sta", STRIPE + i)
 
-    # The first item box sits a little way up the road.
     a.imm("lda", 120).zp("sta", ITEMX)
-    a.imm("lda", 180).zp("sta", ITEM_LO)
+    a.imm("lda", 200).zp("sta", ITEM_LO)
     a.imm("lda", 0).zp("sta", ITEM_HI)
 
-    # Fixed sprite tiles and palettes.
     for base, attr in [(OAM_PLAYER, 0)] + [(OAM_RIVAL + i * 16, 1) for i in range(RIVALS)]:
         for quad in range(4):
             a.imm("lda", 0x01 + quad).abs("sta", base + quad * 4 + 1)
@@ -224,7 +294,6 @@ def build_prg():
     a.imm("lda", 0x06).abs("sta", OAM_ITEM + 1)
     a.imm("lda", 0x03).abs("sta", OAM_ITEM + 2)
 
-    # HUD: lap on the left, position on the right.
     a.imm("lda", 0x02).abs("sta", OAM_LAP + 2).abs("sta", OAM_POS + 2)
     a.imm("lda", 16).abs("sta", OAM_LAP + 0).abs("sta", OAM_POS + 0)
     a.imm("lda", 16).abs("sta", OAM_LAP + 3)
@@ -248,7 +317,7 @@ def build_prg():
     a.abs("jsr", "advance")
     a.abs("jsr", "run_rivals")
     a.abs("jsr", "run_item")
-    a.abs("jsr", "run_stripes")
+    a.abs("jsr", "run_dashes")
     a.abs("jsr", "standings")
     a.label("skip_race")
     a.abs("jsr", "draw")
@@ -272,37 +341,65 @@ def build_prg():
     a.op("dex").branch("bne", "pad_loop")
     a.op("rts")
 
-    # ---- steering ---------------------------------------------------------
+    # ---- steering and drifting --------------------------------------------
     a.label("steer")
-    a.zp("lda", BTN).imm("and", 0x01).branch("beq", "no_right")
-    a.zp("lda", PX).imm("cmp", 224).branch("bcs", "no_right")
-    a.zp("lda", PX).op("clc").imm("adc", 3).zp("sta", PX)
+    # Drifting turns harder — that's the trade for holding B.
+    a.imm("lda", 3).zp("sta", TMP_LO)          # borrow TMP_LO as the turn rate
+    a.zp("lda", BTN).imm("and", BTN_B).branch("beq", "normal_turn")
+    a.imm("lda", 5).zp("sta", TMP_LO)
+    a.label("normal_turn")
+
+    a.zp("lda", BTN).imm("and", BTN_RIGHT).branch("beq", "no_right")
+    a.zp("lda", PX).imm("cmp", STEER_RIGHT).branch("bcs", "no_right")
+    a.zp("lda", PX).op("clc").zp("adc", TMP_LO).zp("sta", PX)
     a.label("no_right")
-    a.zp("lda", BTN).imm("and", 0x02).branch("beq", "no_left")
-    a.zp("lda", PX).imm("cmp", 19).branch("bcc", "no_left")
-    a.zp("lda", PX).op("sec").imm("sbc", 3).zp("sta", PX)
+    a.zp("lda", BTN).imm("and", BTN_LEFT).branch("beq", "no_left")
+    a.zp("lda", PX).imm("cmp", STEER_LEFT).branch("bcc", "no_left")
+    a.zp("lda", PX).op("sec").zp("sbc", TMP_LO).zp("sta", PX)
     a.label("no_left")
+
+    # Charge the mini-turbo while B is held and the kart is turning.
+    a.zp("lda", BTN).imm("and", BTN_B).branch("beq", "drift_released")
+    a.zp("lda", BTN).imm("and", 0x03).branch("beq", "steer_done")
+    a.zp("lda", DRIFT).imm("cmp", DRIFT_MAX).branch("bcs", "steer_done")
+    a.zp("inc", DRIFT)
+    a.abs("jmp", "steer_done")
+
+    a.label("drift_released")
+    # Let go with enough charge and the turbo fires.
+    a.zp("lda", DRIFT).imm("cmp", DRIFT_READY).branch("bcc", "no_turbo")
+    a.imm("lda", TURBO_FRAMES).zp("sta", BOOST)
+    a.label("no_turbo")
+    a.imm("lda", 0).zp("sta", DRIFT)
+    a.label("steer_done")
     a.op("rts")
 
-    # ---- the player's progress --------------------------------------------
+    # ---- speed and progress -----------------------------------------------
     a.label("advance")
-    # Spin-out first: it overrides a boost.
     a.zp("lda", SPIN).branch("beq", "not_spinning")
     a.zp("dec", SPIN)
     a.imm("lda", SPIN_SPEED).zp("sta", PSPEED)
     a.abs("jmp", "speed_set")
+
     a.label("not_spinning")
+    # Off the tarmac, nothing else matters: you bog down in the grass.
+    a.zp("lda", PX).imm("cmp", ROAD_LEFT).branch("bcc", "on_grass")
+    a.zp("lda", PX).imm("cmp", ROAD_RIGHT + 1).branch("bcs", "on_grass")
     a.zp("lda", BOOST).branch("beq", "no_boost")
     a.zp("dec", BOOST)
     a.imm("lda", BOOST_SPEED).zp("sta", PSPEED)
     a.abs("jmp", "speed_set")
     a.label("no_boost")
     a.imm("lda", BASE_SPEED).zp("sta", PSPEED)
+    a.abs("jmp", "speed_set")
+
+    a.label("on_grass")
+    a.imm("lda", GRASS_SPEED).zp("sta", PSPEED)
+    a.imm("lda", 0).zp("sta", DRIFT)
     a.label("speed_set")
 
-    add16(PDIST_LO, PDIST_HI, amount_zp=PSPEED)
+    add16(PDIST_LO, PDIST_HI, PSPEED)
 
-    # Lap number is just the distance shifted down.
     a.zp("lda", PDIST_HI)
     for _ in range(LAP_SHIFT):
         a.op("lsr_a")
@@ -310,7 +407,7 @@ def build_prg():
 
     a.zp("lda", PDIST_HI).imm("cmp", FINAL_HI).branch("bcc", "still_racing")
     a.imm("lda", 1).zp("sta", FINISHED)
-    a.imm("lda", 3).zp("sta", LAP)          # show the last lap, not a fourth
+    a.imm("lda", 3).zp("sta", LAP)
     a.label("still_racing")
     a.op("rts")
 
@@ -320,16 +417,15 @@ def build_prg():
         rx, rs = RX + i, RSPEED + i
         rlo, rhi = RDIST_LO + i, RDIST_HI + i
 
-        add16(rlo, rhi, amount_zp=rs)
+        add16(rlo, rhi, rs)
 
         # Screen row = CENTRE - (their distance - ours), so a rival further
-        # along the track sits higher up. The subtraction wraps, which handles
-        # "behind us" for free: TMP_LO is then 256 minus the gap, and
-        # CENTRE - TMP_LO comes out as CENTRE + gap.
+        # along sits higher up. The subtraction wraps, which handles "behind"
+        # for free: TMP_LO is then 256 minus the gap.
         sub16_into_tmp(rlo, rhi)
         a.zp("lda", TMP_HI).branch("beq", "ahead_%d" % i)
         a.imm("cmp", 0xFF).branch("beq", "behind_%d" % i)
-        a.abs("jmp", "hide_%d" % i)                  # more than a screen away
+        a.abs("jmp", "hide_%d" % i)
 
         a.label("ahead_%d" % i)
         a.zp("lda", TMP_LO).imm("cmp", 140).branch("bcs", "hide_%d" % i)
@@ -347,15 +443,14 @@ def build_prg():
         a.imm("lda", CENTRE).op("sec").zp("sbc", TMP_LO).zp("sta", RY + i)
         a.label("placed_%d" % i)
 
-        # Contact: only worth testing when they are on screen near our row.
         a.zp("lda", RY + i).imm("cmp", OFFSCREEN).branch("beq", "no_bump_%d" % i)
         a.zp("lda", rx).op("sec").zp("sbc", PX).op("clc").imm("adc", 15)
         a.imm("cmp", 31).branch("bcs", "no_bump_%d" % i)
         a.zp("lda", RY + i).op("sec").imm("sbc", CENTRE).op("clc").imm("adc", 15)
         a.imm("cmp", 31).branch("bcs", "no_bump_%d" % i)
-        a.zp("lda", SPIN).branch("bne", "no_bump_%d" % i)   # already spinning
+        a.zp("lda", SPIN).branch("bne", "no_bump_%d" % i)
         a.imm("lda", SPIN_FRAMES).zp("sta", SPIN)
-        a.imm("lda", 0).zp("sta", BOOST)
+        a.imm("lda", 0).zp("sta", BOOST).zp("sta", DRIFT)
         a.label("no_bump_%d" % i)
     a.op("rts")
 
@@ -364,24 +459,23 @@ def build_prg():
     sub16_into_tmp(ITEM_LO, ITEM_HI)
     a.zp("lda", TMP_HI).branch("beq", "item_ahead")
     a.imm("cmp", 0xFF).branch("beq", "item_just_behind")
-    a.abs("jmp", "item_passed")              # far behind: put a new one out
+    a.abs("jmp", "item_passed")
 
-    # A boost moves several units a frame, so a box can end up marginally
-    # behind before it is ever tested. Anything within a few units still
-    # counts, otherwise driving fast would skip boxes entirely.
+    # A boost covers several units a frame, so a box can slip marginally
+    # behind before it is ever tested. A few units of grace stops going fast
+    # from making boxes unobtainable.
     a.label("item_just_behind")
     a.zp("lda", TMP_LO).imm("cmp", 240).branch("bcs", "item_reachable")
     a.abs("jmp", "item_passed")
 
     a.label("item_ahead")
     a.zp("lda", TMP_LO).imm("cmp", 140).branch("bcc", "item_reachable")
-    a.imm("lda", OFFSCREEN).zp("sta", ITEMY)  # still too far up the road
+    a.imm("lda", OFFSCREEN).zp("sta", ITEMY)
     a.op("rts")
 
     a.label("item_reachable")
     a.imm("lda", CENTRE).op("sec").zp("sbc", TMP_LO).zp("sta", ITEMY)
 
-    # Collect it by driving over it.
     a.zp("lda", ITEMX).op("sec").zp("sbc", PX).op("clc").imm("adc", 15)
     a.imm("cmp", 31).branch("bcs", "no_pickup")
     a.zp("lda", ITEMY).op("sec").imm("sbc", CENTRE).op("clc").imm("adc", 15)
@@ -393,31 +487,28 @@ def build_prg():
     a.op("rts")
 
     a.label("item_passed")
-    # Place the next one a good way up the road, in a random lane.
+    # Next box goes up the road, always somewhere on the tarmac.
     a.abs("jsr", "random")
-    a.imm("and", 0x7F).op("clc").imm("adc", 24).zp("sta", ITEMX)
-    a.zp("lda", PDIST_LO).op("clc").imm("adc", 200).zp("sta", ITEM_LO)
+    a.imm("and", 0x7F).op("clc").imm("adc", ROAD_LEFT + 8).zp("sta", ITEMX)
+    a.zp("lda", PDIST_LO).op("clc").imm("adc", 190).zp("sta", ITEM_LO)
     a.zp("lda", PDIST_HI).imm("adc", 0).zp("sta", ITEM_HI)
     a.imm("lda", OFFSCREEN).zp("sta", ITEMY)
     a.op("rts")
 
-    # ---- road markings ----------------------------------------------------
-    a.label("run_stripes")
+    # ---- centre-line dashes -----------------------------------------------
+    a.label("run_dashes")
     for i in range(STRIPES):
-        a.zp("lda", STRIPE + i).op("clc").zp("adc", PSPEED).op("clc").imm("adc", 2)
-        a.zp("sta", STRIPE + i)
-        a.imm("cmp", 232).branch("bcc", "stripe_ok_%d" % i)
+        a.zp("lda", STRIPE + i).op("clc").zp("adc", PSPEED)
+        a.op("clc").zp("adc", PSPEED).zp("sta", STRIPE + i)
+        a.imm("cmp", 232).branch("bcc", "dash_ok_%d" % i)
         a.imm("lda", 0).zp("sta", STRIPE + i)
-        a.label("stripe_ok_%d" % i)
+        a.label("dash_ok_%d" % i)
     a.op("rts")
 
     # ---- position ---------------------------------------------------------
-    # First place until proven otherwise; each rival further along bumps us down.
     a.label("standings")
     a.imm("lda", 1).zp("sta", POS)
     for i in range(RIVALS):
-        # 16-bit compare: subtract ours from theirs and read the carry.
-        # Carry set means they are level or further along, so we drop a place.
         a.zp("lda", RDIST_LO + i).zp("cmp", PDIST_LO)
         a.zp("lda", RDIST_HI + i).zp("sbc", PDIST_HI)
         a.branch("bcc", "behind_us_%d" % i)
@@ -454,8 +545,8 @@ def build_prg():
     a.zp("lda", ITEMY).abs("sta", OAM_ITEM + 0)
     a.zp("lda", ITEMX).abs("sta", OAM_ITEM + 3)
 
-    a.zp("lda", LAP).op("clc").imm("adc", 0x10).abs("sta", OAM_LAP + 1)
-    a.zp("lda", POS).op("clc").imm("adc", 0x10).abs("sta", OAM_POS + 1)
+    a.zp("lda", LAP).op("clc").imm("adc", DIGIT_BASE).abs("sta", OAM_LAP + 1)
+    a.zp("lda", POS).op("clc").imm("adc", DIGIT_BASE).abs("sta", OAM_POS + 1)
     a.op("rts")
 
     a.label("irq")
@@ -463,6 +554,10 @@ def build_prg():
 
     a.label("palette_data")
     a.byte(*PALETTE)
+    a.label("row_data")
+    a.byte(*ROW)
+    a.label("attr_data")
+    a.byte(*ATTR_ROW)
 
     code = a.link()
     return with_vectors(a, code), a.labels, len(code)

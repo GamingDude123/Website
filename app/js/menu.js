@@ -393,7 +393,7 @@
     {
       path: "games/kart-dash.nes",
       title: "Kart Dash",
-      blurb: "Three laps against three rivals. Grab a box for a boost, don't clip anyone.",
+      blurb: "Three laps on a real road. Hold B to drift for a turbo, keep off the grass.",
       core: "nes"
     }
   ];
