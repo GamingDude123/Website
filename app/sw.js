@@ -6,7 +6,7 @@
  *     cache-first runtime cache filled the first time you boot a game.
  */
 
-const SHELL_CACHE = "wii-arcade-shell-v10";
+const SHELL_CACHE = "wii-arcade-shell-v11";
 const CORE_CACHE = "wii-arcade-cores-v1";
 const CORE_ORIGIN = "https://cdn.emulatorjs.org";
 
@@ -48,6 +48,7 @@ const SHELL_ASSETS = [
   "./js/play.js",
   "./js/dolphin.js",
   "./manifest.webmanifest",
+  "./games/star-catcher.nes",
   "./icons/icon-192.png",
   "./icons/icon-512.png"
 ];
