@@ -268,11 +268,5 @@ const WiiUI = (function () {
   };
 })();
 
-/* Register the service worker so the menu works offline once installed. */
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {
-      /* Offline support is a bonus — a failed registration is not fatal. */
-    });
-  });
-}
+/* The service worker is registered by js/isolation.js, which picks the URL —
+   plain, or with the cross-origin isolation flag for the heavy cores. */

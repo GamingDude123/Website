@@ -6,9 +6,32 @@
  *     cache-first runtime cache filled the first time you boot a game.
  */
 
-const SHELL_CACHE = "wii-arcade-shell-v7";
+const SHELL_CACHE = "wii-arcade-shell-v9";
 const CORE_CACHE = "wii-arcade-cores-v1";
 const CORE_ORIGIN = "https://cdn.emulatorjs.org";
+
+/* Registered as sw.js?coi=1 when Heavy Systems is on. In that mode every
+   response is stamped with the cross-origin isolation headers on its way
+   through, which is what lets the threaded cores (PSP, 3DS, DOS) get a
+   SharedArrayBuffer on a static host. See js/isolation.js. */
+const COI = new URL(self.location.href).searchParams.get("coi") === "1";
+
+function isolate(response) {
+  if (!COI || !response) return response;
+  // An opaque response has no readable body or headers to copy, so it has to
+  // be passed through untouched; isolation may then block it.
+  if (response.type === "opaque" || response.type === "opaqueredirect") return response;
+
+  const headers = new Headers(response.headers);
+  headers.set("Cross-Origin-Opener-Policy", "same-origin");
+  headers.set("Cross-Origin-Embedder-Policy", "require-corp");
+  headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: headers
+  });
+}
 
 const SHELL_ASSETS = [
   "./",
@@ -18,6 +41,7 @@ const SHELL_ASSETS = [
   "./css/wii.css",
   "./js/store.js",
   "./js/systems.js",
+  "./js/isolation.js",
   "./js/wii-ui.js",
   "./js/music.js",
   "./js/menu.js",
@@ -68,13 +92,29 @@ self.addEventListener("fetch", (event) => {
             cache.put(request, response.clone());
           }
           return response;
-        }))
+        })).then(isolate)
       )
     );
     return;
   }
 
-  if (url.origin !== self.location.origin) return;
+  // Under isolation every cross-origin response needs a resource policy or the
+  // page refuses it. A no-cors response is opaque — unreadable, so nothing can
+  // be added to it — which is what a plain <script src="https://…"> produces.
+  // Reissuing in CORS mode gives a readable response that CORP can be stamped
+  // onto, which is how the emulator CDN keeps working while isolated.
+  // Outside isolation there is nothing to do and requests go straight out.
+  if (url.origin !== self.location.origin) {
+    if (!COI) return;
+    event.respondWith(
+      fetch(new Request(request.url, { mode: "cors", credentials: "omit" }))
+        .then(isolate)
+        // A host that sends no CORS headers can't be rescued; let the original
+        // request through and let the page decide what to do about it.
+        .catch(() => fetch(request))
+    );
+    return;
+  }
 
   // App shell: network-first so edits show up immediately, cache as backup.
   //
@@ -98,10 +138,10 @@ self.addEventListener("fetch", (event) => {
           const copy = response.clone();
           caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
         }
-        return response;
+        return isolate(response);
       })
-      .catch(() => caches.match(request).then(
-        (hit) => hit || caches.match("./index.html")
-      ))
+      .catch(() => caches.match(request)
+        .then((hit) => hit || caches.match("./index.html"))
+        .then(isolate))
   );
 });

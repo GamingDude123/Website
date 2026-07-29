@@ -150,6 +150,8 @@
       window.EJS_alignStartButton = "center";
       window.EJS_startButtonName = "Start " + game.title;
       window.EJS_askBeforeExit = false;
+      // The threaded cores refuse to start unless this matches reality.
+      window.EJS_threads = Isolation.active;
 
       if (bios && bios.blob) {
         window.EJS_biosUrl = asFile(bios.blob, bios.filename || "bios.bin");
@@ -160,7 +162,9 @@
         startPlaytime();
         // Hand the screen over to the game; the bar comes back on demand.
         setTimeout(hideBar, 3500);
-        if (system && system.heavy) {
+        if (system && system.warning) {
+          WiiUI.toast(system.warning, 6000);
+        } else if (system && system.heavy) {
           WiiUI.toast("Heavy system — if it stutters, try the emulator's settings menu", 4200);
         } else if (window.innerHeight > window.innerWidth) {
           WiiUI.toast("Turn your phone sideways for a bigger screen", 3200);

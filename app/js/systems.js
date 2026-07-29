@@ -1,13 +1,17 @@
 /* Shown at the bottom of Settings. Bump it with any change worth telling a
    device apart by — it is the quickest way to know whether a phone is running
    the current copy or a stale cached one. */
-const APP_VERSION = "6";
+const APP_VERSION = "7";
 
 /* Console definitions.
  *
- * `core` values are EmulatorJS system keys (see its consts.js). Systems whose
- * cores require SharedArrayBuffer — PSP, DOS, 3DS — are deliberately absent:
- * they need COOP/COEP response headers, and GitHub Pages cannot send those.
+ * `core` values are EmulatorJS system keys (see its consts.js).
+ *
+ * Systems marked `isolated` need SharedArrayBuffer, which the browser only
+ * hands out to a cross-origin isolated page — normally impossible on GitHub
+ * Pages, since that needs COOP/COEP response headers a static host won't send.
+ * The service worker synthesises those headers when Heavy Systems is switched
+ * on in Settings, so these appear only in that mode. See js/isolation.js.
  */
 
 const SYSTEMS = [
@@ -90,8 +94,32 @@ const SYSTEMS = [
     core: "arcade", name: "Arcade (FinalBurn Neo)", short: "Arcade",
     ext: [],
     art: ["#7c3aed", "#3b1d8f"]
+  },
+
+  /* ---- Heavy systems: only offered when isolation is active ------------- */
+  {
+    core: "psp", name: "PlayStation Portable", short: "PSP",
+    ext: ["cso", "pbp"],
+    art: ["#334155", "#0b1220"], heavy: true, isolated: true
+  },
+  {
+    core: "3ds", name: "Nintendo 3DS", short: "3DS",
+    ext: ["3ds", "cci", "cxi", "app", "3dsx"],
+    art: ["#dc2626", "#7f1d1d"], heavy: true, isolated: true,
+    warning: "3DS emulation is extremely demanding. Expect it to be slow — " +
+      "possibly too slow to play — even on a fast phone."
+  },
+  {
+    core: "dos", name: "MS-DOS", short: "DOS",
+    ext: ["exe", "com", "bat", "jsdos"],
+    art: ["#3f3f46", "#18181b"], isolated: true
   }
 ];
+
+/* Systems that can be picked right now, given the current isolation state. */
+function availableSystems() {
+  return SYSTEMS.filter((sys) => !sys.isolated || Isolation.active);
+}
 
 /* Files Dolphin handles. These can't run in a browser at any speed, so the
    menu diverts them to the Dolphin Command Center shelf instead. */
@@ -119,7 +147,13 @@ function detectSystem(filename, size) {
   if (DOLPHIN_EXT.indexOf(ext) !== -1) return { kind: "dolphin" };
   if (ext === "iso" && size > WII_ISO_MIN_BYTES) return { kind: "dolphin" };
   for (const sys of SYSTEMS) {
-    if (sys.ext.indexOf(ext) !== -1) return { kind: "system", system: sys };
+    if (sys.ext.indexOf(ext) === -1) continue;
+    // Recognised, but its core needs Heavy Systems switched on first. Say so
+    // rather than pretending the file is unknown.
+    if (sys.isolated && !Isolation.active) {
+      return { kind: "needs-isolation", system: sys };
+    }
+    return { kind: "system", system: sys };
   }
   return { kind: "unknown" };
 }

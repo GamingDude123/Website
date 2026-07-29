@@ -16,7 +16,9 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap">
+  <!-- The web font is attached by js/isolation.js instead of a <link> here: a
+       stylesheet blocks script execution while it loads, so an unreachable font
+       host would stall the app, and isolated sessions skip it entirely. -->
   <link rel="stylesheet" href="css/wii.css">
 </head>
 <body>
@@ -95,6 +97,7 @@
        has no UTI for, which is most ROM formats. See js/systems.js. -->
   <input type="file" id="file-input" class="hidden" multiple>
 
+  <script src="js/isolation.js"></script>
   <script src="js/systems.js"></script>
   <script src="js/store.js"></script>
   <script src="js/wii-ui.js"></script>
