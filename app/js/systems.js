@@ -1,3 +1,8 @@
+/* Shown at the bottom of Settings. Bump it with any change worth telling a
+   device apart by — it is the quickest way to know whether a phone is running
+   the current copy or a stale cached one. */
+const APP_VERSION = "5";
+
 /* Console definitions.
  *
  * `core` values are EmulatorJS system keys (see its consts.js). Systems whose

@@ -6,7 +6,7 @@
  *     cache-first runtime cache filled the first time you boot a game.
  */
 
-const SHELL_CACHE = "wii-arcade-shell-v5";
+const SHELL_CACHE = "wii-arcade-shell-v6";
 const CORE_CACHE = "wii-arcade-cores-v1";
 const CORE_ORIGIN = "https://cdn.emulatorjs.org";
 
@@ -77,8 +77,22 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   // App shell: network-first so edits show up immediately, cache as backup.
+  //
+  // The request is reissued with cache: "no-cache" so it is revalidated
+  // against the server. Plain fetch() inside a worker may be answered from
+  // the browser's own HTTP cache, and GitHub Pages sends max-age=600 — which
+  // meant a fix could sit invisible on the device for ten minutes after
+  // deploying, looking exactly like the fix had not worked.
+  const fresh = new Request(request.url, {
+    cache: "no-cache",
+    credentials: "same-origin",
+    headers: request.headers,
+    mode: request.mode === "navigate" ? "same-origin" : request.mode,
+    redirect: "follow"
+  });
+
   event.respondWith(
-    fetch(request)
+    fetch(fresh)
       .then((response) => {
         if (response && response.ok) {
           const copy = response.clone();
