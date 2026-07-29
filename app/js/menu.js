@@ -379,6 +379,47 @@
     });
   }
 
+  /* ---------- The bundled game -------------------------------------------- */
+
+  /* Star Catcher is an original NES game written for this app, so there is
+     always something to play without going and finding a ROM first. */
+  const SAMPLE = {
+    path: "games/star-catcher.nes",
+    title: "Star Catcher",
+    core: "nes"
+  };
+
+  function addSampleGame() {
+    return Games.all().then((games) => {
+      const existing = games.filter((game) => game.title === SAMPLE.title)[0];
+      if (existing) {
+        startGame(existing);
+        return;
+      }
+      const working = WiiUI.busy("Loading Star Catcher…");
+      return fetch(SAMPLE.path)
+        .then((response) => {
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          return response.blob();
+        })
+        .then((blob) => Games.add(
+          new File([blob], "Star Catcher.nes", { type: "application/octet-stream" }),
+          SAMPLE.core
+        ))
+        .then((record) => refresh().then(() => {
+          working.close();
+          WiiUI.feedback("insert", [10, 30, 10]);
+          startGame(record);
+        }))
+        .catch((err) => {
+          working.close();
+          WiiUI.play("error");
+          WiiUI.toast("Couldn't load the built-in game: " +
+            (err && err.message ? err.message : "unknown error"), 4200);
+        });
+    });
+  }
+
   /* ---------- First run --------------------------------------------------- */
 
   function showWelcome() {
@@ -392,14 +433,21 @@
       "automatically.<br>" +
       "<strong>3.</strong> Add this page to your home screen and it runs " +
       "fullscreen, offline, with its own icon.</p>" +
-      "<p class='muted'>No games come with the app and none are downloaded — it " +
-      "plays files you add yourself, and they never leave your phone.</p>" +
+      "<p class='muted'>There's one game built in — <strong>Star Catcher</strong>, " +
+      "written for this app — so you can try it right now. Everything else you " +
+      "add yourself, and those files never leave your phone.</p>" +
       '<div class="panel-actions">' +
-        '<button class="wii-btn is-wide is-primary" data-add>Add my first game</button>' +
+        '<button class="wii-btn is-wide is-primary" data-play>▶ Play Star Catcher</button>' +
+        '<button class="wii-btn" data-add>Add my own game</button>' +
         '<button class="wii-btn" data-close>Look around</button>' +
       "</div>",
       { dismissable: false, noAutofocus: true }
     );
+    modal.el.querySelector("[data-play]").addEventListener("click", () => {
+      WiiUI.feedback("click");
+      modal.close();
+      addSampleGame();
+    });
     modal.el.querySelector("[data-add]").addEventListener("click", () => {
       WiiUI.feedback("click");
       modal.close();
@@ -455,6 +503,7 @@
         '<ul class="file-list">' + rows + "</ul>" +
         '<div class="panel-actions">' +
           '<button class="wii-btn is-wide is-primary" data-add>Add a game</button>' +
+          '<button class="wii-btn" data-sample>▶ Star Catcher</button>' +
           '<button class="wii-btn" data-close>Close</button>' +
         "</div>"
       );
@@ -462,6 +511,11 @@
         WiiUI.feedback("click");
         modal.close();
         fileInput.click();
+      });
+      modal.el.querySelector("[data-sample]").addEventListener("click", () => {
+        WiiUI.feedback("click");
+        modal.close();
+        addSampleGame();
       });
     });
   }
