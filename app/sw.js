@@ -6,7 +6,7 @@
  *     cache-first runtime cache filled the first time you boot a game.
  */
 
-const SHELL_CACHE = "wii-arcade-shell-v6";
+const SHELL_CACHE = "wii-arcade-shell-v7";
 const CORE_CACHE = "wii-arcade-cores-v1";
 const CORE_ORIGIN = "https://cdn.emulatorjs.org";
 

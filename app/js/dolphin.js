@@ -4,9 +4,11 @@
  * library, keeps per-game Dolphin settings where you can actually find them,
  * and hands off to the real emulator. */
 
-(function () {
+const DolphinView = (function () {
   const esc = WiiUI.escapeHtml;
   const shelfEl = document.getElementById("shelf");
+  const viewEl = document.getElementById("view-dolphin");
+  const menuEl = document.getElementById("view-menu");
 
   const DOLPHIN_PACKAGE = "org.dolphinemu.dolphinemu";
   const PLAY_STORE = "https://play.google.com/store/apps/details?id=" + DOLPHIN_PACKAGE;
@@ -298,7 +300,7 @@
 
   document.getElementById("btn-home").addEventListener("click", () => {
     WiiUI.feedback("back");
-    location.href = "index.html";
+    hide();
   });
 
   document.getElementById("btn-guide").addEventListener("click", () => {
@@ -322,5 +324,38 @@
     render();
   });
 
-  refresh();
+  function show() {
+    menuEl.hidden = true;
+    viewEl.hidden = false;
+    window.scrollTo(0, 0);
+    if (location.hash !== "#dolphin") location.hash = "#dolphin";
+    return refresh();
+  }
+
+  function hide() {
+    viewEl.hidden = true;
+    menuEl.hidden = false;
+    window.scrollTo(0, 0);
+    if (location.hash === "#dolphin") {
+      // Replace rather than push, so Back doesn't bounce straight back in.
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
+
+  // Deep links and the Back gesture both route through the hash.
+  window.addEventListener("hashchange", () => {
+    if (location.hash === "#dolphin") {
+      if (viewEl.hidden) show();
+    } else if (!viewEl.hidden) {
+      hide();
+    }
+  });
+
+  if (location.hash === "#dolphin") {
+    show();
+  } else {
+    refresh();
+  }
+
+  return { show: show, hide: hide, refresh: refresh };
 })();
