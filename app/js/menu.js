@@ -64,6 +64,14 @@
     }));
 
     grid.appendChild(tile({
+      art: gradient(["#9bbc0f", "#0f380f"]),
+      glyph: "📷",
+      label: "Photo Channel",
+      sub: "game boy camera",
+      onOpen: () => PhotoView.show()
+    }));
+
+    grid.appendChild(tile({
       art: gradient(["#3b82f6", "#0b3f8f"]),
       glyph: "🐬",
       label: "Dolphin Center",
@@ -470,6 +478,9 @@
       "<strong>Kart Dash</strong>, both written for this app — so you can play " +
       "right now. Everything else you add yourself, and those files never leave " +
       "your phone.</p>" +
+      "<p class='muted'>There's a <strong>Photo Channel</strong> too: your " +
+      "camera shooting 128 × 112 pictures in four shades, like a Game Boy " +
+      "Camera.</p>" +
       '<div class="panel-actions">' +
         '<button class="wii-btn is-wide is-primary" data-play>▶ Play a built-in game</button>' +
         '<button class="wii-btn" data-add>Add my own game</button>' +
@@ -790,7 +801,11 @@
   requestPersistentStorage();
 
   refresh().then(() => Settings.get("seen-welcome", false)).then((seen) => {
-    if (!seen) showWelcome();
+    // A deep link straight to another channel has already opened that view,
+    // and often its own first-run panel. Stacking the welcome on top of it
+    // leaves two dialogs fighting for the same tap, so let it wait until the
+    // menu is actually what's on screen.
+    if (!seen && !location.hash) showWelcome();
   });
 
   // Re-render on rotation so the row padding matches the new column count.

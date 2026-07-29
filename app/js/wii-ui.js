@@ -41,7 +41,13 @@ const WiiUI = (function () {
     back: () => { tone(700, 0, 0.1, 0.1); tone(480, 0.05, 0.14, 0.08); },
     boot: () => { tone(660, 0, 0.14, 0.1); tone(880, 0.09, 0.14, 0.1); tone(1320, 0.18, 0.28, 0.09); },
     insert: () => { tone(520, 0, 0.12, 0.09); tone(780, 0.08, 0.2, 0.09); },
-    error: () => { tone(320, 0, 0.16, 0.11, "triangle"); tone(240, 0.12, 0.22, 0.1, "triangle"); }
+    error: () => { tone(320, 0, 0.16, 0.11, "triangle"); tone(240, 0.12, 0.22, 0.1, "triangle"); },
+    // Two-stage mechanical clack: mirror up, shutter down.
+    shutter: () => {
+      tone(2400, 0, 0.025, 0.1, "square");
+      tone(1500, 0.03, 0.035, 0.09, "square");
+      tone(620, 0.075, 0.09, 0.07, "triangle");
+    }
   };
 
   function play(name) {

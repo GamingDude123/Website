@@ -5,7 +5,7 @@
  */
 
 const DB_NAME = "wii-channel-arcade";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise = null;
 
@@ -26,6 +26,11 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains("settings")) {
         db.createObjectStore("settings", { keyPath: "key" });
+      }
+      // Added in version 2, for the Photo Channel. The guards above mean an
+      // existing library upgrades in place rather than being rebuilt.
+      if (!db.objectStoreNames.contains("photos")) {
+        db.createObjectStore("photos", { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -187,6 +192,52 @@ const Shelf = {
 
   remove(id) {
     return tx("shelf", "readwrite", (store) => store.delete(id));
+  }
+};
+
+/* ---------- Photo Channel album ------------------------------------------ */
+
+/* A photo is stored as its 128×112 shade indices — one byte per pixel, values
+   0–3 — rather than as an encoded image. That's 14 KB raw, it never loses
+   anything to re-encoding, and it means the palette is a display choice that
+   can be changed long after the shot was taken. */
+const Photos = {
+  add(entry) {
+    const record = Object.assign({
+      id: newId(),
+      created: Date.now(),
+      width: 128,
+      height: 112,
+      palette: "dmg",
+      frame: "none"
+    }, entry);
+    return tx("photos", "readwrite", (store) => store.put(record)).then(() => record);
+  },
+
+  /* Newest first — an album is read backwards from the last shot. */
+  all() {
+    return tx("photos", "readonly", (store) => store.getAll())
+      .then((rows) => (rows || []).sort((a, b) => b.created - a.created));
+  },
+
+  count() {
+    return tx("photos", "readonly", (store) => store.count()).then((n) => n || 0);
+  },
+
+  update(id, patch) {
+    return tx("photos", "readonly", (store) => store.get(id)).then((record) => {
+      if (!record) return null;
+      Object.assign(record, patch);
+      return tx("photos", "readwrite", (store) => store.put(record)).then(() => record);
+    });
+  },
+
+  remove(id) {
+    return tx("photos", "readwrite", (store) => store.delete(id));
+  },
+
+  clear() {
+    return tx("photos", "readwrite", (store) => store.clear());
   }
 };
 

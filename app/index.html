@@ -93,9 +93,55 @@
     </nav>
   </div>
 
+  <div class="view" id="view-photo" hidden>
+    <header class="dc-head">
+      <button class="wii-btn is-small" id="pc-back">◀</button>
+      <h1>Photo Channel</h1>
+      <button class="wii-btn is-small" id="pc-import" title="Use a picture you already have">Import</button>
+    </header>
+
+    <main class="pc-wrap">
+      <div class="pc-screen">
+        <!-- The canvas really is 128 × 112. CSS blows it up with nearest
+             neighbour, so every pixel stays a hard square. -->
+        <canvas id="pc-canvas" width="128" height="112" aria-label="Camera preview"></canvas>
+        <div class="pc-flash" id="pc-flash" aria-hidden="true"></div>
+        <div class="pc-count" id="pc-count" aria-hidden="true"></div>
+        <div class="pc-status" id="pc-status" role="status" hidden></div>
+      </div>
+
+      <div class="pc-rail" id="pc-palettes" aria-label="Palette"></div>
+      <div class="pc-rail" id="pc-frames" aria-label="Frame"></div>
+
+      <div class="pc-sliders">
+        <label class="pc-slider">Bright
+          <input type="range" id="pc-bright" min="-90" max="90" step="1" value="0">
+        </label>
+        <label class="pc-slider">Contrast
+          <input type="range" id="pc-contrast" min="50" max="260" step="1" value="120">
+        </label>
+        <label class="pc-slider">Dither
+          <input type="range" id="pc-dither" min="0" max="110" step="1" value="64">
+        </label>
+      </div>
+    </main>
+
+    <nav class="wii-bottombar">
+      <button class="wii-btn" id="pc-flip">Flip<span class="btn-sub">camera</span></button>
+      <button class="wii-btn is-shutter" id="pc-shoot" aria-label="Take a photo">
+        <span class="shutter-ring"></span>
+      </button>
+      <button class="wii-btn" id="pc-gallery">Album<span class="btn-sub" id="pc-gallery-sub">empty</span></button>
+    </nav>
+  </div>
+
   <!-- No `accept` list on purpose: iOS greys out files whose extensions it
        has no UTI for, which is most ROM formats. See js/systems.js. -->
   <input type="file" id="file-input" class="hidden" multiple>
+
+  <!-- Pictures are the one case where `accept` is safe: iOS has UTIs for
+       every image type, so the picker doesn't grey anything out. -->
+  <input type="file" id="photo-input" class="hidden" accept="image/*">
 
   <script src="js/isolation.js"></script>
   <script src="js/systems.js"></script>
@@ -103,6 +149,7 @@
   <script src="js/wii-ui.js"></script>
   <script src="js/music.js"></script>
   <script src="js/dolphin.js"></script>
+  <script src="js/photo.js"></script>
   <script src="js/menu.js"></script>
 </body>
 </html>
