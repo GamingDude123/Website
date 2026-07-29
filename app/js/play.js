@@ -70,6 +70,28 @@
     }
   });
 
+  function smoothMode() {
+    return localStorage.getItem("wii-smooth") !== "off";
+  }
+
+  /* ---------- Keeping the screen awake ------------------------------------ */
+
+  /* A game is long stretches without a touch, so the screen dims and the phone
+     starts throttling — which reads as the emulator stuttering. */
+  let wakeLock = null;
+
+  function requestWakeLock() {
+    if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+    navigator.wakeLock.request("screen")
+      .then((lock) => { wakeLock = lock; })
+      .catch(() => { /* denied or unsupported; not worth surfacing */ });
+  }
+
+  // The lock is dropped whenever the page is backgrounded, so retake it.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && playStartedAt) requestWakeLock();
+  });
+
   /* ---------- Play time -------------------------------------------------- */
 
   /* Written every 30s and whenever the page is hidden, because a write started
@@ -153,6 +175,14 @@
       // The threaded cores refuse to start unless this matches reality.
       window.EJS_threads = Isolation.active;
 
+      /* Smooth mode: start the demanding cores at their cheapest settings —
+         native resolution, no texture filtering, JIT on. These are defaults,
+         so anything changed in the emulator's own settings menu still wins,
+         and turning smooth mode off hands the core back its own defaults. */
+      if (smoothMode() && system && system.perf) {
+        window.EJS_defaultOptions = system.perf;
+      }
+
       if (bios && bios.blob) {
         window.EJS_biosUrl = asFile(bios.blob, bios.filename || "bios.bin");
       }
@@ -160,6 +190,7 @@
       window.EJS_onGameStart = () => {
         statusEl.remove();
         startPlaytime();
+        requestWakeLock();
         // Hand the screen over to the game; the bar comes back on demand.
         setTimeout(hideBar, 3500);
         if (system && system.warning) {

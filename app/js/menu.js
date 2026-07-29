@@ -502,6 +502,13 @@
             "unaffected.</p>"
           : "") +
 
+        '<label class="toggle"><input type="checkbox" data-smooth' +
+        (localStorage.getItem("wii-smooth") !== "off" ? " checked" : "") +
+        "><span>Smooth mode</span></label>" +
+        '<p class="muted">Starts the demanding systems at their lightest ' +
+        "settings — native resolution, no texture filtering, one screen for 3DS. " +
+        "Turn it off for sharper visuals on games that can spare the speed.</p>" +
+
         "<h3>Music</h3>" +
         '<p class="muted">Playing now: <strong>' +
         esc(WiiMusic.customName() || "the built-in tune") + "</strong><br>" +
@@ -551,6 +558,13 @@
       modal.el.querySelector("[data-haptics]").addEventListener("change", (event) => {
         WiiUI.setHaptics(event.target.checked);
         WiiUI.buzz();
+      });
+      modal.el.querySelector("[data-smooth]").addEventListener("change", (event) => {
+        localStorage.setItem("wii-smooth", event.target.checked ? "on" : "off");
+        WiiUI.play("click");
+        WiiUI.toast(event.target.checked
+          ? "Smooth mode on — applies next time a game starts"
+          : "Smooth mode off — sharper, but slower");
       });
       modal.el.querySelector("[data-isolation]").addEventListener("change", (event) => {
         WiiUI.play("click");

@@ -1,7 +1,7 @@
 /* Shown at the bottom of Settings. Bump it with any change worth telling a
    device apart by — it is the quickest way to know whether a phone is running
    the current copy or a stale cached one. */
-const APP_VERSION = "7";
+const APP_VERSION = "8";
 
 /* Console definitions.
  *
@@ -100,14 +100,37 @@ const SYSTEMS = [
   {
     core: "psp", name: "PlayStation Portable", short: "PSP",
     ext: ["cso", "pbp"],
-    art: ["#334155", "#0b1220"], heavy: true, isolated: true
+    art: ["#334155", "#0b1220"], heavy: true, isolated: true,
+    /* Smooth-mode defaults for PPSSPP. Option names and values taken from the
+       core's own libretro_core_options.h, not guessed. */
+    perf: {
+      ppsspp_internal_resolution: "480x272",   // native; upscaling is the big cost
+      ppsspp_cpu_core: "JIT",
+      ppsspp_texture_scaling_level: "disabled",
+      ppsspp_texture_filtering: "Nearest",
+      ppsspp_texture_anisotropic_filtering: "disabled",
+      ppsspp_spline_quality: "Low",
+      ppsspp_frameskip: "1"                    // drop a frame rather than stutter
+    }
   },
   {
     core: "3ds", name: "Nintendo 3DS", short: "3DS",
     ext: ["3ds", "cci", "cxi", "app", "3dsx"],
     art: ["#dc2626", "#7f1d1d"], heavy: true, isolated: true,
-    warning: "3DS emulation is extremely demanding. Expect it to be slow — " +
-      "possibly too slow to play — even on a fast phone."
+    warning: "3DS is the heaviest thing here. Smooth mode is on — if it still " +
+      "crawls, that's the console being emulated, not a setting.",
+    /* Option names and values from the Citra libretro core's own definitions.
+       The single-screen layout is the biggest win: the 3DS renders two. */
+    perf: {
+      citra_resolution_factor: "1x (Native)",
+      citra_layout_option: "Single Screen Only",
+      citra_use_hw_shaders: "enabled",
+      citra_use_shader_jit: "enabled",
+      citra_use_cpu_jit: "enabled",
+      citra_use_acc_mul: "disabled",           // accuracy costs more than it gives
+      citra_use_acc_geo_shaders: "disabled",
+      citra_texture_filter: "none"
+    }
   },
   {
     core: "dos", name: "MS-DOS", short: "DOS",
