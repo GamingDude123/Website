@@ -261,6 +261,8 @@ const WiiUI = (function () {
     escapeHtml: escapeHtml,
     setSound: setSound,
     setHaptics: setHaptics,
+    // Shared so the music loop mixes into the same context as the menu blips.
+    audioContext: ctx,
     get soundOn() { return soundOn; },
     get hapticsOn() { return hapticsOn; }
   };

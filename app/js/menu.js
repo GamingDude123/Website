@@ -454,8 +454,22 @@
 
         '<label class="toggle"><input type="checkbox" data-sound' +
         (WiiUI.soundOn ? " checked" : "") + "><span>Menu sounds</span></label>" +
+        '<label class="toggle"><input type="checkbox" data-music' +
+        (WiiMusic.enabled ? " checked" : "") + "><span>Menu music</span></label>" +
         '<label class="toggle"><input type="checkbox" data-haptics' +
         (WiiUI.hapticsOn ? " checked" : "") + "><span>Vibration</span></label>" +
+
+        "<h3>Music</h3>" +
+        '<p class="muted">Playing now: <strong>' +
+        esc(WiiMusic.customName() || "the built-in tune") + "</strong><br>" +
+        "You can use any music file from your phone instead. It stays on this " +
+        "device — nothing is uploaded, and no music ships with the app.</p>" +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px">' +
+          '<button class="wii-btn" data-music-file>Use my own music</button>' +
+          (WiiMusic.customName()
+            ? '<button class="wii-btn" data-music-reset>Back to built-in</button>'
+            : "") +
+        "</div>" +
 
         "<h3>BIOS files</h3>" +
         '<p class="muted">PlayStation and Lynx games need a BIOS file from your ' +
@@ -484,10 +498,29 @@
         WiiUI.setSound(event.target.checked);
         WiiUI.play("click");
       });
+      modal.el.querySelector("[data-music]").addEventListener("change", (event) => {
+        WiiMusic.setEnabled(event.target.checked);
+        WiiUI.play("click");
+      });
       modal.el.querySelector("[data-haptics]").addEventListener("change", (event) => {
         WiiUI.setHaptics(event.target.checked);
         WiiUI.buzz();
       });
+      modal.el.querySelector("[data-music-file]").addEventListener("click", () => {
+        WiiUI.feedback("click");
+        modal.close();
+        chooseMusic();
+      });
+      const musicReset = modal.el.querySelector("[data-music-reset]");
+      if (musicReset) {
+        musicReset.addEventListener("click", () => {
+          WiiUI.feedback("click");
+          WiiMusic.clearCustomTrack().then(() => {
+            modal.close();
+            WiiUI.toast("Back to the built-in tune");
+          });
+        });
+      }
       modal.el.querySelector("[data-bios]").addEventListener("click", () => {
         WiiUI.feedback("click");
         modal.close();
@@ -497,6 +530,34 @@
         WiiUI.feedback("click");
         modal.close();
         showWelcome();
+      });
+    });
+  }
+
+  function chooseMusic() {
+    const modal = WiiUI.panel(
+      "<h2>Use your own music</h2>" +
+      '<p class="muted">Pick any music file on your phone — mp3, m4a, wav or ' +
+      "ogg. It loops quietly behind the menu and is stored on this device only.</p>" +
+      '<label class="field">Music file<input type="file" accept="audio/*" data-file></label>' +
+      '<div class="panel-actions">' +
+        '<button class="wii-btn is-primary" data-save>Use this track</button>' +
+        '<button class="wii-btn" data-close>Cancel</button>' +
+      "</div>"
+    );
+    modal.el.querySelector("[data-save]").addEventListener("click", () => {
+      const file = modal.el.querySelector("[data-file]").files[0];
+      if (!file) {
+        WiiUI.play("error");
+        return;
+      }
+      WiiUI.feedback("click");
+      WiiMusic.setCustomTrack(file).then(() => {
+        modal.close();
+        WiiUI.toast("Now playing “" + prettyTitle(file.name) + "”");
+      }).catch(() => {
+        WiiUI.play("error");
+        WiiUI.toast("Couldn't save that music file", 3600);
       });
     });
   }
