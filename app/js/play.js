@@ -74,6 +74,26 @@
     return localStorage.getItem("wii-smooth") !== "off";
   }
 
+  /* Safety net. If the emulator ever puts up its "has exited" notice — from a
+     path we haven't hidden, or because its exit event didn't reach us — the
+     screen is dead and there is nothing to go back to. Spot it and leave. */
+  function watchForStrandedExit() {
+    const host = document.getElementById("game");
+    if (!host || !window.MutationObserver) return;
+
+    const observer = new MutationObserver(() => {
+      const popup = host.querySelector(".ejs_popup_container");
+      if (!popup) return;
+      const heading = popup.querySelector("h4");
+      if (heading && /exit/i.test(heading.textContent || "")) {
+        observer.disconnect();
+        clearInterval(flushTimer);
+        goBack();
+      }
+    });
+    observer.observe(host, { childList: true, subtree: true });
+  }
+
   /* ---------- Keeping the screen awake ------------------------------------ */
 
   /* A game is long stretches without a touch, so the screen dims and the phone
@@ -172,6 +192,12 @@
       window.EJS_alignStartButton = "center";
       window.EJS_startButtonName = "Start " + game.title;
       window.EJS_askBeforeExit = false;
+
+      /* Hide the emulator's own "Exit EmulatorJS" item. It replaces the screen
+         with an "EmulatorJS has exited" notice and leaves you stranded there if
+         its exit event doesn't reach us. The ◀ Menu button in the bar above is
+         ours and always works, so there is one way out rather than two. */
+      window.EJS_Buttons = { exitEmulation: false };
       // The threaded cores refuse to start unless this matches reality.
       window.EJS_threads = Isolation.active;
 
@@ -206,6 +232,8 @@
         clearInterval(flushTimer);
         goBack();
       };
+
+      watchForStrandedExit();
 
       const script = document.createElement("script");
       script.src = CDN + "loader.js";
