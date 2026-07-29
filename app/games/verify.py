@@ -94,33 +94,33 @@ for start, button, expect, name in [(200, 0x04, 206, "bottom"), (20, 0x08, 8, "t
 # ==========================================================================
 print("\n=== kart-dash.nes ===")
 # ==========================================================================
-KPX = 0x10
-KRX, KRY, KRS = 0x12, 0x15, 0x18
-KONES, KTENS = 0x1B, 0x1C
-KSTRIPE = 0x20
-PLAYER_Y = 184
-OAM_PLAYER, OAM_RIVAL, OAM_STRIPE = 0x00, 0x10, 0x40
+KPX, KPSPEED, KBOOST, KSPIN = 0x10, 0x11, 0x12, 0x13
+PDIST_LO, PDIST_HI = 0x14, 0x15
+KRX, KRSPEED = 0x16, 0x19
+RDIST_LO, RDIST_HI = 0x1C, 0x1F
+KITEMX, KITEM_LO, KITEM_HI = 0x22, 0x23, 0x24
+KLAP, KPOS = 0x25, 0x26
+KSTRIPE = 0x2A
+KFINISHED = 0x30
+KRY, KITEMY = 0x31, 0x34
+CENTRE, OFFSCREEN = 150, 250
+OAM_PLAYER, OAM_RIVAL, OAM_STRIPE, OAM_ITEM = 0x00, 0x10, 0x40, 0x50
+OAM_LAP, OAM_POS = 0x54, 0x58
 
 kart = load("kart-dash.nes")
 check("NMI enabled", kart.ppuctrl, 0x80)
-check("rendering enabled", kart.ppumask, 0x1E)
 check("player is red", kart.palette[17], 0x16)
 check("rivals are blue", kart.palette[21], 0x11)
-check("markings are white", kart.palette[25], 0x30)
-check("player starts centred", kart.ram[KPX], 120)
-check("three rivals, three speeds",
-      [kart.ram[KRS + i] for i in range(3)], [2, 3, 4])
+check("starts on lap 1 in 1st", (kart.ram[KLAP], kart.ram[KPOS]), (1, 1))
+check("starts at base speed", kart.ram[KPSPEED], 2)
 
 kart.run_nmi()
 kart.run_nmi()
-check("player sits at the bottom", kart.oam[OAM_PLAYER + 0], PLAYER_Y)
-check("player drawn as a kart",
-      [kart.oam[OAM_PLAYER + q * 4 + 1] for q in range(4)], [0x01, 0x02, 0x03, 0x04])
-check("rivals use the second palette", kart.oam[OAM_RIVAL + 2], 1)
-check("markings run down the centre", kart.oam[OAM_STRIPE + 3], 124)
-check("markings use the stripe tile", kart.oam[OAM_STRIPE + 1], 0x05)
+check("player sits at the centre row", kart.oam[OAM_PLAYER], CENTRE)
+check("item box uses its own palette", kart.oam[OAM_ITEM + 2], 3)
+check("HUD shows lap as a digit", kart.oam[OAM_LAP + 1], 0x11)
 
-# Steering: three pixels a frame.
+# Steering.
 kart.buttons = 0x01
 for _ in range(10):
     kart.run_nmi()
@@ -129,67 +129,98 @@ kart.buttons = 0x02
 for _ in range(20):
     kart.run_nmi()
 check("steers left", kart.ram[KPX], 90)
-
-for start, button, limit, name in [(222, 0x01, 227, "right"), (20, 0x02, 240, "left")]:
-    kart.ram[KPX] = start
-    kart.buttons = button
-    for _ in range(20):
-        kart.run_nmi()
-    check("stays on the road at the %s edge" % name,
-          0 < kart.ram[KPX] <= limit, True)
-
-# Rivals come down the road and loop back to the top.
 kart.buttons = 0x00
+
+# Distance accumulates as a 16-bit value and drives the lap counter.
+before = (kart.ram[PDIST_HI] << 8) | kart.ram[PDIST_LO]
+kart.run_nmi()
+after = (kart.ram[PDIST_HI] << 8) | kart.ram[PDIST_LO]
+check("distance advances by the speed", after - before, kart.ram[KPSPEED])
+
+kart.ram[PDIST_HI] = 8          # one lap in
+kart.run_nmi()
+check("lap 2 after 8 high-bytes", kart.ram[KLAP], 2)
+kart.ram[PDIST_HI] = 16
+kart.run_nmi()
+check("lap 3 after 16", kart.ram[KLAP], 3)
+
+# A rival further along should sit higher up the screen than one behind.
+kart.ram[PDIST_LO], kart.ram[PDIST_HI] = 100, 4
+kart.ram[RDIST_LO], kart.ram[RDIST_HI] = 140, 4          # 40 ahead
+kart.ram[RDIST_LO + 1], kart.ram[RDIST_HI + 1] = 60, 4   # 40 behind
+kart.ram[KRX], kart.ram[KRX + 1] = 30, 40                # clear of the player
+kart.ram[KPX] = 200
+kart.ram[KRSPEED] = kart.ram[KRSPEED + 1] = 0            # hold them still
+kart.run_nmi()
+check("a rival ahead is drawn higher", kart.ram[KRY] < CENTRE, True)
+check("a rival behind is drawn lower", kart.ram[KRY + 1] > CENTRE, True)
+# The player advances during the frame, so the gaps shift by the speed —
+# but they stay symmetric about the new position, 80 units apart.
+check("gaps stay symmetric about the player",
+      (CENTRE - kart.ram[KRY]) + (kart.ram[KRY + 1] - CENTRE), 80)
+
+# Far away in either direction, they are parked off screen.
+kart.ram[RDIST_LO], kart.ram[RDIST_HI] = 100, 6          # 512 ahead
+kart.run_nmi()
+check("a distant rival is hidden", kart.ram[KRY], OFFSCREEN)
+
+# Position: each rival further along costs a place.
+kart.ram[PDIST_LO], kart.ram[PDIST_HI] = 0, 4
+for i in range(3):
+    kart.ram[RDIST_LO + i], kart.ram[RDIST_HI + i] = 0, 2      # all behind
+kart.run_nmi()
+check("leading the field is 1st", kart.ram[KPOS], 1)
+
+kart.ram[RDIST_HI] = 6                                         # one gets ahead
+kart.run_nmi()
+check("one rival ahead is 2nd", kart.ram[KPOS], 2)
+kart.ram[RDIST_HI + 1] = 6
+kart.ram[RDIST_HI + 2] = 6
+kart.run_nmi()
+check("all three ahead is 4th", kart.ram[KPOS], 4)
+
+# Item box: driving over one grants a boost, and a new box goes out ahead.
+for i in range(3):
+    kart.ram[RDIST_HI + i] = 0                                 # rivals out of the way
+    kart.ram[KRX + i] = 20
+kart.ram[PDIST_LO], kart.ram[PDIST_HI] = 100, 4
 kart.ram[KPX] = 120
-kart.ram[KRX], kart.ram[KRY] = 20, 100          # far from the player
-before = kart.ram[KRY]
+kart.ram[KITEMX] = 120
+kart.ram[KITEM_LO], kart.ram[KITEM_HI] = 100, 4                # right on top of us
+kart.ram[KBOOST] = 0
+old_item = (kart.ram[KITEM_LO], kart.ram[KITEM_HI])
 kart.run_nmi()
-check("rival advances down the road", kart.ram[KRY] > before, True)
+check("item box grants a boost", kart.ram[KBOOST] > 0, True)
+check("a new item box goes out ahead",
+      (kart.ram[KITEM_LO], kart.ram[KITEM_HI]) != old_item, True)
+check("the new box is on the road", 16 < kart.ram[KITEMX] < 232, True)
 
-kart.ram[KRY] = 230
 kart.run_nmi()
-check("rival loops to the top", kart.ram[KRY] < 16, True)
-check("rival respawns on the road", 16 < kart.ram[KRX] < 232, True)
-check("rival gets a fresh speed", 2 <= kart.ram[KRS] <= 5, True)
-
-
-def hold_rivals_clear():
-    """Park the rivals well away from the player for score-only frames."""
-    for index, (x, y) in enumerate([(20, 40), (30, 60), (40, 80)]):
-        kart.ram[KRX + index] = x
-        kart.ram[KRY + index] = y
-
-
-kart.ram[KONES] = kart.ram[KTENS] = 0
-for _ in range(40):
-    hold_rivals_clear()
+check("boost raises the speed", kart.ram[KPSPEED], 5)
+for _ in range(120):
     kart.run_nmi()
-check("score climbs while surviving", kart.ram[KONES] > 0, True)
+check("boost runs out", kart.ram[KBOOST], 0)
+check("speed returns to normal", kart.ram[KPSPEED], 2)
 
-kart.ram[KTENS], kart.ram[KONES] = 9, 9
-for _ in range(80):
-    hold_rivals_clear()
-    kart.run_nmi()
-check("score stops at 99", (kart.ram[KTENS], kart.ram[KONES]), (9, 9))
-
-# Driving into a rival resets the run.
-kart.ram[KTENS], kart.ram[KONES] = 4, 2
+# Contact with a rival spins you out and cancels any boost.
+kart.ram[KBOOST] = 60
+kart.ram[KSPIN] = 0
 kart.ram[KPX] = 100
-kart.ram[KRX], kart.ram[KRY] = 100, PLAYER_Y
+kart.ram[PDIST_LO], kart.ram[PDIST_HI] = 100, 4
+kart.ram[KRX], kart.ram[RDIST_LO], kart.ram[RDIST_HI] = 100, 100, 4
+kart.ram[KRSPEED] = 0
 kart.run_nmi()
-check("crash clears the score", (kart.ram[KTENS], kart.ram[KONES]), (0, 0))
-check("crash recentres the kart", kart.ram[KPX], 120)
-check("crash sends rivals back to the top",
-      all(kart.ram[KRY + i] < 16 for i in range(3)), True)
+check("contact spins you out", kart.ram[KSPIN] > 0, True)
+check("a spin cancels the boost", kart.ram[KBOOST], 0)
+kart.run_nmi()
+check("spinning slows you down", kart.ram[KPSPEED], 1)
 
-# A near miss must not count.
-kart.ram[KTENS], kart.ram[KONES] = 3, 3
+# A near miss must not.
+kart.ram[KSPIN] = 0
 kart.ram[KPX] = 100
-kart.ram[KRX], kart.ram[KRY] = 130, PLAYER_Y      # 30px clear
-kart.ram[KRX + 1], kart.ram[KRY + 1] = 40, 40
-kart.ram[KRX + 2], kart.ram[KRY + 2] = 60, 60
+kart.ram[KRX] = 140                                            # 40px clear
 kart.run_nmi()
-check("a near miss is not a crash", (kart.ram[KTENS], kart.ram[KONES]), (3, 3))
+check("a near miss does not spin you", kart.ram[KSPIN], 0)
 
 # Road markings scroll and loop.
 first = kart.ram[KSTRIPE]
@@ -197,7 +228,19 @@ kart.run_nmi()
 check("markings scroll", kart.ram[KSTRIPE] != first, True)
 kart.ram[KSTRIPE] = 230
 kart.run_nmi()
-check("markings loop at the bottom", kart.ram[KSTRIPE] < 16, True)
+check("markings loop", kart.ram[KSTRIPE] < 16, True)
+
+# Three laps ends the race, and it stays ended.
+kart.ram[KSPIN] = 0
+kart.ram[PDIST_HI] = 24
+kart.run_nmi()
+check("race finishes after three laps", kart.ram[KFINISHED], 1)
+check("it shows lap 3, not a fourth", kart.ram[KLAP], 3)
+frozen = ((kart.ram[PDIST_HI] << 8) | kart.ram[PDIST_LO])
+for _ in range(10):
+    kart.run_nmi()
+check("nothing moves once finished",
+      ((kart.ram[PDIST_HI] << 8) | kart.ram[PDIST_LO]), frozen)
 
 print("\n=== %d failures ===" % len(failures))
 for name in failures:

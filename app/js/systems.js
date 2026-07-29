@@ -1,7 +1,7 @@
 /* Shown at the bottom of Settings. Bump it with any change worth telling a
    device apart by — it is the quickest way to know whether a phone is running
    the current copy or a stale cached one. */
-const APP_VERSION = "11";
+const APP_VERSION = "12";
 
 /* Console definitions.
  *

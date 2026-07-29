@@ -393,7 +393,7 @@
     {
       path: "games/kart-dash.nes",
       title: "Kart Dash",
-      blurb: "Steer left and right, dodge the oncoming karts, survive.",
+      blurb: "Three laps against three rivals. Grab a box for a boost, don't clip anyone.",
       core: "nes"
     }
   ];
