@@ -94,6 +94,21 @@
     observer.observe(host, { childList: true, subtree: true });
   }
 
+  /* ---------- Touch feedback ---------------------------------------------- */
+
+  /* A glass screen gives nothing back, so a press that misses the button feels
+     identical to one that lands. A short tick on each press supplies the part
+     a physical pad would. Delegated, because the emulator builds its gamepad
+     after this runs. */
+  function armTouchFeedback() {
+    document.addEventListener("touchstart", (event) => {
+      const target = event.target;
+      if (target && target.closest && target.closest(".ejs_virtualGamepad_button")) {
+        WiiUI.buzz(8);
+      }
+    }, { passive: true, capture: true });
+  }
+
   /* ---------- Keeping the screen awake ------------------------------------ */
 
   /* A game is long stretches without a touch, so the screen dims and the phone
@@ -234,6 +249,7 @@
       };
 
       watchForStrandedExit();
+      armTouchFeedback();
 
       const script = document.createElement("script");
       script.src = CDN + "loader.js";
