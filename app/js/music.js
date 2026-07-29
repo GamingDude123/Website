@@ -1,38 +1,66 @@
 /* Menu music.
  *
- * An original loop written in the spirit of a console dashboard theme: warm
- * major-seventh chords, a soft upright bass, finger snaps on the backbeat and
- * a lot of empty space. It is synthesised note by note at runtime rather than
- * streamed, so it costs no download and works offline.
+ * An original loop written in the style of a lounge-jazz console dashboard
+ * theme: a Rhodes-ish electric piano comping off the beat, a walking upright
+ * bass, finger snaps on the backbeat, and a lot of deliberate silence.
+ *
+ * Two things carry that style, and both are done here rather than faked with
+ * samples: the electric piano is FM-synthesised, so it has the bell-like
+ * attack that decays into a soft sine; and almost nothing lands squarely on
+ * a beat. It is all generated at runtime, so it costs no download.
  *
  * Deliberately not a transcription of any existing game's theme.
  */
 
 const WiiMusic = (function () {
-  const BPM = 84;
-  const SWING = 0.16;          // how far the off-beats lean back
-  const MASTER_GAIN = 0.28;    // background level: present, never in the way
-  const STEPS = 32;            // four bars of straight eighths
+  const BPM = 92;
+  const SWING = 0.22;          // how far the off-beats lean back
+  const MASTER_GAIN = 0.30;    // background level: present, never in the way
+  const BARS = 8;
+  const PER_BAR = 8;           // eighth notes
+  const STEPS = BARS * PER_BAR;
 
-  // Bars: Fmaj7 · Dm7 · B♭maj7 · C7. A gentle loop that never resolves hard.
-  const BASS = [41, 38, 34, 36];
+  /* Eight bars in C: Cmaj9 · Cmaj9 · Am9 · Am9 · Dm9 · G13 · Em7 · A7.
+     Rootless voicings in the middle octave, which is where a lounge pianist
+     would actually play them — the bass covers the roots. */
   const CHORDS = [
+    [64, 67, 71, 74],
+    [64, 67, 71, 74],
+    [60, 64, 67, 71],
+    [60, 64, 67, 71],
     [65, 69, 72, 76],
-    [62, 65, 69, 72],
-    [58, 62, 65, 69],
-    [60, 64, 67, 70]
+    [65, 69, 71, 76],
+    [67, 71, 74, 78],
+    [64, 67, 73, 76]
   ];
 
-  // Sparse melody over the loop; null is a rest, and most steps are rests.
+  /* Walking bass: root, then an approach note leading to the next bar. */
+  const BASS = [
+    [36, 43], [36, 40], [33, 40], [33, 36],
+    [38, 45], [31, 38], [40, 45], [33, 35]
+  ];
+
+  /* The hook. Sparse and syncopated — most steps are rests, and the phrases
+     start off the beat. `put(bar, step, note)`. */
   const MELODY = (() => {
     const line = new Array(STEPS).fill(null);
-    const put = (step, note) => { line[step] = note; };
-    put(0, 81);  put(3, 84);  put(6, 81);
-    put(8, 79);  put(11, 77); put(14, 79);
-    put(16, 77); put(19, 81); put(22, 84);
-    put(24, 86); put(27, 84); put(30, 81);
+    const put = (bar, step, note) => { line[bar * PER_BAR + step] = note; };
+
+    put(0, 6, 76);
+    put(1, 0, 79); put(1, 3, 76); put(1, 7, 74);
+    put(2, 1, 72); put(2, 5, 76);
+    put(3, 6, 74);
+    put(4, 0, 77); put(4, 3, 81); put(4, 7, 79);
+    put(5, 1, 79); put(5, 5, 74);
+    put(6, 0, 76); put(6, 4, 79); put(6, 7, 78);
+    put(7, 2, 74); put(7, 6, 72);
     return line;
   })();
+
+  /* Comping hits, as offsets within a bar. Note the absence of 0 and 4: the
+     piano answers the bass rather than doubling it. */
+  const COMP_STEPS = [3, 6];
+  const SNAP_STEPS = [2, 6];
 
   let ctx = null;
   let master = null;
@@ -56,13 +84,13 @@ const WiiMusic = (function () {
   /* A short exponentially-decaying noise burst makes a serviceable room
      reverb without shipping an impulse response file. */
   function buildReverb(audio) {
-    const seconds = 1.9;
+    const seconds = 2.4;
     const length = Math.floor(audio.sampleRate * seconds);
     const buffer = audio.createBuffer(2, length, audio.sampleRate);
     for (let channel = 0; channel < 2; channel++) {
       const data = buffer.getChannelData(channel);
       for (let i = 0; i < length; i++) {
-        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.6);
+        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2.8);
       }
     }
     const convolver = audio.createConvolver();
@@ -74,96 +102,170 @@ const WiiMusic = (function () {
     if (ctx) return true;
     ctx = WiiUI.audioContext();
     if (!ctx) return false;
-
-    master = ctx.createGain();
-    master.gain.value = 0;
-    master.connect(ctx.destination);
-
-    reverb = buildReverb(ctx);
-    const wet = ctx.createGain();
-    wet.gain.value = 0.28;
-    reverb.connect(wet);
-    wet.connect(master);
-    master.wet = wet;
+    buildGraph(ctx);
     return true;
   }
 
-  /* One plucked voice. `tone` shapes it from soft bass to bell-like melody. */
-  function voice(freq, time, duration, peak, type, detune) {
+  function buildGraph(audio) {
+    master = audio.createGain();
+    master.gain.value = 0;
+    master.connect(audio.destination);
+
+    reverb = buildReverb(audio);
+    const wet = audio.createGain();
+    wet.gain.value = 0.3;
+    reverb.connect(wet);
+    wet.connect(master);
+  }
+
+  function panned(node, amount) {
+    if (!amount || !ctx.createStereoPanner) return node;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = amount;
+    node.connect(panner);
+    return panner;
+  }
+
+  /* FM electric piano.
+   *
+   * A carrier sine is frequency-modulated by a second sine an octave up. The
+   * modulation depth starts high and collapses within about a tenth of a
+   * second, which is exactly what gives a Rhodes its struck-tine attack
+   * before it settles into a mellow, almost pure tone. */
+  function rhodes(freq, time, duration, peak, pan) {
+    const carrier = ctx.createOscillator();
+    const modulator = ctx.createOscillator();
+    const modDepth = ctx.createGain();
+    const amp = ctx.createGain();
+    const tone = ctx.createBiquadFilter();
+
+    carrier.type = "sine";
+    carrier.frequency.value = freq;
+    modulator.type = "sine";
+    modulator.frequency.value = freq * 2;
+
+    // The bell attack: deep modulation for a moment, then essentially none.
+    modDepth.gain.setValueAtTime(freq * 2.4, time);
+    modDepth.gain.exponentialRampToValueAtTime(freq * 0.02, time + 0.11);
+    modulator.connect(modDepth);
+    modDepth.connect(carrier.frequency);
+
+    tone.type = "lowpass";
+    tone.frequency.setValueAtTime(Math.max(1800, freq * 8), time);
+    tone.frequency.exponentialRampToValueAtTime(Math.max(700, freq * 2.5), time + 0.4);
+
+    amp.gain.setValueAtTime(0.0001, time);
+    amp.gain.exponentialRampToValueAtTime(peak, time + 0.006);
+    amp.gain.exponentialRampToValueAtTime(peak * 0.28, time + 0.18);
+    amp.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+
+    carrier.connect(tone);
+    tone.connect(amp);
+    const out = panned(amp, pan);
+    out.connect(master);
+    out.connect(reverb);
+
+    carrier.start(time);
+    modulator.start(time);
+    carrier.stop(time + duration + 0.05);
+    modulator.stop(time + duration + 0.05);
+  }
+
+  /* Upright bass: a round sine with a touch of grit and a quick thump. */
+  function bass(freq, time, duration, peak) {
     const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const filter = ctx.createBiquadFilter();
+    const click = ctx.createOscillator();
+    const amp = ctx.createGain();
+    const clickAmp = ctx.createGain();
+    const tone = ctx.createBiquadFilter();
 
-    osc.type = type;
-    osc.frequency.value = freq;
-    if (detune) osc.detune.value = detune;
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq * 1.01, time);
+    osc.frequency.exponentialRampToValueAtTime(freq, time + 0.05);
 
-    filter.type = "lowpass";
-    filter.frequency.value = Math.max(900, freq * 6);
+    // A brief higher partial reads as the finger releasing the string.
+    click.type = "triangle";
+    click.frequency.value = freq * 3;
+    clickAmp.gain.setValueAtTime(peak * 0.35, time);
+    clickAmp.gain.exponentialRampToValueAtTime(0.0001, time + 0.06);
 
-    // Percussive attack, long gentle tail — the piano-ish envelope.
-    gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(peak, time + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+    tone.type = "lowpass";
+    tone.frequency.value = 520;
 
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(master);
-    gain.connect(reverb);
+    amp.gain.setValueAtTime(0.0001, time);
+    amp.gain.exponentialRampToValueAtTime(peak, time + 0.02);
+    amp.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+
+    osc.connect(amp);
+    click.connect(clickAmp);
+    clickAmp.connect(tone);
+    tone.connect(master);
+    amp.connect(master);
+    amp.connect(reverb);
 
     osc.start(time);
+    click.start(time);
     osc.stop(time + duration + 0.05);
+    click.stop(time + 0.1);
   }
 
   /* Filtered noise click for the backbeat snap. */
   function snap(time) {
-    const length = Math.floor(ctx.sampleRate * 0.05);
+    const length = Math.floor(ctx.sampleRate * 0.06);
     const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < length; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 5);
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 4.5);
     }
     const source = ctx.createBufferSource();
     source.buffer = buffer;
 
     const filter = ctx.createBiquadFilter();
-    filter.type = "highpass";
-    filter.frequency.value = 1900;
+    filter.type = "bandpass";
+    filter.frequency.value = 2400;
+    filter.Q.value = 1.1;
 
     const gain = ctx.createGain();
-    gain.gain.value = 0.16;
+    gain.gain.value = 0.2;
 
     source.connect(filter);
     filter.connect(gain);
-    gain.connect(master);
-    gain.connect(reverb);
+    const out = panned(gain, 0.25);
+    out.connect(master);
+    out.connect(reverb);
     source.start(time);
   }
 
   function scheduleStep(index, time) {
-    const bar = Math.floor(index / 8);
-    const beatInBar = index % 8;
-    const chord = CHORDS[bar];
+    const bar = Math.floor(index / PER_BAR);
+    const beat = index % PER_BAR;
+    const stepDuration = 60 / BPM / 2;
 
-    // Bass on the first and third beats of each bar.
-    if (beatInBar === 0 || beatInBar === 4) {
-      voice(midiToFreq(BASS[bar]), time, 1.1, 0.22, "sine");
-    }
+    // Bass on beat one, and a walking approach note late in the bar.
+    if (beat === 0) bass(midiToFreq(BASS[bar][0]), time, 0.85, 0.26);
+    if (beat === 5) bass(midiToFreq(BASS[bar][1]), time, 0.55, 0.19);
 
-    // Chord voicing lands just after the bass, a little behind the beat.
-    if (beatInBar === 1 || beatInBar === 5) {
+    // Comping: spread the voices by a few milliseconds so the chord is
+    // strummed rather than stamped, and lean it slightly left.
+    if (COMP_STEPS.indexOf(beat) !== -1) {
+      const chord = CHORDS[bar];
+      const long = beat === 6;
       chord.forEach((note, i) => {
-        voice(midiToFreq(note), time + i * 0.012, 1.4, 0.055, "triangle");
+        rhodes(midiToFreq(note), time + i * 0.009,
+          long ? 1.5 : 0.85, long ? 0.075 : 0.06, -0.18);
       });
     }
 
-    // Snaps on the backbeat.
-    if (beatInBar === 2 || beatInBar === 6) snap(time);
+    if (SNAP_STEPS.indexOf(beat) !== -1) snap(time);
 
     const melodyNote = MELODY[index];
     if (melodyNote) {
-      voice(midiToFreq(melodyNote), time, 1.5, 0.09, "sine");
-      voice(midiToFreq(melodyNote), time, 1.5, 0.03, "sine", 7);
+      rhodes(midiToFreq(melodyNote), time, 1.4, 0.13, 0.12);
+    }
+
+    // A quiet grace note ahead of each phrase start adds a human lilt.
+    if (melodyNote && beat === 0 && MELODY[index + 1] === null) {
+      rhodes(midiToFreq(melodyNote - 2), time - stepDuration * 0.24, 0.25, 0.035, 0.12);
     }
   }
 
@@ -171,7 +273,7 @@ const WiiMusic = (function () {
      little ahead of time, so playback stays sample-accurate. */
   function scheduler() {
     const stepDuration = 60 / BPM / 2;
-    while (nextNoteTime < ctx.currentTime + 0.2) {
+    while (nextNoteTime < ctx.currentTime + 0.25) {
       // Odd steps lean late, which is what gives the loop its swing.
       const swung = (step % 2 === 1) ? stepDuration * SWING : 0;
       scheduleStep(step, nextNoteTime + swung);
@@ -312,17 +414,11 @@ const WiiMusic = (function () {
 
     // The voice builders read module state, so point it at the offline graph.
     ctx = offline;
-    master = offline.createGain();
+    buildGraph(offline);
     master.gain.value = MASTER_GAIN;
-    master.connect(offline.destination);
-    reverb = buildReverb(offline);
-    const wet = offline.createGain();
-    wet.gain.value = 0.28;
-    reverb.connect(wet);
-    wet.connect(master);
 
     const stepDuration = 60 / BPM / 2;
-    let time = 0.05;
+    let time = 0.4;
     let index = 0;
     while (time < seconds) {
       scheduleStep(index, time + (index % 2 === 1 ? stepDuration * SWING : 0));
