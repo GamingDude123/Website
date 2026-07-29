@@ -534,12 +534,40 @@
     });
   }
 
+  /* Since the picker accepts anything, confirm the browser can actually decode
+     the file before storing it — a clear message now beats silence later. */
+  function canPlayAudio(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const probe = new Audio();
+      let settled = false;
+
+      function finish(ok) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        URL.revokeObjectURL(url);
+        resolve(ok);
+      }
+
+      const timeout = setTimeout(() => finish(false), 5000);
+      probe.addEventListener("loadedmetadata", () => finish(true), { once: true });
+      probe.addEventListener("canplay", () => finish(true), { once: true });
+      probe.addEventListener("error", () => finish(false), { once: true });
+      probe.preload = "metadata";
+      probe.src = url;
+    });
+  }
+
   function chooseMusic() {
     const modal = WiiUI.panel(
       "<h2>Use your own music</h2>" +
       '<p class="muted">Pick any music file on your phone — mp3, m4a, wav or ' +
       "ogg. It loops quietly behind the menu and is stored on this device only.</p>" +
-      '<label class="field">Music file<input type="file" accept="audio/*" data-file></label>' +
+      // No `accept` here for the same reason as the game picker: iOS maps
+      // accept entries to UTIs and greys out anything it doesn't match,
+      // which hides mp3s sitting in Files. The choice is checked below.
+      '<label class="field">Music file<input type="file" data-file></label>' +
       '<div class="panel-actions">' +
         '<button class="wii-btn is-primary" data-save>Use this track</button>' +
         '<button class="wii-btn" data-close>Cancel</button>' +
@@ -552,10 +580,21 @@
         return;
       }
       WiiUI.feedback("click");
-      WiiMusic.setCustomTrack(file).then(() => {
-        modal.close();
-        WiiUI.toast("Now playing “" + prettyTitle(file.name) + "”");
+      const working = WiiUI.busy("Checking “" + file.name + "”…");
+      canPlayAudio(file).then((ok) => {
+        if (!ok) {
+          working.close();
+          WiiUI.play("error");
+          WiiUI.toast("Your phone can't play that file — try an mp3, m4a or wav", 4600);
+          return;
+        }
+        return WiiMusic.setCustomTrack(file).then(() => {
+          working.close();
+          modal.close();
+          WiiUI.toast("Now playing “" + prettyTitle(file.name) + "”");
+        });
       }).catch(() => {
+        working.close();
         WiiUI.play("error");
         WiiUI.toast("Couldn't save that music file", 3600);
       });
