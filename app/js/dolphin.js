@@ -236,31 +236,86 @@ const DolphinView = (function () {
 
   /* ---------- Launching the real emulator -------------------------------- */
 
+  const DOLPHINIOS_SITE = "https://dolphinios.oatmealdome.me";
+
+  function isApplePhone() {
+    // iPadOS reports itself as a Mac, so touch points are the giveaway.
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  }
+
   function launchDolphin() {
-    const isAndroid = /android/i.test(navigator.userAgent);
-    if (!isAndroid) {
-      WiiUI.play("error");
-      WiiUI.panel(
-        "<h2>Dolphin needs Android</h2>" +
-        "<p>Dolphin has an official Android app, but no App Store release for " +
-        "iPhone — Apple doesn't allow the just-in-time compilation Dolphin needs " +
-        "to hit full speed. On an iPhone you'd have to sideload it.</p>" +
-        "<p>On a computer, Dolphin runs natively on Windows, macOS and Linux.</p>" +
-        '<div class="panel-actions">' +
-          '<a class="wii-btn" href="https://dolphin-emu.org/download/" target="_blank" ' +
-          'rel="noopener" style="text-decoration:none;display:inline-flex">Dolphin downloads</a>' +
-          '<button class="wii-btn" data-close>Close</button>' +
-        "</div>"
-      );
+    if (/android/i.test(navigator.userAgent)) {
+      // Chrome resolves this to Dolphin's launcher activity, and falls back to
+      // the Play Store listing when it isn't installed.
+      WiiUI.feedback("boot");
+      location.href = "intent:#Intent;package=" + DOLPHIN_PACKAGE +
+        ";action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;" +
+        "S.browser_fallback_url=" + encodeURIComponent(PLAY_STORE) + ";end";
       return;
     }
 
-    // Chrome resolves this to Dolphin's launcher activity, and falls back to
-    // the Play Store listing when it isn't installed.
-    WiiUI.feedback("boot");
-    location.href = "intent:#Intent;package=" + DOLPHIN_PACKAGE +
-      ";action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;" +
-      "S.browser_fallback_url=" + encodeURIComponent(PLAY_STORE) + ";end";
+    if (isApplePhone()) {
+      showIphoneRoute();
+      return;
+    }
+
+    WiiUI.panel(
+      "<h2>Dolphin runs here too</h2>" +
+      "<p>On a computer Dolphin installs normally on Windows, macOS and Linux. " +
+      "This shelf is for keeping track of your games and their settings; the " +
+      "emulator itself lives on the machine you play on.</p>" +
+      '<div class="panel-actions">' +
+        '<a class="wii-btn is-primary" href="https://dolphin-emu.org/download/" ' +
+        'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+        "Dolphin downloads</a>" +
+        '<button class="wii-btn" data-close>Close</button>' +
+      "</div>"
+    );
+  }
+
+  /* iPhone can run Dolphin, but nothing on a web page can start it: iOS only
+     lets a link open an app that has registered a URL scheme, and DolphiniOS
+     publishes none. So this explains the route instead of pretending to
+     launch — including the part that catches people out. */
+  function showIphoneRoute() {
+    WiiUI.play("hover");
+    WiiUI.panel(
+      "<h2>Dolphin on iPhone</h2>" +
+      "<p>It exists — <strong>DolphiniOS</strong>, the official iOS port of " +
+      "Dolphin. It plays GameCube and Wii games on an iPhone.</p>" +
+
+      "<h3>Watch out for fakes</h3>" +
+      '<p class="muted">DolphiniOS is <strong>not on the App Store</strong>. ' +
+      "Apps there calling themselves “Dolphin Emulator” are not it — Apple " +
+      "doesn't allow what Dolphin needs to run at speed, so anything claiming " +
+      "otherwise is somebody else's app using the name.</p>" +
+
+      "<h3>The real way in</h3>" +
+      '<p class="muted">You install it yourself with <strong>SideStore</strong> ' +
+      "or <strong>AltStore Classic</strong>, which needs a computer running " +
+      "AltServer once to set up — Windows is fine, it doesn't have to be a Mac. " +
+      "After that it lives on your phone like any other app.</p>" +
+      '<p class="muted">Then add OatmealDome\'s source inside that app and ' +
+      "install DolphiniOS from it. The official site has the current steps.</p>" +
+
+      "<h3>Before you bother</h3>" +
+      '<p class="muted">GameCube wants an iPhone 13 or newer to run properly, ' +
+      "and Wii is heavier still. On an older phone it will struggle whatever " +
+      "you do.</p>" +
+
+      '<p class="muted">There is no button for this because iOS gives a web ' +
+      "page no way to open it. Once it's installed you launch it from your " +
+      "home screen, and this shelf keeps your settings and notes.</p>" +
+
+      '<div class="panel-actions">' +
+        '<a class="wii-btn is-primary" href="' + DOLPHINIOS_SITE + '" ' +
+        'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+        "Official DolphiniOS site</a>" +
+        '<button class="wii-btn" data-close>Close</button>' +
+      "</div>",
+      { noAutofocus: true }
+    );
   }
 
   /* ---------- Guide ------------------------------------------------------ */
@@ -275,17 +330,23 @@ const DolphinView = (function () {
       "actual emulating.</p>" +
 
       "<h2 style='font-size:16px;margin-top:16px'>Getting Dolphin running</h2>" +
-      "<p class='muted'>1. Install Dolphin from the Play Store or " +
-      "dolphin-emu.org.<br>" +
-      "2. Put your game files somewhere Dolphin can read them, then add that " +
-      "folder in Dolphin's game list.<br>" +
-      "3. Wii U is a different emulator entirely — Cemu. It's desktop-only in any " +
-      "usable form; the Android builds are experimental and most games don't boot.</p>" +
+      "<p class='muted'><strong>Android:</strong> install Dolphin from the Play " +
+      "Store or dolphin-emu.org.<br>" +
+      "<strong>iPhone:</strong> DolphiniOS, sideloaded with SideStore or AltStore " +
+      "Classic. It is not on the App Store, and the apps there using the name are " +
+      "not it.<br>" +
+      "<strong>Computer:</strong> Dolphin installs normally on Windows, macOS and " +
+      "Linux.</p>" +
+      "<p class='muted'>Then point the emulator at a folder holding your game " +
+      "files and they appear in its list. Wii U is a different emulator entirely " +
+      "— Cemu — and is desktop-only in any usable form.</p>" +
 
       "<h2 style='font-size:16px;margin-top:16px'>The Launch button</h2>" +
-      "<p class='muted'>It opens Dolphin's game list. Dolphin doesn't publish a " +
-      "URL scheme for booting one specific game, so nothing on the web can jump " +
-      "straight into a title — pick it from Dolphin's own list once you're there.</p>" +
+      "<p class='muted'>On Android it opens Dolphin's game list. Dolphin doesn't " +
+      "publish a URL scheme for booting one specific game, so nothing on the web " +
+      "can jump straight into a title — pick it from Dolphin's own list.<br>" +
+      "On iPhone the button explains how to install DolphiniOS instead, because " +
+      "iOS gives a web page no way to open it at all.</p>" +
 
       "<h2 style='font-size:16px;margin-top:16px'>Where games come from</h2>" +
       "<p class='muted'>Dolphin plays discs you dump from your own Wii using a " +
@@ -313,7 +374,20 @@ const DolphinView = (function () {
     editEntry({ title: "Untitled", platform: "wii", status: "backlog", rating: 0, notes: "", settings: "" });
   });
 
-  document.getElementById("btn-launch").addEventListener("click", launchDolphin);
+  const launchButton = document.getElementById("btn-launch");
+  launchButton.addEventListener("click", launchDolphin);
+  // Say what the button will actually do on this device.
+  const launchSub = launchButton.querySelector(".btn-sub");
+  if (launchSub) {
+    if (/android/i.test(navigator.userAgent)) {
+      launchSub.textContent = "android";
+    } else if (isApplePhone()) {
+      launchButton.firstChild.textContent = "Dolphin on iPhone";
+      launchSub.textContent = "how to install";
+    } else {
+      launchSub.textContent = "desktop";
+    }
+  }
 
   document.getElementById("filters").addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
