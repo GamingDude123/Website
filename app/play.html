@@ -132,6 +132,100 @@
 
     /* Darker rim than the shared one, to suit the black player page. */
     .spinner { border-color: #2b3642; border-top-color: var(--wii-blue); }
+
+    /* ---- Touch controls -------------------------------------------------
+       The emulator's on-screen pad is drawn as a 1px grey outline with no
+       fill, and its pressed state fills black — on a black game screen that
+       is close to invisible, and there is no feedback when a press lands.
+       These overrides give the controls a body, a bright edge and an obvious
+       pressed state, and make them big enough for thumbs. !important is
+       needed because several of these are set as inline styles. */
+
+    .ejs_virtualGamepad_parent {
+      /* Clear of the home indicator on a phone. */
+      bottom: calc(46px + env(safe-area-inset-bottom)) !important;
+      touch-action: none;
+    }
+
+    .ejs_virtualGamepad_button {
+      width: 62px !important;
+      height: 62px !important;
+      line-height: 58px !important;
+      font-size: 23px !important;
+      font-weight: 800 !important;
+      color: #fff !important;
+      background: rgba(236, 244, 250, 0.22) !important;
+      border: 3px solid rgba(255, 255, 255, 0.9) !important;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.55) !important;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8) !important;
+      transition: background 90ms ease, transform 90ms ease;
+    }
+
+    /* Unmistakable when a press registers. */
+    .ejs_virtualGamepad_button_down {
+      background: rgba(0, 158, 224, 0.92) !important;
+      border-color: #fff !important;
+      transform: scale(0.92);
+    }
+
+    /* Start and Select become pills. They ship absolutely positioned at fixed
+       offsets, which a wider pill overruns — so the row is laid out with flex
+       and those offsets are neutralised, otherwise the two overlap. */
+    .ejs_virtualGamepad_bottom {
+      display: flex !important;
+      justify-content: center;
+      gap: 14px;
+      width: 240px !important;
+      margin-left: -120px !important;
+    }
+
+    .ejs_virtualGamepad_bottom .ejs_virtualGamepad_button {
+      position: relative !important;
+      left: auto !important;
+      right: auto !important;
+      top: auto !important;
+      width: auto !important;
+      min-width: 86px;
+      height: 36px !important;
+      line-height: 32px !important;
+      font-size: 14px !important;
+      border-radius: 999px !important;
+      padding: 0 14px !important;
+    }
+
+    /* A bigger d-pad, and one you can see. */
+    .ejs_virtualGamepad_left,
+    .ejs_virtualGamepad_right {
+      width: 152px !important;
+      height: 152px !important;
+    }
+
+    .ejs_dpad_main { opacity: 1 !important; }
+
+    .ejs_dpad_horizontal { height: 46px !important; }
+    .ejs_dpad_vertical { width: 46px !important; }
+
+    /* No inner outline: the horizontal and vertical bars overlap, and two
+       outlines crossing leaves a seam through the middle of the pad. */
+    .ejs_dpad_bar { background: rgba(226, 238, 248, 0.32) !important; }
+
+    /* The direction arrows ship as dark grey, which disappears on a dark
+       game. Brighten them, and light the pressed one right up. */
+    .ejs_dpad_horizontal:before { border-right-color: rgba(255, 255, 255, 0.85) !important; }
+    .ejs_dpad_horizontal:after { border-left-color: rgba(255, 255, 255, 0.85) !important; }
+    .ejs_dpad_vertical:before { border-bottom-color: rgba(255, 255, 255, 0.85) !important; }
+    .ejs_dpad_vertical:after { border-top-color: rgba(255, 255, 255, 0.85) !important; }
+
+    .ejs_dpad_left_pressed .ejs_dpad_horizontal:before,
+    .ejs_dpad_right_pressed .ejs_dpad_horizontal:after,
+    .ejs_dpad_up_pressed .ejs_dpad_vertical:before,
+    .ejs_dpad_down_pressed .ejs_dpad_vertical:after {
+      border-color: transparent !important;
+    }
+    .ejs_dpad_left_pressed .ejs_dpad_horizontal:before { border-right-color: #4fd0ff !important; }
+    .ejs_dpad_right_pressed .ejs_dpad_horizontal:after { border-left-color: #4fd0ff !important; }
+    .ejs_dpad_up_pressed .ejs_dpad_vertical:before { border-bottom-color: #4fd0ff !important; }
+    .ejs_dpad_down_pressed .ejs_dpad_vertical:after { border-top-color: #4fd0ff !important; }
   </style>
 </head>
 <body>
