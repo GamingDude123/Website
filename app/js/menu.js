@@ -270,6 +270,7 @@
       const detected = detectSystem(file.name, file.size);
       if (detected.kind === "system") return addGame(file, detected.system.core);
       if (detected.kind === "dolphin") return offerDolphin(file);
+      if (detected.kind === "needs-isolation") return offerIsolation(file, detected.system);
       return askSystem(file);
     });
   }
@@ -318,10 +319,36 @@
     });
   }
 
+  /* The file is recognised, but its core needs Heavy Systems switched on. */
+  function offerIsolation(file, system) {
+    return new Promise((resolve) => {
+      WiiUI.play("error");
+      const modal = WiiUI.panel(
+        "<h2>" + esc(system.name) + " needs switching on</h2>" +
+        "<p><strong>" + esc(file.name) + "</strong> is a " + esc(system.name) +
+        " game. That emulator needs a browser feature this app keeps off by " +
+        "default, because it changes how everything on the page loads.</p>" +
+        (system.warning ? "<p>" + esc(system.warning) + "</p>" : "") +
+        "<p class='muted'>Turning it on reloads the app. You can switch it back " +
+        "off any time under the Wii button.</p>" +
+        '<div class="panel-actions">' +
+          '<button class="wii-btn is-primary" data-enable>Turn it on</button>' +
+          '<button class="wii-btn" data-close>Not now</button>' +
+        "</div>",
+        { onClose: () => resolve("skipped") }
+      );
+      modal.el.querySelector("[data-enable]").addEventListener("click", () => {
+        WiiUI.feedback("click");
+        WiiUI.busy("Turning on heavy systems…");
+        Isolation.set(true);
+      });
+    });
+  }
+
   /* Only reached for genuinely ambiguous files, like a bare .zip. */
   function askSystem(file) {
     return new Promise((resolve) => {
-      const options = SYSTEMS
+      const options = availableSystems()
         .map((sys) => '<option value="' + sys.core + '">' + esc(sys.name) + "</option>")
         .join("");
       const modal = WiiUI.panel(
@@ -459,6 +486,29 @@
         '<label class="toggle"><input type="checkbox" data-haptics' +
         (WiiUI.hapticsOn ? " checked" : "") + "><span>Vibration</span></label>" +
 
+        "<h3>Heavy systems</h3>" +
+        '<p class="muted">Adds <strong>PSP</strong>, <strong>Nintendo 3DS</strong> ' +
+        "and <strong>MS-DOS</strong>. These need a browser feature this app has " +
+        "to switch on by hand, so it reloads when you change this.</p>" +
+        '<p class="muted">Fair warning: 3DS is enormously demanding and may be ' +
+        "too slow to play. PSP has the best chance of running well. If anything " +
+        "stops working, switch this back off.</p>" +
+        '<label class="toggle"><input type="checkbox" data-isolation' +
+        (Isolation.enabled ? " checked" : "") + "><span>Heavy systems</span></label>" +
+        '<p class="muted">Status: ' + esc(Isolation.status()) + "</p>" +
+        (Isolation.failed
+          ? '<p class="muted" style="color:var(--danger)">This browser wouldn\'t ' +
+            "allow it, so PSP, 3DS and DOS can't run here. Everything else is " +
+            "unaffected.</p>"
+          : "") +
+
+        '<label class="toggle"><input type="checkbox" data-smooth' +
+        (localStorage.getItem("wii-smooth") !== "off" ? " checked" : "") +
+        "><span>Smooth mode</span></label>" +
+        '<p class="muted">Starts the demanding systems at their lightest ' +
+        "settings — native resolution, no texture filtering, one screen for 3DS. " +
+        "Turn it off for sharper visuals on games that can spare the speed.</p>" +
+
         "<h3>Music</h3>" +
         '<p class="muted">Playing now: <strong>' +
         esc(WiiMusic.customName() || "the built-in tune") + "</strong><br>" +
@@ -508,6 +558,20 @@
       modal.el.querySelector("[data-haptics]").addEventListener("change", (event) => {
         WiiUI.setHaptics(event.target.checked);
         WiiUI.buzz();
+      });
+      modal.el.querySelector("[data-smooth]").addEventListener("change", (event) => {
+        localStorage.setItem("wii-smooth", event.target.checked ? "on" : "off");
+        WiiUI.play("click");
+        WiiUI.toast(event.target.checked
+          ? "Smooth mode on — applies next time a game starts"
+          : "Smooth mode off — sharper, but slower");
+      });
+      modal.el.querySelector("[data-isolation]").addEventListener("change", (event) => {
+        WiiUI.play("click");
+        WiiUI.busy(event.target.checked
+          ? "Turning on heavy systems…"
+          : "Turning heavy systems off…");
+        Isolation.set(event.target.checked);
       });
       modal.el.querySelector("[data-music-file]").addEventListener("click", () => {
         WiiUI.feedback("click");
