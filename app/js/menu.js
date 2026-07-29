@@ -487,6 +487,9 @@
         "runs files you add yourself, and they never leave your device — " +
         "everything is stored locally in your browser.</p>" +
 
+        '<p class="muted" style="margin-top:18px;text-align:center">Version ' +
+        esc(APP_VERSION) + "</p>" +
+
         '<div class="panel-actions">' +
           '<button class="wii-btn" data-guide>Show the welcome guide</button>' +
           '<button class="wii-btn" data-close>Close</button>' +
