@@ -13,6 +13,8 @@ class Nes:
         self.ram = bytearray(0x800)
         self.oam = bytearray(256)
         self.palette = bytearray(32)
+        self.vram = bytearray(0x800)      # nametables, so background writes
+                                          # can be checked as well as sprites
         self.ppu_addr = 0
         self.ppu_latch = False
         self.ppuctrl = 0
@@ -65,6 +67,8 @@ class Nes:
             elif reg == 0x2007:
                 if 0x3F00 <= self.ppu_addr < 0x3F20:
                     self.palette[self.ppu_addr - 0x3F00] = value
+                elif 0x2000 <= self.ppu_addr < 0x3000:
+                    self.vram[(self.ppu_addr - 0x2000) & 0x7FF] = value
                 self.ppu_addr += 1
             return
         if addr == 0x4014:
