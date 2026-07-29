@@ -379,32 +379,41 @@
     });
   }
 
-  /* ---------- The bundled game -------------------------------------------- */
+  /* ---------- The bundled games ------------------------------------------- */
 
-  /* Star Catcher is an original NES game written for this app, so there is
-     always something to play without going and finding a ROM first. */
-  const SAMPLE = {
-    path: "games/star-catcher.nes",
-    title: "Star Catcher",
-    core: "nes"
-  };
+  /* Original NES games written for this app, so there is always something to
+     play without going and finding a ROM first. Built by games/*.src.py. */
+  const BUNDLED = [
+    {
+      path: "games/star-catcher.nes",
+      title: "Star Catcher",
+      blurb: "Chase the star with the D-pad. Every one you touch is a point.",
+      core: "nes"
+    },
+    {
+      path: "games/kart-dash.nes",
+      title: "Kart Dash",
+      blurb: "Three laps against three rivals. Grab a box for a boost, don't clip anyone.",
+      core: "nes"
+    }
+  ];
 
-  function addSampleGame() {
+  function addBundled(entry) {
     return Games.all().then((games) => {
-      const existing = games.filter((game) => game.title === SAMPLE.title)[0];
+      const existing = games.filter((game) => game.title === entry.title)[0];
       if (existing) {
         startGame(existing);
         return;
       }
-      const working = WiiUI.busy("Loading Star Catcher…");
-      return fetch(SAMPLE.path)
+      const working = WiiUI.busy("Loading " + entry.title + "…");
+      return fetch(entry.path)
         .then((response) => {
           if (!response.ok) throw new Error("HTTP " + response.status);
           return response.blob();
         })
         .then((blob) => Games.add(
-          new File([blob], "Star Catcher.nes", { type: "application/octet-stream" }),
-          SAMPLE.core
+          new File([blob], entry.title + ".nes", { type: "application/octet-stream" }),
+          entry.core
         ))
         .then((record) => refresh().then(() => {
           working.close();
@@ -414,9 +423,33 @@
         .catch((err) => {
           working.close();
           WiiUI.play("error");
-          WiiUI.toast("Couldn't load the built-in game: " +
+          WiiUI.toast("Couldn't load " + entry.title + ": " +
             (err && err.message ? err.message : "unknown error"), 4200);
         });
+    });
+  }
+
+  function openBundled() {
+    const rows = BUNDLED.map((entry, index) =>
+      '<button class="wii-btn is-wide is-primary" style="margin-bottom:6px" ' +
+      'data-bundled="' + index + '">▶ ' + esc(entry.title) + "</button>" +
+      '<p class="muted" style="margin:0 0 14px">' + esc(entry.blurb) + "</p>"
+    ).join("");
+
+    const modal = WiiUI.panel(
+      "<h2>Built-in games</h2>" +
+      '<p class="muted">Written for this app — yours to play straight away.</p>' +
+      rows +
+      '<div class="panel-actions"><button class="wii-btn" data-close>Close</button></div>',
+      { noAutofocus: true }
+    );
+
+    modal.el.querySelectorAll("[data-bundled]").forEach((button) => {
+      button.addEventListener("click", () => {
+        WiiUI.feedback("click");
+        modal.close();
+        addBundled(BUNDLED[Number(button.getAttribute("data-bundled"))]);
+      });
     });
   }
 
@@ -433,11 +466,12 @@
       "automatically.<br>" +
       "<strong>3.</strong> Add this page to your home screen and it runs " +
       "fullscreen, offline, with its own icon.</p>" +
-      "<p class='muted'>There's one game built in — <strong>Star Catcher</strong>, " +
-      "written for this app — so you can try it right now. Everything else you " +
-      "add yourself, and those files never leave your phone.</p>" +
+      "<p class='muted'>Two games come built in — <strong>Star Catcher</strong> and " +
+      "<strong>Kart Dash</strong>, both written for this app — so you can play " +
+      "right now. Everything else you add yourself, and those files never leave " +
+      "your phone.</p>" +
       '<div class="panel-actions">' +
-        '<button class="wii-btn is-wide is-primary" data-play>▶ Play Star Catcher</button>' +
+        '<button class="wii-btn is-wide is-primary" data-play>▶ Play a built-in game</button>' +
         '<button class="wii-btn" data-add>Add my own game</button>' +
         '<button class="wii-btn" data-close>Look around</button>' +
       "</div>",
@@ -446,7 +480,7 @@
     modal.el.querySelector("[data-play]").addEventListener("click", () => {
       WiiUI.feedback("click");
       modal.close();
-      addSampleGame();
+      openBundled();
     });
     modal.el.querySelector("[data-add]").addEventListener("click", () => {
       WiiUI.feedback("click");
@@ -503,7 +537,7 @@
         '<ul class="file-list">' + rows + "</ul>" +
         '<div class="panel-actions">' +
           '<button class="wii-btn is-wide is-primary" data-add>Add a game</button>' +
-          '<button class="wii-btn" data-sample>▶ Star Catcher</button>' +
+          '<button class="wii-btn" data-sample>▶ Built-in games</button>' +
           '<button class="wii-btn" data-close>Close</button>' +
         "</div>"
       );
@@ -515,7 +549,7 @@
       modal.el.querySelector("[data-sample]").addEventListener("click", () => {
         WiiUI.feedback("click");
         modal.close();
-        addSampleGame();
+        openBundled();
       });
     });
   }
