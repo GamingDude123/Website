@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0d1116">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Wii Bridge</title>
+<style>
+  :root {
+    --blue: #009ee0;
+    --edge: #2b3642;
+    --dim: #93a4b5;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    background: #0d1116;
+    color: #e6edf3;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    /* The whole page is buttons and a phone being swung around. Nothing here
+       should ever scroll, select or zoom. */
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  /* ---- status ---------------------------------------------------------- */
+
+  .status {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--edge);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--dim);
+  }
+
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #55606c;
+    flex: 0 0 auto;
+    transition: background 200ms ease;
+  }
+  .dot.is-live { background: #3fb950; box-shadow: 0 0 8px #3fb95088; }
+  .dot.is-bad { background: #f85149; }
+
+  .status .spacer { flex: 1; }
+  .status .metric { font-variant-numeric: tabular-nums; }
+
+  /* ---- gate (permission / errors) -------------------------------------- */
+
+  .gate {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 28px;
+    text-align: center;
+  }
+  .gate h1 { margin: 0; font-size: 22px; }
+  .gate p { margin: 0; max-width: 22em; color: var(--dim); font-size: 14px; }
+  .gate code {
+    font-size: 13px;
+    background: #1b232b;
+    padding: 2px 6px;
+    border-radius: 5px;
+    color: #cbd5e1;
+  }
+
+  .primary {
+    padding: 16px 34px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--blue);
+    color: #fff;
+    font: inherit;
+    font-size: 17px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .primary:active { transform: scale(0.96); }
+
+  /* ---- pad ------------------------------------------------------------- */
+
+  .pad {
+    flex: 1;
+    display: none;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 14px 16px 20px;
+    min-height: 0;
+  }
+  body.is-live .pad { display: flex; }
+  body.is-live .gate { display: none; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+  }
+
+  /* A grid so the four arrows sit in a proper cross rather than a guess. */
+  .dpad {
+    display: grid;
+    grid-template-columns: repeat(3, 56px);
+    grid-template-rows: repeat(3, 56px);
+    gap: 4px;
+  }
+  .dpad .btn { border-radius: 12px; font-size: 20px; }
+  .dpad .gap { visibility: hidden; }
+
+  .btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 3px solid rgba(255, 255, 255, 0.82);
+    border-radius: 50%;
+    background: rgba(236, 244, 250, 0.16);
+    color: #fff;
+    font: inherit;
+    font-weight: 800;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+    cursor: pointer;
+    transition: background 80ms ease, transform 80ms ease;
+  }
+  /* Pressed state is set from JS, not :active — a finger that slides off a
+     button never fires :active's release on iOS and the button sticks lit. */
+  .btn.is-down {
+    background: rgba(0, 158, 224, 0.92);
+    border-color: #fff;
+    transform: scale(0.93);
+  }
+
+  .btn-a { width: 96px; height: 96px; font-size: 30px; }
+  .btn-b { width: 76px; height: 76px; font-size: 24px; }
+  .btn-num { width: 62px; height: 62px; font-size: 20px; }
+
+  .btn-pill {
+    width: auto;
+    min-width: 74px;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: 999px;
+    font-size: 14px;
+  }
+
+  .hint {
+    text-align: center;
+    font-size: 11px;
+    color: #55606c;
+    letter-spacing: 0.03em;
+  }
+
+  /* ---- axis panel ------------------------------------------------------ */
+
+  .axes {
+    display: none;
+    gap: 6px;
+    flex-direction: column;
+    padding: 12px;
+    margin-top: 8px;
+    border: 1px solid var(--edge);
+    border-radius: 12px;
+    background: #131a21;
+    font-size: 12px;
+  }
+  body.show-axes .axes { display: flex; }
+
+  .axis-row { display: flex; align-items: center; gap: 8px; }
+  .axis-row .name { flex: 1; color: var(--dim); }
+  .axis-row .val {
+    width: 62px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: #cbd5e1;
+  }
+  .axis-row button {
+    width: 34px;
+    height: 26px;
+    border: 1px solid var(--edge);
+    border-radius: 7px;
+    background: #1b232b;
+    color: #e6edf3;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .axis-row button.is-flipped { background: var(--blue); border-color: var(--blue); }
+
+  .link {
+    background: none;
+    border: 0;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="status">
+  <span class="dot" id="dot-link"></span><span id="txt-link">Connecting…</span>
+  <span class="spacer"></span>
+  <span class="metric" id="txt-rate">— Hz</span>
+  <span class="metric" id="txt-lag"></span>
+</div>
+
+<div class="gate" id="gate">
+  <h1>Wii Bridge</h1>
+  <p id="gate-text">This phone becomes the Wii Remote. Dolphin reads its motion
+    over your Wi‑Fi.</p>
+  <button class="primary" id="btn-start">Start</button>
+  <p class="hint" id="gate-hint">Hold the phone flat, screen up, top edge
+    pointing at the TV — the way you'd hold a remote.</p>
+</div>
+
+<div class="pad" id="pad">
+  <div class="row">
+    <div class="dpad">
+      <span class="gap"></span>
+      <button class="btn" data-btn="up">▲</button>
+      <span class="gap"></span>
+      <button class="btn" data-btn="left">◀</button>
+      <span class="gap"></span>
+      <button class="btn" data-btn="right">▶</button>
+      <span class="gap"></span>
+      <button class="btn" data-btn="down">▼</button>
+      <span class="gap"></span>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:12px">
+      <button class="btn btn-a" data-btn="a">A</button>
+      <button class="btn btn-b" data-btn="b">B</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="btn btn-num" data-btn="one">1</button>
+    <button class="btn btn-num" data-btn="two">2</button>
+  </div>
+
+  <div class="row">
+    <button class="btn btn-pill" data-btn="minus">−</button>
+    <button class="btn btn-pill" data-btn="home">HOME</button>
+    <button class="btn btn-pill" data-btn="plus">+</button>
+  </div>
+
+  <div class="row">
+    <button class="btn btn-pill" data-btn="recenter" style="min-width:150px">RECENTER</button>
+  </div>
+
+  <div class="hint">
+    <button class="link" id="btn-axes">axes &amp; troubleshooting</button>
+  </div>
+
+  <div class="axes" id="axes"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---- what each on-screen button becomes on the wire -------------------
+     DSU carries a DualShock's buttons, so these are the names Dolphin will
+     show while you bind them. The labels here are what they're *for*; the
+     README has the mapping table. */
+  var BUTTONS1 = { share: 0x01, l3: 0x02, r3: 0x04, options: 0x08,
+                   up: 0x10, right: 0x20, down: 0x40, left: 0x80 };
+  var BUTTONS2 = { l2: 0x01, r2: 0x02, l1: 0x04, r1: 0x08,
+                   triangle: 0x10, circle: 0x20, cross: 0x40, square: 0x80 };
+
+  var MAP = {
+    a:        { set: 2, bit: BUTTONS2.cross },
+    b:        { set: 2, bit: BUTTONS2.circle },
+    one:      { set: 2, bit: BUTTONS2.square },
+    two:      { set: 2, bit: BUTTONS2.triangle },
+    plus:     { set: 1, bit: BUTTONS1.options },
+    minus:    { set: 1, bit: BUTTONS1.share },
+    recenter: { set: 1, bit: BUTTONS1.l3 },
+    up:       { set: 1, bit: BUTTONS1.up },
+    down:     { set: 1, bit: BUTTONS1.down },
+    left:     { set: 1, bit: BUTTONS1.left },
+    right:    { set: 1, bit: BUTTONS1.right },
+    home:     { set: 3, bit: 0x01 }
+  };
+
+  var AXES = [
+    ["accel_x", "Accel X — left / right"],
+    ["accel_y", "Accel Y — forward / back"],
+    ["accel_z", "Accel Z — up / down"],
+    ["gyro_pitch", "Gyro pitch — tilt up"],
+    ["gyro_yaw", "Gyro yaw — turn"],
+    ["gyro_roll", "Gyro roll — twist"]
+  ];
+
+  var SEND_INTERVAL_MS = 10;   // cap at 100 Hz; phones vary above that
+
+  var el = {
+    body: document.body,
+    dot: document.getElementById("dot-link"),
+    link: document.getElementById("txt-link"),
+    rate: document.getElementById("txt-rate"),
+    lag: document.getElementById("txt-lag"),
+    gate: document.getElementById("gate"),
+    gateText: document.getElementById("gate-text"),
+    gateHint: document.getElementById("gate-hint"),
+    start: document.getElementById("btn-start"),
+    axes: document.getElementById("axes")
+  };
+
+  var socket = null;
+  var buttons1 = 0, buttons2 = 0, home = 0;
+  var latest = null;
+  var lastSent = 0;
+  var sent = 0;
+  var invert = {};
+  var wakeLock = null;
+
+  /* ---- gate ------------------------------------------------------------ */
+
+  function fail(heading, message) {
+    el.gate.querySelector("h1").textContent = heading;
+    el.gateText.innerHTML = message;
+    el.start.hidden = true;
+    el.gateHint.hidden = true;
+    el.dot.className = "dot is-bad";
+  }
+
+  function hasMotionApi() {
+    return typeof window.DeviceMotionEvent !== "undefined";
+  }
+
+  function needsPermission() {
+    return typeof DeviceMotionEvent.requestPermission === "function";
+  }
+
+  /* Safari hands out motion sensors only to a secure page, and won't even let
+     an insecure one ask. That is exactly why the bridge serves HTTPS with its
+     own certificate — so if this trips, the certificate step was skipped. */
+  if (!window.isSecureContext) {
+    fail("Not a secure page",
+      "Safari only gives motion data to an <code>https://</code> page. Open the " +
+      "address the bridge printed, and accept its certificate — the README " +
+      "walks through it.");
+    return;
+  }
+
+  if (!hasMotionApi()) {
+    fail("No motion sensors",
+      "This browser doesn't report motion. On iPhone use Safari; some " +
+      "in-app browsers block the sensors entirely.");
+    return;
+  }
+
+  el.start.addEventListener("click", function () {
+    // Must happen inside the tap: iOS ignores a permission request that
+    // isn't the direct result of a user gesture.
+    if (needsPermission()) {
+      DeviceMotionEvent.requestPermission().then(function (result) {
+        if (result === "granted") {
+          begin();
+        } else {
+          fail("Motion access denied",
+            "Safari → the <code>aA</code> menu in the address bar → Website " +
+            "Settings → Motion &amp; Orientation Access. Then reload.");
+        }
+      }).catch(function () {
+        fail("Couldn't ask for motion access",
+          "Reload the page and tap Start again.");
+      });
+    } else {
+      begin();
+    }
+  });
+
+  /* ---- the sensors ----------------------------------------------------- */
+
+  function onMotion(event) {
+    var accel = event.accelerationIncludingGravity;
+    var rate = event.rotationRate;
+    if (!accel || accel.x === null) return;
+
+    latest = {
+      // Phone axes and Wii Remote axes already agree when the phone is held
+      // like a remote, so these pass through untouched; the bridge applies
+      // any sign flips, so they survive a reload.
+      a: [accel.x || 0, accel.y || 0, accel.z || 0],
+      // DSU wants (pitch, yaw, roll) = rotation about (x, z, y).
+      g: rate ? [rate.beta || 0, rate.alpha || 0, rate.gamma || 0] : [0, 0, 0]
+    };
+    pump();
+  }
+
+  function pump() {
+    if (!socket || socket.readyState !== 1 || !latest) return;
+    var now = Date.now();
+    if (now - lastSent < SEND_INTERVAL_MS) return;
+    lastSent = now;
+
+    latest.b = [buttons1, buttons2, home];
+    socket.send(JSON.stringify(latest));
+    sent++;
+  }
+
+  function begin() {
+    el.body.classList.add("is-live");
+    window.addEventListener("devicemotion", onMotion);
+    connect();
+    keepAwake();
+    buildAxes();
+  }
+
+  /* ---- socket ---------------------------------------------------------- */
+
+  function connect() {
+    el.link.textContent = "Connecting…";
+    el.dot.className = "dot";
+
+    socket = new WebSocket("wss://" + location.host + "/ws");
+
+    socket.onopen = function () {
+      el.link.textContent = "Bridged";
+      el.dot.className = "dot is-live";
+      loadInvert();
+    };
+
+    socket.onmessage = function (event) {
+      var message;
+      try { message = JSON.parse(event.data); } catch (err) { return; }
+      if (message.pong) {
+        el.lag.textContent = (Date.now() - message.pong) + " ms";
+      }
+    };
+
+    socket.onclose = function () {
+      el.link.textContent = "Reconnecting…";
+      el.dot.className = "dot is-bad";
+      // The Mac sleeping, Wi-Fi hiccuping, or walking out of range should not
+      // mean walking back to the computer.
+      setTimeout(connect, 1200);
+    };
+
+    socket.onerror = function () { /* onclose follows and handles it */ };
+  }
+
+  setInterval(function () {
+    if (socket && socket.readyState === 1) {
+      socket.send(JSON.stringify({ ping: Date.now() }));
+    }
+  }, 2000);
+
+  var lastCount = 0;
+  setInterval(function () {
+    el.rate.textContent = (sent - lastCount) + " Hz";
+    lastCount = sent;
+  }, 1000);
+
+  /* ---- buttons --------------------------------------------------------- */
+
+  function setButton(name, down) {
+    var entry = MAP[name];
+    if (!entry) return;
+    if (entry.set === 1) {
+      buttons1 = down ? (buttons1 | entry.bit) : (buttons1 & ~entry.bit);
+    } else if (entry.set === 2) {
+      buttons2 = down ? (buttons2 | entry.bit) : (buttons2 & ~entry.bit);
+    } else {
+      home = down ? entry.bit : 0;
+    }
+    // Push straight away rather than waiting for the next motion event, so a
+    // press lands when it was made.
+    lastSent = 0;
+    pump();
+  }
+
+  /* Pointer events rather than touch handlers: one code path for a finger and
+     for a desktop mouse while testing, and pointer capture means a finger that
+     drifts off the button still delivers its release to that button. */
+  Array.prototype.forEach.call(document.querySelectorAll("[data-btn]"), function (node) {
+    var name = node.getAttribute("data-btn");
+
+    node.addEventListener("pointerdown", function (event) {
+      event.preventDefault();
+      node.setPointerCapture(event.pointerId);
+      node.classList.add("is-down");
+      setButton(name, true);
+      if (navigator.vibrate) navigator.vibrate(8);
+    });
+
+    function release(event) {
+      if (!node.classList.contains("is-down")) return;
+      event.preventDefault();
+      node.classList.remove("is-down");
+      setButton(name, false);
+    }
+
+    node.addEventListener("pointerup", release);
+    node.addEventListener("pointercancel", release);
+  });
+
+  // A phone put down mid-press, or a call arriving, must not leave a button
+  // stuck on in Dolphin.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "hidden") return;
+    buttons1 = buttons2 = home = 0;
+    Array.prototype.forEach.call(document.querySelectorAll(".is-down"), function (node) {
+      node.classList.remove("is-down");
+    });
+    pump();
+  });
+
+  /* ---- axis panel ------------------------------------------------------ */
+
+  document.getElementById("btn-axes").addEventListener("click", function () {
+    el.body.classList.toggle("show-axes");
+  });
+
+  function buildAxes() {
+    el.axes.textContent = "";
+
+    var note = document.createElement("div");
+    note.style.color = "#55606c";
+    note.style.marginBottom = "4px";
+    note.textContent =
+      "Lay the phone flat, screen up: Accel Z should read about +1.00. " +
+      "If Dolphin moves the wrong way on an axis, flip it here.";
+    el.axes.appendChild(note);
+
+    AXES.forEach(function (entry) {
+      var key = entry[0];
+      var row = document.createElement("div");
+      row.className = "axis-row";
+
+      var name = document.createElement("span");
+      name.className = "name";
+      name.textContent = entry[1];
+
+      var value = document.createElement("span");
+      value.className = "val";
+      value.id = "val-" + key;
+      value.textContent = "—";
+
+      var flip = document.createElement("button");
+      flip.textContent = "±";
+      flip.addEventListener("click", function () {
+        invert[key] = (invert[key] || 1) < 0 ? 1 : -1;
+        flip.classList.toggle("is-flipped", invert[key] < 0);
+        saveInvert();
+      });
+      flip.classList.toggle("is-flipped", (invert[key] || 1) < 0);
+
+      row.appendChild(name);
+      row.appendChild(value);
+      row.appendChild(flip);
+      el.axes.appendChild(row);
+    });
+  }
+
+  function loadInvert() {
+    fetch("/status").then(function (response) {
+      return response.json();
+    }).then(function (status) {
+      invert = status.invert || {};
+      buildAxes();
+    }).catch(function () { /* the panel still works, just unflipped */ });
+  }
+
+  function saveInvert() {
+    fetch("/invert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(invert)
+    }).catch(function () { /* retried on the next tap */ });
+  }
+
+  // Live readout, but only while the panel is open — no point formatting
+  // numbers into a hidden element sixty times a second.
+  setInterval(function () {
+    if (!el.body.classList.contains("show-axes") || !latest) return;
+    var values = {
+      accel_x: latest.a[0] / 9.80665, accel_y: latest.a[1] / 9.80665,
+      accel_z: latest.a[2] / 9.80665,
+      gyro_pitch: latest.g[0], gyro_yaw: latest.g[1], gyro_roll: latest.g[2]
+    };
+    AXES.forEach(function (entry) {
+      var node = document.getElementById("val-" + entry[0]);
+      if (!node) return;
+      var raw = values[entry[0]] * (invert[entry[0]] || 1);
+      node.textContent = (raw >= 0 ? "+" : "") + raw.toFixed(2);
+    });
+  }, 100);
+
+  /* ---- screen ---------------------------------------------------------- */
+
+  function keepAwake() {
+    if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+    navigator.wakeLock.request("screen").then(function (lock) {
+      wakeLock = lock;
+    }).catch(function () { /* not fatal, the screen just dims */ });
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && el.body.classList.contains("is-live")) {
+      keepAwake();
+    }
+  });
+})();
+</script>
+</body>
+</html>

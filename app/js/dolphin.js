@@ -260,18 +260,93 @@ const DolphinView = (function () {
       return;
     }
 
+    showDesktopRoute();
+  }
+
+  /* ---------- Desktop: actually opening Dolphin --------------------------
+     If Wii Bridge is running on this computer, the button really does open
+     the emulator — the bridge is a local program and can do what the page
+     cannot. Without it there is nothing to press, so the panel says how to
+     start it rather than showing a button that does nothing. */
+
+  function showDesktopRoute() {
+    WiiUI.play("hover");
     WiiUI.panel(
-      "<h2>Dolphin runs here too</h2>" +
-      "<p>On a computer Dolphin installs normally on Windows, macOS and Linux. " +
-      "This shelf is for keeping track of your games and their settings; the " +
-      "emulator itself lives on the machine you play on.</p>" +
-      '<div class="panel-actions">' +
-        '<a class="wii-btn is-primary" href="https://dolphin-emu.org/download/" ' +
-        'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
-        "Dolphin downloads</a>" +
+      "<h2>Dolphin on this computer</h2>" +
+      '<div id="bridge-state">' +
+        '<p class="muted"><span class="spinner is-inline"></span> ' +
+        "Looking for Wii Bridge…</p>" +
+      "</div>" +
+      '<div class="panel-actions" id="bridge-actions">' +
         '<button class="wii-btn" data-close>Close</button>' +
-      "</div>"
+      "</div>",
+      { noAutofocus: true }
     );
+
+    const stateEl = document.getElementById("bridge-state");
+    const actionsEl = document.getElementById("bridge-actions");
+    if (!stateEl) return;
+
+    LocalBridge.probe().then((status) => {
+      if (!status) {
+        stateEl.innerHTML =
+          "<p>Dolphin is installed on your computer, not in this page — so " +
+          "this page can't open it on its own. <strong>Wii Bridge</strong> is " +
+          "a small helper that can.</p>" +
+          '<p class="muted">In a terminal, from your copy of this repo:</p>' +
+          '<pre class="code-block">python3 app/bridge/wiibridge.py</pre>' +
+          '<p class="muted">Leave it running and press Launch again. It also ' +
+          "turns your phone into a Wii Remote — motion and all — which is the " +
+          "only way Wii Sports is worth playing without the real thing.</p>" +
+          '<p class="muted" style="font-size:12px">Already running? The browser ' +
+          "has to trust the bridge's certificate before it will talk to it. " +
+          "The README has the one command for that.</p>";
+        return;
+      }
+
+      if (!status.canLaunch) {
+        stateEl.innerHTML =
+          "<p>Wii Bridge is running, but it can't find Dolphin on this " +
+          "computer.</p>" +
+          '<p class="muted">Put <strong>Dolphin.app</strong> in your ' +
+          "Applications folder and press Launch again.</p>";
+        actionsEl.insertAdjacentHTML("afterbegin",
+          '<a class="wii-btn is-primary" href="https://dolphin-emu.org/download/" ' +
+          'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+          "Get Dolphin</a>");
+        return;
+      }
+
+      stateEl.innerHTML =
+        "<p>Wii Bridge is running and Dolphin is installed. " +
+        "This will open it.</p>" +
+        '<p class="muted">' + (status.dolphin
+          ? "Dolphin is already talking to the bridge, so your phone's motion " +
+            "is going through."
+          : "Dolphin isn't reading the bridge yet — turn on the DSU client in " +
+            "its controller settings to use your phone as a Wii Remote.") +
+        "</p>";
+
+      const button = document.createElement("button");
+      button.className = "wii-btn is-primary";
+      button.textContent = "Open Dolphin";
+      button.addEventListener("click", () => {
+        WiiUI.feedback("boot");
+        button.disabled = true;
+        button.textContent = "Opening…";
+        LocalBridge.launch().then((result) => {
+          button.disabled = false;
+          button.textContent = "Open Dolphin";
+          if (result.ok) {
+            WiiUI.toast("Dolphin is opening", 2600);
+          } else {
+            WiiUI.toast(result.message || "Couldn't open Dolphin", 5000);
+            WiiUI.play("error");
+          }
+        });
+      });
+      actionsEl.insertBefore(button, actionsEl.firstChild);
+    });
   }
 
   /* iPhone can run Dolphin, but nothing on a web page can start it: iOS only
@@ -316,6 +391,68 @@ const DolphinView = (function () {
       "</div>",
       { noAutofocus: true }
     );
+  }
+
+  /* ---------- Phone as a Wii Remote --------------------------------------
+     Deliberately its own button rather than a note buried in the guide: it is
+     a different job from launching the emulator, and it's the answer to the
+     one thing keyboard-and-mouse Dolphin genuinely can't do. */
+
+  function showRemoteRoute() {
+    WiiUI.feedback("click");
+    const onPhone = isApplePhone() || /android/i.test(navigator.userAgent);
+
+    WiiUI.panel(
+      "<h2>Your phone as a Wii Remote</h2>" +
+      "<p>Your phone has a gyroscope and an accelerometer — the same two " +
+      "things a Wii Remote has. <strong>Wii Bridge</strong> carries them into " +
+      "Dolphin, so swinging the phone swings the remote. That's Wii Sports, " +
+      "Wii Play, Zelda's pointer — the parts a keyboard can't do.</p>" +
+      '<div id="remote-state"><p class="muted">' +
+        '<span class="spinner is-inline"></span>Looking for the bridge…</p></div>' +
+      '<div class="panel-actions" id="remote-actions">' +
+        '<button class="wii-btn" data-close>Close</button>' +
+      "</div>",
+      { noAutofocus: true }
+    );
+
+    const stateEl = document.getElementById("remote-state");
+    const actionsEl = document.getElementById("remote-actions");
+    if (!stateEl) return;
+
+    LocalBridge.probe().then((status) => {
+      if (status) {
+        stateEl.innerHTML =
+          "<p>The bridge is running on this machine.</p>" +
+          '<p class="muted">' + (status.dolphin
+            ? "Dolphin is connected to it."
+            : "Dolphin isn't reading it yet — Config → Controllers → " +
+              "Alternate Input Sources → Enable, server 127.0.0.1:26760.") +
+          "</p>";
+        actionsEl.insertAdjacentHTML("afterbegin",
+          '<a class="wii-btn is-primary" href="' + LocalBridge.controllerUrl() + '" ' +
+          'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+          "Open the controller</a>");
+        return;
+      }
+
+      stateEl.innerHTML = onPhone
+        ? "<p>Start the bridge on your computer first:</p>" +
+          '<pre class="code-block">python3 app/bridge/wiibridge.py</pre>' +
+          '<p class="muted">It prints an address. Open that address on this ' +
+          "phone — the first time it walks you through trusting its " +
+          "certificate, which Safari needs before it will hand over the " +
+          "motion sensors.</p>"
+        : "<p>Run this on this computer, from your copy of the repo:</p>" +
+          '<pre class="code-block">python3 app/bridge/wiibridge.py</pre>' +
+          '<p class="muted">It prints an address to open on your phone. ' +
+          "Nothing to install — it's plain Python, and everything stays on " +
+          "your own network.</p>";
+
+      stateEl.insertAdjacentHTML("beforeend",
+        '<p class="muted" style="font-size:12px">Full walkthrough, including ' +
+        "which Dolphin fields to bind: <strong>app/bridge/README.md</strong>.</p>");
+    });
   }
 
   /* ---------- Guide ------------------------------------------------------ */
@@ -373,6 +510,8 @@ const DolphinView = (function () {
     WiiUI.feedback("click");
     editEntry({ title: "Untitled", platform: "wii", status: "backlog", rating: 0, notes: "", settings: "" });
   });
+
+  document.getElementById("btn-remote").addEventListener("click", showRemoteRoute);
 
   const launchButton = document.getElementById("btn-launch");
   launchButton.addEventListener("click", launchDolphin);

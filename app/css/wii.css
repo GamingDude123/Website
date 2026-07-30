@@ -488,6 +488,32 @@ body::before {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Small enough to sit on a line of text while something is being checked. */
+.spinner.is-inline {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-width: 2px;
+  vertical-align: -1px;
+  margin-right: 6px;
+}
+
+/* A command meant to be copied, so it wraps rather than scrolling off. */
+.code-block {
+  margin: 10px 0;
+  padding: 11px 13px;
+  border: 1px solid #cfdbe4;
+  border-radius: 9px;
+  background: #f2f6f9;
+  color: #24313d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
 .panel-actions {
   display: flex;
   flex-wrap: wrap;

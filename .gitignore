@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# Wii Bridge generates these on the machine it runs on: a certificate only
+# valid for that machine's names, and its saved axis flips.
+app/bridge/.cert/
+app/bridge/bridge-config.json
