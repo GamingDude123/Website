@@ -12,6 +12,18 @@
   const $ = function (id) { return document.getElementById(id); };
   const STEPS = Patterns.steps;
 
+  /* One colour per pad position, not per role: the point is that you learn
+   * where your kick is by its colour and its place, the way you do on hardware.
+   * Saturated and flat, so a waveform in white sits legibly on top of any of
+   * them. */
+  const PAD_COLOURS = [
+    "#ff6b35", "#ff2e63", "#c341e8", "#7b5cff",
+    "#2e7dff", "#00b8d4", "#00c853", "#c6d90b",
+    "#ffb300", "#ff5252", "#e040fb", "#5c6bc0",
+    "#26c6da", "#66bb6a", "#d4a017", "#ec407a",
+  ];
+  const GRID_SLOTS = 16;
+
   const ui = {
     keyRoot: 9,          // A
     scale: "minor",
@@ -63,12 +75,6 @@
     const mid = height / 2;
     const per = samples.length / width;
 
-    g.strokeStyle = "rgba(255,255,255,0.10)";
-    g.beginPath();
-    g.moveTo(0, mid);
-    g.lineTo(width, mid);
-    g.stroke();
-
     g.fillStyle = colour || "#4dd4ff";
     for (let x = 0; x < width; x++) {
       const from = Math.floor(x * per);
@@ -89,15 +95,16 @@
 
   // ------------------------------------------------------------------ pads
 
+  /* One short line under the name. A pad is small, so this is whichever single
+   * fact is most worth knowing: the note it was tuned to, how many beats it
+   * fills, or failing both, how long it is. */
   function padSubtitle(pad) {
-    const bits = [];
-    if (pad.note) bits.push(pad.note);
-    if (pad.beats) bits.push(pad.beats + (pad.beats === 1 ? " beat" : " beats"));
-    // The length of whatever is actually loaded, not of the take it came from —
-    // trimming can cut a second of dead air off the front.
+    if (pad.note) return pad.note;
+    if (pad.beats) return pad.beats + (pad.beats === 1 ? " beat" : " beats");
+    // The length of what is loaded, not of the take it came from — trimming can
+    // cut a second of dead air off the front.
     const active = pad.usePolished && pad.polished ? pad.polished : pad.raw;
-    bits.push((active.length / pad.sampleRate).toFixed(2) + "s");
-    return bits.join(" · ");
+    return (active.length / pad.sampleRate).toFixed(2) + "s";
   }
 
   function renderPads() {
@@ -105,7 +112,7 @@
     host.innerHTML = "";
     const pads = Engine.pads();
 
-    pads.forEach(function (pad) {
+    pads.forEach(function (pad, index) {
       const tile = document.createElement("div");
       tile.className = "pad" + (pad.mute ? " is-muted" : "");
       tile.dataset.role = pad.role;
@@ -114,19 +121,22 @@
 
       const top = document.createElement("div");
       top.className = "pad-top";
-      const name = document.createElement("span");
-      name.className = "pad-name";
-      name.textContent = pad.name;
       const tag = document.createElement("span");
       tag.className = "tag";
       tag.textContent = pad.role;
-      top.appendChild(name);
       top.appendChild(tag);
 
       const canvas = document.createElement("canvas");
+      const foot = document.createElement("div");
+      foot.className = "pad-foot";
+      const name = document.createElement("div");
+      name.className = "pad-name";
+      name.textContent = pad.name;
       const sub = document.createElement("div");
       sub.className = "pad-sub";
       sub.textContent = padSubtitle(pad);
+      foot.appendChild(name);
+      foot.appendChild(sub);
 
       const cog = document.createElement("button");
       cog.className = "cog";
@@ -134,12 +144,15 @@
 
       tile.appendChild(top);
       tile.appendChild(canvas);
-      tile.appendChild(sub);
+      tile.appendChild(foot);
       tile.appendChild(cog);
+      tile.style.setProperty("--pad", PAD_COLOURS[index % PAD_COLOURS.length]);
       host.appendChild(tile);
 
+      // White on the pad's own colour, rather than a colour of its own: on a
+      // saturated background any hue but white turns to mud.
       drawWave(canvas, pad.usePolished && pad.polished ? pad.polished : pad.raw,
-        pad.role === "kick" ? "#ff3b6b" : pad.role === "bass" ? "#ffb03a" : "#4dd4ff");
+        "rgba(255,255,255,0.6)");
 
       function hit() {
         Engine.tap(pad.id, 1);
@@ -160,6 +173,18 @@
         openSheet(pad.id);
       });
     });
+
+    // Fill the rest of the grid with somewhere to put the next sound.
+    for (let i = pads.length; i < GRID_SLOTS; i++) {
+      const blank = document.createElement("div");
+      blank.className = "pad is-blank";
+      blank.innerHTML = "<span>+</span>";
+      blank.title = "record a sound";
+      blank.addEventListener("click", function () {
+        if (!Recorder.isRecording()) startRecording();
+      });
+      host.appendChild(blank);
+    }
   }
 
   // ------------------------------------------------------------- sequencer
@@ -170,10 +195,13 @@
     host.innerHTML = "";
     $("grid-empty").hidden = pads.length > 0;
 
-    pads.forEach(function (pad) {
+    pads.forEach(function (pad, index) {
       const row = document.createElement("div");
       row.className = "grid-row";
       row.dataset.id = pad.id;
+      // The row wears the same colour as its pad, so you can see which line is
+      // which without reading down the labels.
+      row.style.setProperty("--pad", PAD_COLOURS[index % PAD_COLOURS.length]);
 
       const label = document.createElement("div");
       label.className = "label";

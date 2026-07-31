@@ -6,10 +6,12 @@
  */
 
 :root {
-  --bg: #0d0b14;
-  --panel: #17141f;
-  --panel-2: #1f1b2b;
-  --line: #2d2740;
+  /* Near-black and low contrast on purpose: all the colour in here belongs to
+   * the pads, and a tinted background would fight with sixteen of them. */
+  --bg: #0a0a0c;
+  --panel: #141418;
+  --panel-2: #1d1d23;
+  --line: #2a2a33;
   --ink: #f3f0ff;
   --ink-dim: #a49cc4;
   --hot: #ff3b6b;
@@ -37,11 +39,6 @@ html, body {
 }
 
 body {
-  /* A wash behind everything so the flat panels have something to sit on. */
-  background-image:
-    radial-gradient(900px 500px at 12% -8%, rgba(255, 59, 107, 0.20), transparent 65%),
-    radial-gradient(800px 480px at 92% 4%, rgba(77, 212, 255, 0.16), transparent 62%);
-  background-attachment: fixed;
   min-height: 100vh;
   padding-bottom: 40px;
 }
@@ -58,7 +55,7 @@ h1, h2 { font-weight: 650; letter-spacing: -0.02em; }
   position: sticky;
   top: 0;
   z-index: 20;
-  background: rgba(13, 11, 20, 0.86);
+  background: rgba(10, 10, 12, 0.92);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--line);
 }
@@ -117,9 +114,9 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 16px; max-widt
 
 section {
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: none;
   border-radius: var(--radius);
-  padding: 14px;
+  padding: 13px;
 }
 
 section h2 {
@@ -238,36 +235,33 @@ select, input[type="text"] {
 
 /* -------------------------------------------------------------- transport */
 
+/* One wrapped row rather than a stack. Given one control per line this section
+ * was half a phone screen tall, and the pads were below the fold — which is
+ * the wrong way round for an instrument. */
 .bar.transport {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 12px 18px;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px 14px;
 }
 
 .play {
-  width: 54px;
-  height: 54px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
-  font-size: 19px;
+  font-size: 17px;
   padding: 0;
   background: linear-gradient(180deg, var(--green), #1fbf6b);
   color: #06210f;
   border: none;
-  grid-row: span 2;
+  flex: 0 0 auto;
 }
 .play.is-playing { background: linear-gradient(180deg, var(--warm), #e0850f); color: #2a1600; }
 
-.transport .field { grid-column: 2; }
-
-@media (min-width: 720px) {
-  .bar.transport {
-    grid-template-columns: auto 1.4fr auto auto auto 1.1fr;
-    grid-template-rows: auto;
-  }
-  .play { grid-row: auto; }
-  .transport .field { grid-column: auto; }
-}
+/* The sliders take what is left; the dropdowns stay their own size. */
+.transport .field { flex: 1 1 150px; }
+.transport .field.narrow { flex: 0 0 auto; }
+.transport .field > span { font-size: 11px; }
 
 /* ---------------------------------------------------------------- capture */
 
@@ -334,63 +328,132 @@ select, input[type="text"] {
 
 /* ------------------------------------------------------------------- pads */
 
+/* The pads.
+ *
+ * Flat, saturated, square and big — each pad its own colour so you learn the
+ * kit by where the colours are rather than by reading labels. Four across, so
+ * it reads as a pad grid and not as a list of cards.
+ */
+
 .pads {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
   background: transparent;
   border: none;
   padding: 0;
 }
 
+@media (max-width: 420px) {
+  .pads { gap: 6px; }
+}
+
+/* Four across is right on a phone. On a wide screen it makes each pad the size
+ * of a coaster and pushes everything else off the page, so the grid packs
+ * instead and the pads stay a sensible size. */
+@media (min-width: 640px) {
+  .pads { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+}
+
 .pad {
   position: relative;
-  background: linear-gradient(180deg, var(--panel-2), #191524);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 10px;
+  aspect-ratio: 1 / 1;
+  background: var(--pad, #2a2536);
+  border: none;
+  border-radius: 14px;
+  padding: 9px;
   text-align: left;
   overflow: hidden;
-  min-height: 118px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  justify-content: space-between;
+  cursor: pointer;
   touch-action: manipulation;
+  /* No transition: a pad has to look struck the instant it is struck. */
+  color: #fff;
 }
 
-.pad canvas { width: 100%; height: 42px; display: block; opacity: 0.95; }
+/* The waveform sits across the middle of the pad, underneath the text. */
+.pad canvas {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 100%;
+  height: 56%;
+  display: block;
+  pointer-events: none;
+}
 
-.pad .pad-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.pad .pad-name { font-size: 13.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pad .tag {
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
+.pad .pad-top { position: relative; display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
+.pad .pad-foot { position: relative; min-width: 0; }
+.pad .pad-name {
+  position: relative;
+  font-size: 12.5px;
   font-weight: 800;
-  padding: 3px 6px;
-  border-radius: 6px;
-  background: #332b49;
-  color: var(--cool);
-  flex: 0 0 auto;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
-.pad .pad-sub { font-size: 11px; color: var(--ink-dim); font-weight: 600; }
-.pad.is-hit { border-color: var(--hot); box-shadow: 0 0 0 1px var(--hot) inset; }
-.pad.is-muted { opacity: 0.42; }
+.pad .tag {
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.75);
+  flex: 0 0 auto;
+  padding-top: 1px;
+}
+.pad .pad-sub {
+  position: relative;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Struck: the pad lights rather than moves, so a fast roll stays readable. */
+.pad.is-hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.45);
+  border-radius: 14px;
+}
+.pad.is-muted { opacity: 0.35; }
+
 .pad .cog {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  padding: 4px 7px;
-  font-size: 11px;
-  border-radius: 8px;
-  background: rgba(13, 11, 20, 0.7);
+  right: 5px;
+  bottom: 5px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 800;
+  border-radius: 7px;
+  border: none;
+  background: rgba(0, 0, 0, 0.32);
+  color: #fff;
   opacity: 0;
 }
 .pad:hover .cog, .pad:focus-within .cog { opacity: 1; }
 
-.pad[data-role="kick"] .tag { color: var(--hot); }
-.pad[data-role="bass"] .tag { color: var(--warm); }
-.pad[data-role="vocal"] .tag, .pad[data-role="chord"] .tag { color: var(--green); }
+/* An empty slot: somewhere for the next sound to go. */
+.pad.is-blank {
+  background: none;
+  border: 1px dashed #322b47;
+  color: #5f5880;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.pad.is-blank span { font-size: 22px; font-weight: 300; line-height: 1; }
 
 /* -------------------------------------------------------------- sequencer */
 
@@ -406,7 +469,7 @@ select, input[type="text"] {
 .grid-row .label {
   font-size: 11.5px;
   font-weight: 700;
-  color: var(--ink-dim);
+  color: var(--pad, var(--ink-dim));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -423,9 +486,9 @@ select, input[type="text"] {
 }
 /* Beat markers, so you can see where you are without counting. */
 .cell[data-beat="1"] { background: #272138; }
-.cell.is-on { background: linear-gradient(180deg, var(--hot), #d0224e); }
+.cell.is-on { background: var(--pad, var(--hot)); }
 /* Ghost notes read as dimmer, so an arranged bar shows its own dynamics. */
-.cell.is-on[data-vel="soft"] { background: linear-gradient(180deg, #92263f, #6f1b30); }
+.cell.is-on[data-vel="soft"] { opacity: 0.5; }
 .cell.is-now { border-color: var(--ink); }
 
 /* On a phone the bar has to be swiped sideways. Tightening the label column and
