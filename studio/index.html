@@ -28,6 +28,7 @@
     <li><b>Listen.</b> Length, brightness, noisiness and pitch confidence decide whether this is a kick, a hat, a snare, a bassline, a vocal, a chord or a texture.</li>
     <li><b>Tune.</b> Pitched sounds get their fundamental found and moved to the nearest note of your key &mdash; pitch shifted, not sped up, so the length stays put. Drums are never tuned.</li>
     <li><b>Fit the grid.</b> Anything loop-shaped is time-stretched to the nearest power-of-two number of beats at your tempo. Beyond about a quarter either way it is left alone rather than mangled.</li>
+    <li><b>Rebuild.</b> Pick what the sound should be and it is rebuilt as that instrument, not just filtered like one. The instrument's envelope is forced onto your recording &mdash; which is what turns a two-second noise into an 80&nbsp;ms hi-hat &mdash; and a synthesised version is layered underneath: a sub whose pitch collapses onto the root for a kick, metallic top end for a hat, drum body and wire noise for a snare, an oscillator following your phrasing for a bass. <b>How much</b> crossfades between your recording and the instrument, so what survives is your attack and your timbre.</li>
     <li><b>Shape.</b> Role-specific EQ, saturation and compression &mdash; the low-mid dip and presence lift on a vocal, the 60&nbsp;Hz lift and 400&nbsp;Hz cut on a kick.</li>
     <li><b>Arrange.</b> Each pad gets a part that suits what it is, the kick ducks everything under it, and the whole thing goes through glue compression and a limiter.</li>
   </ol>
@@ -120,6 +121,33 @@
   </section>
 </main>
 
+<div class="sheet" id="pick" hidden>
+  <div class="sheet-inner" role="dialog" aria-label="Choose an instrument">
+    <header>
+      <h2 class="sheet-title">What is this?</h2>
+      <button class="ghost" id="pick-close" aria-label="Discard this take">&#10005;</button>
+    </header>
+
+    <canvas id="pick-wave" width="640" height="90"></canvas>
+    <p class="status" id="pick-status"></p>
+
+    <div class="picker" id="pick-grid"></div>
+
+    <label class="field">
+      <span>How much</span>
+      <input type="range" id="pick-morph" min="0" max="100" value="70">
+      <output id="pick-morph-out">70</output>
+    </label>
+    <p class="hint" id="pick-hint"></p>
+
+    <div class="sheet-actions">
+      <button class="ghost" id="pick-hear">Hear it</button>
+      <button class="primary" id="pick-add">Add to kit</button>
+      <button class="ghost danger" id="pick-discard">Discard</button>
+    </div>
+  </div>
+</div>
+
 <div class="sheet" id="sheet" hidden>
   <div class="sheet-inner" role="dialog" aria-label="Pad detail">
     <header>
@@ -135,19 +163,17 @@
       <button id="btn-ab" class="toggle is-on">Polished</button>
       <button id="btn-play-pad" class="ghost">Play</button>
       <label class="field narrow">
-        <span>Treat as</span>
-        <select id="pad-role">
-          <option value="kick">kick</option>
-          <option value="snare">snare</option>
-          <option value="hat">hat</option>
-          <option value="bass">bass</option>
-          <option value="vocal">vocal</option>
-          <option value="chord">chord</option>
-          <option value="texture">texture</option>
-          <option value="perc">perc</option>
-        </select>
+        <span>Rebuild as</span>
+        <select id="pad-instrument"></select>
       </label>
     </div>
+
+    <label class="field">
+      <span>How much</span>
+      <input type="range" id="p-morph" min="0" max="100" value="0">
+      <output id="p-morph-out">0</output>
+    </label>
+    <p class="hint" id="pad-hint"></p>
 
     <div class="knobs">
       <label class="field"><span>Level</span><input type="range" id="p-gain" min="0" max="150" value="100"><output id="p-gain-out">100</output></label>
@@ -171,6 +197,7 @@
 <div class="drop" id="drop" hidden><span>drop it</span></div>
 
 <script src="js/dsp.js"></script>
+<script src="js/instrument.js"></script>
 <script src="js/polish.js"></script>
 <script src="js/patterns.js"></script>
 <script src="js/engine.js"></script>

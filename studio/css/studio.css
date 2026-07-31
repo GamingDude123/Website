@@ -496,16 +496,69 @@ select, input[type="text"] {
 .report .line b { color: var(--green); font-weight: 800; flex: 0 0 auto; }
 .report .head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); font-weight: 700; }
 
+/* ------------------------------------------------------- instrument picker */
+
+.sheet-title { font-size: 17px; margin: 0; flex: 1; }
+
+.picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.pick {
+  position: relative;
+  padding: 13px 8px;
+  font-size: 13.5px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.pick.is-on {
+  background: linear-gradient(180deg, var(--hot), #d0224e);
+  border-color: transparent;
+  color: #fff;
+}
+
+/* The classifier's opinion, offered rather than imposed. */
+.pick i {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-style: normal;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cool);
+  opacity: 0.9;
+}
+.pick.is-on i { color: #ffe3ea; }
+
+.hint { margin: -2px 0 0; font-size: 12.5px; color: var(--ink-dim); line-height: 1.45; }
+
+#pick-wave {
+  width: 100%;
+  height: 84px;
+  background: #120f1b;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: block;
+}
+
 .ab { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .knobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 18px; }
 .sheet-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 /* ------------------------------------------------------------------ misc */
 
+/* Anchored to the top, not the bottom: a sheet puts its buttons along the
+ * bottom edge, and a toast there lands on top of "Add to kit". */
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 22px;
+  top: 14px;
   transform: translateX(-50%);
   background: var(--ink);
   color: #16121f;

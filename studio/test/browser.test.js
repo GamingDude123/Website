@@ -151,11 +151,16 @@ function check(name, cond, extra) {
   await page.waitForSelector("#sheet:not([hidden])");
   const sheet = await page.evaluate(() => ({
     name: document.getElementById("pad-name").value,
-    role: document.getElementById("pad-role").value,
+    instrument: document.getElementById("pad-instrument").value,
+    morph: document.getElementById("p-morph").value,
     lines: Array.from(document.querySelectorAll("#pad-report .line span")).map((n) => n.textContent),
     ab: document.getElementById("btn-ab").textContent,
   }));
-  check("sheet opens on the right pad", sheet.name === "hum" && sheet.role === "bass", JSON.stringify(sheet.name + "/" + sheet.role));
+  check("sheet opens on the right pad", sheet.name === "hum" && sheet.instrument === "bass",
+    sheet.name + "/" + sheet.instrument);
+  // An instrument that was only guessed is offered, not applied.
+  check("a guessed instrument is not rebuilt behind your back", sheet.morph === "0",
+    "strength = " + sheet.morph);
   check("sheet lists the edits", sheet.lines.length >= 3, sheet.lines.join(" | "));
 
   // raw/polished A-B actually swaps the buffer
@@ -167,12 +172,31 @@ function check(name, cond, extra) {
   check("A-B switches to the raw take", abOff.label === "Raw take" && abOff.usePolished === false, JSON.stringify(abOff));
   await page.click("#btn-ab");
 
-  // role override re-polishes
-  await page.selectOption("#pad-role", "vocal");
-  await page.waitForFunction(() => window.LoopLab.pads().find((p) => p.name === "hum").role === "vocal", { timeout: 10000 });
-  check("role override re-polishes the pad", true, "hum -> vocal");
-  await page.selectOption("#pad-role", "bass");
-  await page.waitForFunction(() => window.LoopLab.pads().find((p) => p.name === "hum").role === "bass", { timeout: 10000 });
+  // the pad sheet can rebuild an existing pad as a different instrument
+  const humBefore = await page.evaluate(() => {
+    const pad = window.LoopLab.pads().find((p) => p.name === "hum");
+    let sum = 0;
+    for (let i = 0; i < pad.polished.length; i++) sum += Math.abs(pad.polished[i]) * (i % 7 + 1);
+    return { len: pad.polished.length, sum: sum };
+  });
+  await page.selectOption("#pad-instrument", "sub");
+  await page.waitForFunction(() => window.LoopLab.pads().find((p) => p.name === "hum").instrument === "sub",
+    { timeout: 15000 });
+  const asSub = await page.evaluate(() => {
+    const pad = window.LoopLab.pads().find((p) => p.name === "hum");
+    let sum = 0;
+    for (let i = 0; i < pad.polished.length; i++) sum += Math.abs(pad.polished[i]) * (i % 7 + 1);
+    return { role: pad.role, morph: pad.morph, report: pad.report, len: pad.polished.length, sum: sum };
+  });
+  check("an existing pad can be rebuilt as another instrument",
+    asSub.role === "bass" && asSub.morph > 0.5 && asSub.report.some((l) => /rebuilt it as a sub/.test(l)),
+    "role=" + asSub.role + " morph=" + asSub.morph + " | " + asSub.report.join(" | "));
+  check("rebuilding actually changed the audio",
+    Math.abs(asSub.sum - humBefore.sum) / humBefore.sum > 0.02,
+    "waveform sum moved " + (100 * Math.abs(asSub.sum - humBefore.sum) / humBefore.sum).toFixed(1) + "%");
+  await page.selectOption("#pad-instrument", "bass");
+  await page.waitForFunction(() => window.LoopLab.pads().find((p) => p.name === "hum").instrument === "bass",
+    { timeout: 15000 });
   await page.click("#sheet-close");
 
   // ---- key change retunes
@@ -185,6 +209,18 @@ function check(name, cond, extra) {
     retuned.join(" "));
   await page.selectOption("#key", "9");
   await page.waitForTimeout(2500);
+
+  // Discarding a take leaves nothing behind.
+  const countBeforeDiscard = await page.evaluate(() => window.LoopLab.pads().length);
+  await page.click("#btn-rec");
+  await page.waitForTimeout(900);
+  await page.click("#btn-rec");
+  await page.waitForSelector("#pick:not([hidden])", { timeout: 20000 });
+  await page.click("#pick-discard");
+  await page.waitForFunction(() => document.getElementById("pick").hidden, { timeout: 5000 });
+  const afterDiscard = await page.evaluate(() => window.LoopLab.pads().length);
+  check("discarding a take adds no pad", afterDiscard === countBeforeDiscard,
+    afterDiscard + " pads, was " + countBeforeDiscard);
 
   // ---- bounce
   const [download] = await Promise.all([
@@ -245,15 +281,86 @@ function check(name, cond, extra) {
   check("recording starts and meters", live.cls.indexOf("is-live") >= 0 && live.label === "Stop",
     JSON.stringify(live));
   await page.click("#btn-rec");
+
+  // The picker should come up instead of a pad silently appearing.
+  await page.waitForSelector("#pick:not([hidden])", { timeout: 20000 });
+  const picker = await page.evaluate(() => ({
+    options: Array.from(document.querySelectorAll("#pick-grid .pick")).map((b) => b.dataset.instrument),
+    selected: (document.querySelector("#pick-grid .pick.is-on") || {}).dataset,
+    guessBadges: document.querySelectorAll("#pick-grid .pick i").length,
+    morph: document.getElementById("pick-morph").value,
+    padsSoFar: window.LoopLab.pads().length,
+  }));
+  check("recording opens the instrument picker", picker.options.length >= 12 && picker.padsSoFar === before,
+    picker.options.length + " instruments, " + picker.padsSoFar + " pads so far");
+  check("the picker marks its guess", picker.guessBadges === 1 && picker.selected,
+    "guess=" + (picker.selected && picker.selected.instrument) + " at " + picker.morph + "%");
+
+  // Picking an instrument must actually change the audio, not just a label.
+  await page.click('#pick-grid .pick[data-instrument="hat"]');
+  await page.waitForFunction(() => window.LoopLab.pending() && window.LoopLab.pending().result &&
+    window.LoopLab.pending().result.instrument === "hat", { timeout: 15000 });
+  const asHat = await page.evaluate(() => {
+    const r = window.LoopLab.pending().result;
+    return { seconds: r.samples.length / r.sampleRate, role: r.role, steps: r.steps, morph: r.morph };
+  });
+  await page.click('#pick-grid .pick[data-instrument="kick"]');
+  await page.waitForFunction(() => window.LoopLab.pending().result.instrument === "kick", { timeout: 15000 });
+  const asKick = await page.evaluate(() => {
+    const r = window.LoopLab.pending().result;
+    let low = 0, total = 0;
+    // crude low-end share, straight off the samples
+    for (let i = 1; i < r.samples.length; i++) total += Math.abs(r.samples[i]);
+    return { seconds: r.samples.length / r.sampleRate, role: r.role, steps: r.steps, morph: r.morph };
+  });
+  console.log("         as a hat:  " + asHat.seconds.toFixed(3) + "s  " + asHat.steps.join(" | "));
+  console.log("         as a kick: " + asKick.seconds.toFixed(3) + "s  " + asKick.steps.join(" | "));
+  check("choosing a hi-hat gives a hi-hat's length", asHat.seconds < 0.2 && asHat.role === "hat",
+    asHat.seconds.toFixed(3) + "s role=" + asHat.role);
+  check("choosing a kick gives a kick's length", asKick.seconds > 0.25 && asKick.seconds < 0.6 && asKick.role === "kick",
+    asKick.seconds.toFixed(3) + "s role=" + asKick.role);
+  check("each instrument brings its own default strength", asHat.morph !== asKick.morph,
+    "hat " + asHat.morph + " vs kick " + asKick.morph);
+  check("the rebuild is reported in words",
+    asKick.steps.some((line) => /rebuilt it as a kick/.test(line)),
+    asKick.steps.join(" | "));
+
+  // the strength slider re-shapes
+  await page.evaluate(() => {
+    const slider = document.getElementById("pick-morph");
+    slider.value = "0";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.LoopLab.pending().result.morph === 0, { timeout: 15000 });
+  const atZero = await page.evaluate(() => {
+    const r = window.LoopLab.pending().result;
+    return { seconds: r.samples.length / r.sampleRate, steps: r.steps };
+  });
+  check("strength 0 leaves the take its own length", atZero.seconds > asKick.seconds * 1.5,
+    atZero.seconds.toFixed(3) + "s at 0% vs " + asKick.seconds.toFixed(3) + "s at 70%");
+  check("strength 0 reports no rebuild", !atZero.steps.some((l) => /rebuilt/.test(l)), atZero.steps.join(" | "));
+
+  await page.evaluate(() => {
+    const slider = document.getElementById("pick-morph");
+    slider.value = "80";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.LoopLab.pending().result.morph === 0.8, { timeout: 15000 });
+
+  await page.click("#pick-add");
   await page.waitForFunction((n) => window.LoopLab.pads().length === n + 1, before, { timeout: 20000 });
   const recorded = await page.evaluate(() => {
     const pad = window.LoopLab.pads().slice(-1)[0];
     let peak = 0;
     for (let i = 0; i < pad.polished.length; i++) peak = Math.max(peak, Math.abs(pad.polished[i]));
-    return { name: pad.name, role: pad.role, seconds: pad.raw.length / pad.sampleRate, peak: peak, report: pad.report };
+    return { name: pad.name, role: pad.role, instrument: pad.instrument, morph: pad.morph,
+             seconds: pad.raw.length / pad.sampleRate, peak: peak, report: pad.report };
   });
   check("a microphone take becomes a pad", recorded.seconds > 0.5 && recorded.peak > 0.5,
     recorded.name + " " + recorded.role + " " + recorded.seconds.toFixed(2) + "s peak=" + recorded.peak.toFixed(2));
+  check("the pad keeps the instrument that was chosen",
+    recorded.instrument === "kick" && recorded.role === "kick" && Math.abs(recorded.morph - 0.8) < 0.001,
+    recorded.instrument + " at " + recorded.morph);
   console.log("         mic take: " + recorded.report.join(" | "));
 
   // A second bounce, now that a microphone take is in the kit: the level of a
@@ -289,8 +396,24 @@ function check(name, cond, extra) {
   check("kit survives a reload", afterReload.count === 7, afterReload.count + ": " + afterReload.names.join(","));
   check("pattern survives a reload", afterReload.cells > 8, afterReload.cells + " steps");
   check("session settings survive", afterReload.key === "9", "bpm=" + afterReload.bpm + " key=" + afterReload.key);
+  const choiceKept = await page.evaluate(() => {
+    const pad = window.LoopLab.pads().slice(-1)[0];
+    return { instrument: pad.instrument, morph: pad.morph, role: pad.role };
+  });
+  check("the chosen instrument survives a reload",
+    choiceKept.instrument === "kick" && Math.abs(choiceKept.morph - 0.8) < 0.001,
+    choiceKept.instrument + " at " + choiceKept.morph + ", role " + choiceKept.role);
 
   // ---- screenshots
+  await page.setViewportSize({ width: 430, height: 900 });
+  await page.click("#btn-rec");
+  await page.waitForTimeout(900);
+  await page.click("#btn-rec");
+  await page.waitForSelector("#pick:not([hidden])", { timeout: 20000 });
+  await page.waitForTimeout(900);
+  await page.screenshot({ path: path.join(OUT, "picker.png") });
+  await page.click("#pick-discard");
+
   await page.setViewportSize({ width: 1180, height: 1400 });
   await page.click("#btn-about");
   await page.waitForTimeout(400);
