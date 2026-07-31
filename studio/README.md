@@ -1,24 +1,30 @@
 # Loop Lab
 
-A sampler that does the editing for you. Record a sound — a hum, a clap, a
-finger on a desk, a word — and it arrives on a pad already cleaned up, trimmed,
-tuned to your key, stretched onto the grid, mixed, and playing a part that suits
-what it is.
+Sixteen pads. Hold an empty one to record into it; let go and the sound is on
+the pad, cleaned up and playing. Tap pads to play them. Hit the red button and
+whatever you play goes into the loop, snapped to the grid.
 
 Open `studio/index.html` from a web server (the microphone needs `https://` or
 `localhost`). No build step, no dependencies, no network calls.
 
-## The point
+## Playing it
 
-Koala Sampler and its relatives give you a chopping board and let you edit. This
-does the opposite: the editing is the automatic part, and the manual controls are
-there for when it guesses wrong. Every automatic decision is listed in plain
-words on the pad, and all of them can be overridden.
+| | |
+| --- | --- |
+| Hold an empty pad | records into it — no dialog, no questions |
+| Tap a pad | plays it, on the way down |
+| Hold a full pad | opens it |
+| **MIC** | hold any pad to record over it, keeping the part it was playing |
+| **●** | arms the loop: everything you tap gets written in, snapped to the nearest sixteenth |
+| **FILTER** / **ROLL** | work while you hold them |
+| Open a pad → **Chop** | slices it across the empty pads at its transients |
 
-To hear the difference without a microphone: press **Scratch kit**, then open a
-pad and use the **Polished / Raw take** switch. The scratch takes are
-deliberately generated with room hiss, a second of dead air and two of them out
-of tune, so there is something honest to compare.
+Nothing that makes a sound asks a question first. The pad guesses what you
+recorded and gets on with it; the pad editor is where you disagree with it.
+
+Without a microphone: **⚙ → Scratch kit** loads six takes made deliberately
+rough — room hiss, a second of dead air, two of them out of tune — so the
+**Polished / Raw take** switch in the pad editor has something honest to show.
 
 ## What "it edits for you" actually means
 
@@ -43,13 +49,12 @@ Then the arranger (`js/patterns.js`) gives each pad a part from the chosen feel,
 the kick ducks everything else under it, and the master bus runs glue
 compression, a limiter and a soft clipper.
 
-## Picking the instrument
+## Rebuilding a pad as an instrument
 
-When a recording finishes, the picker comes up with the classifier's guess
-already selected. Choose something else and the take is rebuilt as that instead
-— a hi-hat, a kick, a clap, a sub, whatever — and it plays back straight away so
-you can hear the difference before committing. **How much** crossfades between
-your recording and the instrument, and **Discard** throws the take away.
+Open a pad and change **Rebuild as**. The take is rebuilt as that instrument
+rather than just filtered like one — a hi-hat, a kick, a clap, a sub, whatever —
+and plays back straight away so you can hear it. **How much** crossfades between
+your recording and the instrument.
 
 Filtering alone cannot do this. What tells your ear "that is a kick" is mostly
 the shape of the sound in time: a 2 ms attack, a pitch that falls off a cliff in
@@ -73,8 +78,8 @@ that makes it yours. A "tss" rebuilt as a kick keeps 3.7% of its high end,
 down from 81%.
 
 Instruments that were only *guessed* are never rebuilt behind your back — the
-strength stays at 0 until someone picks. Imports and the scratch kit are
-cleaned and shaped but left recognisably themselves.
+strength stays at 0 until you move it. Everything that lands on a pad is
+cleaned, trimmed and mixed, but left recognisably the thing you recorded.
 
 ## Notes on the tricky parts
 
@@ -135,7 +140,7 @@ than real time.
 | `js/recorder-worklet.js` | The capture worklet |
 | `js/demokit.js` | The scratch kit |
 | `js/store.js` | IndexedDB persistence (pads as WAV blobs) |
-| `js/ui.js` | Pads, grid, pad sheet, waveform drawing |
+| `js/ui.js` | The pad grid, the gestures, live capture, chopping, the sheets |
 
 ## Tests
 
@@ -151,5 +156,5 @@ See `test/README.md`. The first two run under plain node, which is why
 
 ## Keyboard
 
-`Space` plays and stops. `1`–`9` fire pads. `Esc` closes the pad sheet.
-Files can be dropped anywhere on the page.
+`Space` plays and stops. `1234567890qwerty` fire the sixteen pads. `Esc` closes
+a sheet. Audio files can be dropped anywhere on the page.

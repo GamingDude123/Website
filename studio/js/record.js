@@ -1,22 +1,32 @@
 /* Getting sound in: the microphone, and dropped files.
  *
+ * The stream is opened once and kept, rather than opened per take. Holding a
+ * pad has to start recording *now* — going through getUserMedia on every press
+ * costs a few hundred milliseconds, which is the difference between an
+ * instrument and a form. It is released again after a minute of not being
+ * used, so the browser's recording indicator does not stay lit all session.
+ *
  * The mic is asked for with every browser "helper" switched off. Echo
  * cancellation, noise suppression and auto gain are tuned for phone calls and
  * they wreck a sample — they duck the tail of a hit and pump the room tone up
- * between sounds. The polish pass does that job properly afterwards, with the
- * whole recording to look at rather than a 20 ms window.
+ * between sounds. The polish pass does that job afterwards, with the whole
+ * recording to look at rather than a 20 ms window.
  */
 
 var Recorder = (function () {
   "use strict";
 
-  const MAX_SECONDS = 10;
-  const WARMUP = 0.06;    // discarded: the first blocks after opening a mic are junk
+  const MAX_SECONDS = 12;
+  const IDLE_RELEASE_MS = 60000;
+  const WARMUP = 0.04;   // discarded: the first blocks after opening a mic are junk
 
   let stream = null;
   let source = null;
   let node = null;
   let sink = null;
+  let opening = null;
+  let idleTimer = null;
+
   let chunks = [];
   let frames = 0;
   let recording = false;
@@ -37,7 +47,6 @@ var Recorder = (function () {
       const v = block[i] < 0 ? -block[i] : block[i];
       if (v > p) p = v;
     }
-    // Fast attack, slow release, so the meter reads like a meter.
     level = p > level ? p : level * 0.86 + p * 0.14;
   }
 
@@ -67,11 +76,14 @@ var Recorder = (function () {
     return processor;
   }
 
-  function start(ctx) {
-    if (recording) return Promise.reject(new Error("already recording"));
+  /* Open the mic and leave it running. Safe to call repeatedly. */
+  function open(ctx) {
+    clearTimeout(idleTimer);
+    if (node) return Promise.resolve(true);
+    if (opening) return opening;
     if (!supported()) return Promise.reject(new Error("no microphone support"));
 
-    return navigator.mediaDevices.getUserMedia({
+    opening = navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
@@ -92,24 +104,24 @@ var Recorder = (function () {
       source.connect(node);
       node.connect(sink);
       sink.connect(ctx.destination);
-
-      chunks = [];
-      frames = 0;
-      level = 0;
-      recording = true;
-      startedAt = ctx.currentTime;
+      opening = null;
       return true;
+    }).catch(function (err) {
+      opening = null;
+      release();
+      throw err;
     });
+    return opening;
   }
 
-  function teardown() {
+  function release() {
+    clearTimeout(idleTimer);
     recording = false;
     try { if (source) source.disconnect(); } catch (err) { /* gone */ }
     try { if (node) node.disconnect(); } catch (err) { /* gone */ }
     try { if (sink) sink.disconnect(); } catch (err) { /* gone */ }
     if (node && node.port) node.port.onmessage = null;
-    if (node && node.onaudioprocess) node.onaudioprocess = null;
-    // Release the mic so the browser's recording indicator goes out.
+    if (node) node.onaudioprocess = null;
     if (stream) stream.getTracks().forEach(function (track) { track.stop(); });
     stream = null;
     source = null;
@@ -117,15 +129,35 @@ var Recorder = (function () {
     sink = null;
   }
 
-  /* Returns the take as one mono Float32Array. */
-  function stop(ctx) {
+  function idle() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(release, IDLE_RELEASE_MS);
+  }
+
+  /* Start collecting. The mic must already be open. */
+  function begin(ctx) {
+    if (!node) return false;
+    clearTimeout(idleTimer);
+    chunks = [];
+    frames = 0;
+    level = 0;
+    recording = true;
+    startedAt = ctx.currentTime;
+    return true;
+  }
+
+  /* Stop collecting and hand back the take as one mono Float32Array. */
+  function end(ctx) {
     if (!recording) return null;
+    recording = false;
+    idle();
+
     const collected = chunks;
     const total = frames;
-    teardown();
-
+    chunks = [];
     const skip = Math.floor(WARMUP * ctx.sampleRate);
     if (total <= skip) return null;
+
     const out = new Float32Array(total - skip);
     let written = 0;
     let dropped = 0;
@@ -140,7 +172,6 @@ var Recorder = (function () {
       out.set(block.subarray(from), written);
       written += block.length - from;
     }
-    chunks = [];
     return out.subarray(0, written);
   }
 
@@ -171,9 +202,11 @@ var Recorder = (function () {
 
   return {
     supported: supported,
-    start: start,
-    stop: stop,
-    cancel: teardown,
+    open: open,
+    release: release,
+    begin: begin,
+    end: end,
+    isOpen: function () { return !!node; },
     isRecording: function () { return recording; },
     level: function () { return level; },
     elapsed: elapsed,

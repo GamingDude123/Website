@@ -2,182 +2,106 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Loop Lab — record anything, it produces itself</title>
-  <meta name="description" content="A sampler that edits for you: record a sound and it gets cleaned, trimmed, tuned to your key, stretched onto the grid and given a pattern.">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Loop Lab</title>
+  <meta name="description" content="Hold a pad to record into it. Tap the pads to play. Arm the record button and whatever you play becomes the loop.">
   <meta name="theme-color" content="#0d0b14">
   <link rel="icon" href="../images/navbarlogo3.png">
   <link rel="stylesheet" href="css/studio.css">
 </head>
 <body>
 
-<header class="top">
-  <a class="back" href="../index.html" title="Back to the site">&#8592;</a>
-  <h1>Loop&nbsp;Lab <em>record anything &mdash; it produces itself</em></h1>
-  <button class="ghost" id="btn-about" aria-expanded="false">how?</button>
-</header>
+<div class="app">
 
-<div class="about" id="about" hidden>
-  <p>
-    Every take runs through the same chain before it lands on a pad, and each
-    step decides for itself whether it applies:
-  </p>
-  <ol>
-    <li><b>De-noise.</b> Builds a profile of your room from the quietest moments and subtracts it. If the take is one held sound with no gaps, it backs off instead of hollowing it out.</li>
-    <li><b>Trim.</b> Finds the transient and cuts the dead air, keeping a few milliseconds of pre-roll so the attack survives.</li>
-    <li><b>Listen.</b> Length, brightness, noisiness and pitch confidence decide whether this is a kick, a hat, a snare, a bassline, a vocal, a chord or a texture.</li>
-    <li><b>Tune.</b> Pitched sounds get their fundamental found and moved to the nearest note of your key &mdash; pitch shifted, not sped up, so the length stays put. Drums are never tuned.</li>
-    <li><b>Fit the grid.</b> Anything loop-shaped is time-stretched to the nearest power-of-two number of beats at your tempo. Beyond about a quarter either way it is left alone rather than mangled.</li>
-    <li><b>Rebuild.</b> Pick what the sound should be and it is rebuilt as that instrument, not just filtered like one. The instrument's envelope is forced onto your recording &mdash; which is what turns a two-second noise into an 80&nbsp;ms hi-hat &mdash; and a synthesised version is layered underneath: a sub whose pitch collapses onto the root for a kick, metallic top end for a hat, drum body and wire noise for a snare, an oscillator following your phrasing for a bass. <b>How much</b> crossfades between your recording and the instrument, so what survives is your attack and your timbre.</li>
-    <li><b>Shape.</b> Role-specific EQ, saturation and compression &mdash; the low-mid dip and presence lift on a vocal, the 60&nbsp;Hz lift and 400&nbsp;Hz cut on a kick.</li>
-    <li><b>Arrange.</b> Each pad gets a part that suits what it is, the kick ducks everything under it, and the whole thing goes through glue compression and a limiter.</li>
-  </ol>
-  <p class="fine">
-    All of it runs in this tab &mdash; the maths is in
-    <code>js/dsp.js</code> and the decisions are in <code>js/polish.js</code>.
-    Nothing is uploaded anywhere, there is no API key, and it works with the
-    aeroplane mode on. Every automatic decision is listed on the pad and can be
-    overridden.
-  </p>
+  <header class="bar">
+    <a class="icon" href="../index.html" title="Back to the site">&#8592;</a>
+    <button class="chip" id="btn-kit"><b id="kit-key">A min</b><span id="kit-bpm">132</span></button>
+    <span class="grow"></span>
+    <button class="icon mic" id="btn-mic" title="Record over a pad" aria-pressed="false">MIC</button>
+    <button class="icon" id="btn-help" title="How it works">?</button>
+    <button class="icon" id="btn-settings" title="Settings">&#9881;</button>
+  </header>
+
+  <div class="hud" id="hud">hold an empty pad to record into it</div>
+
+  <main class="grid" id="grid" aria-label="Pads"></main>
+
+  <footer class="deck">
+    <div class="steps" id="steps"></div>
+    <div class="deck-row">
+      <button class="big play" id="btn-play" aria-label="Play">&#9654;</button>
+      <button class="big cap" id="btn-cap" aria-label="Record what you play" aria-pressed="false">&#9679;</button>
+      <button class="fx" id="fx-filter">FILTER</button>
+      <button class="fx" id="fx-roll">ROLL</button>
+    </div>
+  </footer>
+
 </div>
 
-<main>
-  <section class="bar transport">
-    <button class="play" id="btn-play" aria-label="Play">&#9654;</button>
+<!-- ---------------------------------------------------------------- sheets -->
 
-    <label class="field">
-      <span>Tempo</span>
-      <input type="range" id="bpm" min="70" max="180" step="1" value="132">
-      <output id="bpm-out">132</output>
-    </label>
+<div class="sheet" id="settings" hidden>
+  <div class="sheet-inner" role="dialog" aria-label="Settings">
+    <header>
+      <h2>Kit</h2>
+      <button class="icon" id="settings-close" aria-label="Close">&#10005;</button>
+    </header>
 
-    <label class="field narrow">
-      <span>Key</span>
-      <select id="key"></select>
-    </label>
-
-    <label class="field narrow">
-      <span>Scale</span>
-      <select id="scale">
+    <div class="rows">
+      <label class="field"><span>Tempo</span><input type="range" id="bpm" min="70" max="180" value="132"><output id="bpm-out">132</output></label>
+      <label class="field"><span>Swing</span><input type="range" id="swing" min="0" max="45" value="18"><output id="swing-out">18</output></label>
+      <label class="field narrow"><span>Key</span><select id="key"></select><select id="scale">
         <option value="minor">minor</option>
         <option value="major">major</option>
         <option value="dorian">dorian</option>
         <option value="pentatonic">pentatonic</option>
         <option value="chromatic">chromatic</option>
-      </select>
-    </label>
-
-    <label class="field narrow">
-      <span>Feel</span>
-      <select id="genre"></select>
-    </label>
-
-    <label class="field">
-      <span>Swing</span>
-      <input type="range" id="swing" min="0" max="45" step="1" value="18">
-      <output id="swing-out">18%</output>
-    </label>
-  </section>
-
-  <section class="capture">
-    <button class="rec" id="btn-rec">
-      <span class="dot"></span>
-      <span id="rec-label">Record a sound</span>
-    </button>
-    <div class="meter" id="meter"><i id="meter-fill"></i></div>
-    <p class="status" id="status">Tap record, make a noise, tap again. Or drop an audio file anywhere.</p>
-    <div class="capture-side">
-      <button class="ghost" id="btn-import">Import file</button>
-      <button class="ghost" id="btn-demo">Scratch kit</button>
-      <input type="file" id="file" accept="audio/*" multiple hidden>
+      </select></label>
+      <label class="field narrow"><span>Feel</span><select id="genre"></select></label>
     </div>
-  </section>
 
-  <section class="pads" id="pads" aria-label="Pads"></section>
-
-  <section class="seq">
-    <div class="seq-top">
-      <h2>Pattern</h2>
-      <div class="seq-actions">
-        <button id="btn-arrange" class="primary">Auto-arrange</button>
-        <button id="btn-bounce" class="ghost">Bounce WAV</button>
-        <button id="btn-clear" class="ghost danger">Clear kit</button>
-      </div>
-    </div>
-    <div class="grid-wrap">
-      <div class="grid" id="grid"></div>
-      <p class="empty" id="grid-empty">No pads yet. Record something, or load the scratch kit.</p>
-    </div>
-  </section>
-
-  <section class="mix">
-    <h2>Mix</h2>
-    <div class="mix-rows">
+    <h3>Mix</h3>
+    <div class="rows">
       <label class="field"><span>Volume</span><input type="range" id="m-vol" min="0" max="120" value="90"><output id="m-vol-out">90</output></label>
       <label class="field"><span>Reverb</span><input type="range" id="m-rev" min="0" max="100" value="35"><output id="m-rev-out">35</output></label>
       <label class="field"><span>Delay</span><input type="range" id="m-dly" min="0" max="100" value="30"><output id="m-dly-out">30</output></label>
       <label class="field"><span>Kick duck</span><input type="range" id="m-duck" min="0" max="90" value="45"><output id="m-duck-out">45</output></label>
     </div>
-  </section>
-</main>
-
-<div class="sheet" id="pick" hidden>
-  <div class="sheet-inner" role="dialog" aria-label="Choose an instrument">
-    <header>
-      <h2 class="sheet-title">What is this?</h2>
-      <button class="ghost" id="pick-close" aria-label="Discard this take">&#10005;</button>
-    </header>
-
-    <canvas id="pick-wave" width="640" height="90"></canvas>
-    <p class="status" id="pick-status"></p>
-
-    <div class="picker" id="pick-grid"></div>
-
-    <label class="field">
-      <span>How much</span>
-      <input type="range" id="pick-morph" min="0" max="100" value="70">
-      <output id="pick-morph-out">70</output>
-    </label>
-    <p class="hint" id="pick-hint"></p>
 
     <div class="sheet-actions">
-      <button class="ghost" id="pick-hear">Hear it</button>
-      <button class="primary" id="pick-add">Add to kit</button>
-      <button class="ghost danger" id="pick-discard">Discard</button>
+      <button class="primary" id="btn-arrange">Auto-arrange</button>
+      <button class="ghost" id="btn-bounce">Bounce WAV</button>
+      <button class="ghost" id="btn-import">Import</button>
+      <button class="ghost" id="btn-demo">Scratch kit</button>
+      <button class="ghost danger" id="btn-clear">Clear kit</button>
+      <input type="file" id="file" accept="audio/*" multiple hidden>
     </div>
   </div>
 </div>
 
-<div class="sheet" id="sheet" hidden>
-  <div class="sheet-inner" role="dialog" aria-label="Pad detail">
+<div class="sheet" id="editor" hidden>
+  <div class="sheet-inner" role="dialog" aria-label="Pad">
     <header>
-      <input type="text" id="pad-name" maxlength="18" aria-label="Pad name">
-      <button class="ghost" id="sheet-close" aria-label="Close">&#10005;</button>
+      <input type="text" id="pad-name" maxlength="14" aria-label="Pad name">
+      <button class="icon" id="editor-close" aria-label="Close">&#10005;</button>
     </header>
 
-    <canvas id="pad-wave" width="640" height="120"></canvas>
+    <canvas id="pad-wave" width="640" height="96"></canvas>
+
+    <div class="row-wrap">
+      <button class="ghost" id="btn-play-pad">Play</button>
+      <button class="toggle is-on" id="btn-ab">Polished</button>
+      <label class="field narrow"><span>Rebuild as</span><select id="pad-instrument"></select></label>
+    </div>
+
+    <label class="field"><span>How much</span><input type="range" id="p-morph" min="0" max="100" value="0"><output id="p-morph-out">0</output></label>
+    <p class="hint" id="pad-hint"></p>
 
     <div class="report" id="pad-report"></div>
 
-    <div class="ab">
-      <button id="btn-ab" class="toggle is-on">Polished</button>
-      <button id="btn-play-pad" class="ghost">Play</button>
-      <label class="field narrow">
-        <span>Rebuild as</span>
-        <select id="pad-instrument"></select>
-      </label>
-    </div>
-
-    <label class="field">
-      <span>How much</span>
-      <input type="range" id="p-morph" min="0" max="100" value="0">
-      <output id="p-morph-out">0</output>
-    </label>
-    <p class="hint" id="pad-hint"></p>
-
-    <div class="knobs">
+    <div class="rows">
       <label class="field"><span>Level</span><input type="range" id="p-gain" min="0" max="150" value="100"><output id="p-gain-out">100</output></label>
-      <label class="field"><span>Pitch</span><input type="range" id="p-pitch" min="-12" max="12" step="1" value="0"><output id="p-pitch-out">0</output></label>
+      <label class="field"><span>Pitch</span><input type="range" id="p-pitch" min="-12" max="12" value="0"><output id="p-pitch-out">0</output></label>
       <label class="field"><span>Pan</span><input type="range" id="p-pan" min="-100" max="100" value="0"><output id="p-pan-out">0</output></label>
       <label class="field"><span>Length</span><input type="range" id="p-len" min="5" max="100" value="100"><output id="p-len-out">100</output></label>
       <label class="field"><span>Reverb</span><input type="range" id="p-rev" min="0" max="100" value="0"><output id="p-rev-out">0</output></label>
@@ -186,10 +110,32 @@
 
     <div class="sheet-actions">
       <label class="check"><input type="checkbox" id="p-reverse"> Reverse</label>
-      <label class="check"><input type="checkbox" id="p-duck"> Duck under kick</label>
-      <button class="ghost" id="btn-repolish">Re-polish</button>
-      <button class="ghost danger" id="btn-delete">Delete pad</button>
+      <label class="check"><input type="checkbox" id="p-duck"> Duck</label>
+      <button class="ghost" id="btn-chop">Chop across pads</button>
+      <button class="ghost" id="btn-clear-row">Clear its steps</button>
+      <button class="ghost danger" id="btn-delete">Delete</button>
     </div>
+  </div>
+</div>
+
+<div class="sheet" id="help" hidden>
+  <div class="sheet-inner" role="dialog" aria-label="How it works">
+    <header>
+      <h2>How it works</h2>
+      <button class="icon" id="help-close" aria-label="Close">&#10005;</button>
+    </header>
+    <ul class="how">
+      <li><b>Hold an empty pad</b> to record into it. Let go and it is on the pad, cleaned up and ready.</li>
+      <li><b>Tap a pad</b> to play it. <b>Hold a full pad</b> to open it.</li>
+      <li><b>MIC</b> at the top lets you record over a pad that already has something.</li>
+      <li><b>&#9679;</b> next to play arms the loop: everything you tap gets written in, snapped to the grid. Press it again to stop.</li>
+      <li><b>FILTER</b> and <b>ROLL</b> work while you hold them.</li>
+      <li>Open a pad to rebuild it as a kick, a hat, a bass &mdash; whatever you want it to be.</li>
+    </ul>
+    <p class="fine">
+      Everything runs in this tab. Nothing is uploaded, there is no account and
+      no key, and it works with the aeroplane mode on.
+    </p>
   </div>
 </div>
 

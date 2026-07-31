@@ -1,27 +1,40 @@
-/* Wiring: pads, the step grid, the pad sheet, and the bounce.
+/* The instrument you actually touch.
  *
- * The polish pass blocks the main thread for a few hundred milliseconds, which
- * is long enough to swallow a click but too short to be worth a worker and the
- * buffer-passing that comes with it. Every call is therefore made after a
- * paint, with the status line already updated, so the page never looks frozen.
+ * The rule everywhere: a press does something immediately. Holding an empty pad
+ * starts recording on the way down, not after a dialog; tapping a full pad
+ * fires it on pointerdown, not on click. Nothing that makes a sound is allowed
+ * to ask a question first — the pad guesses, and the pad editor is there to
+ * disagree with it later.
  */
 
 (function () {
   "use strict";
 
   const $ = function (id) { return document.getElementById(id); };
+  const SLOTS = 16;
   const STEPS = Patterns.steps;
+  const HOLD_MS = 420;        // press longer than this on a full pad to open it
 
   const ui = {
-    keyRoot: 9,          // A
+    keyRoot: 9,               // A
     scale: "minor",
     genre: "garage",
-    selected: null,
+    micMode: false,           // hold any pad to record over it
+    capturing: false,         // taps get written into the loop
+    editing: null,
     counter: 0,
     saveTimer: null,
+    lastPlayed: null,
   };
 
-  // ------------------------------------------------------------------ toast
+  // Pointer bookkeeping. Several fingers can be down at once, so everything is
+  // keyed by pointerId rather than held in one variable.
+  const touches = {};
+  let recordingSlot = -1;
+  let recordTimer = null;
+  let rollTimer = null;
+
+  // ------------------------------------------------------------------ chrome
 
   let toastTimer = null;
   function toast(message) {
@@ -29,47 +42,47 @@
     el.textContent = message;
     el.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { el.hidden = true; }, 2600);
+    toastTimer = setTimeout(function () { el.hidden = true; }, 2200);
   }
 
-  function status(message, busy) {
-    const el = $("status");
+  function hud(message, kind) {
+    const el = $("hud");
     el.textContent = message;
-    el.classList.toggle("is-busy", !!busy);
+    el.className = "hud" + (kind ? " is-" + kind : "");
   }
 
-  /* Let the browser paint the "working on it" state before we hog the thread. */
+  /* Let the browser paint before we hog the thread for a few hundred ms. */
   function afterPaint(fn) {
     requestAnimationFrame(function () {
       requestAnimationFrame(function () { setTimeout(fn, 0); });
     });
   }
 
-  // ------------------------------------------------------------- waveforms
+  function idle() {
+    if (!Engine.pads().length) return hud("hold an empty pad to record into it");
+    if (ui.capturing) return hud("playing goes straight into the loop", "live");
+    if (ui.micMode) return hud("hold any pad to record over it", "live");
+    hud("tap to play · hold a pad to open it");
+  }
 
-  /* Min/max per column rather than sampling every nth point, so a short
-   * transient cannot fall between the cracks and vanish from the drawing. */
-  function drawWave(canvas, samples, colour) {
+  // --------------------------------------------------------------- waveforms
+
+  function drawWave(canvas, samples, colour, fill) {
     const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(40, canvas.clientWidth || canvas.width);
-    const height = canvas.clientHeight || canvas.height;
+    const width = Math.max(24, canvas.clientWidth || canvas.width);
+    const height = Math.max(16, canvas.clientHeight || canvas.height);
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
     const g = canvas.getContext("2d");
     g.scale(dpr, dpr);
     g.clearRect(0, 0, width, height);
-
     if (!samples || !samples.length) return;
+
     const mid = height / 2;
     const per = samples.length / width;
-
-    g.strokeStyle = "rgba(255,255,255,0.10)";
-    g.beginPath();
-    g.moveTo(0, mid);
-    g.lineTo(width, mid);
-    g.stroke();
-
-    g.fillStyle = colour || "#4dd4ff";
+    g.fillStyle = colour;
+    // Min/max per column rather than every nth sample, so a short transient
+    // cannot fall between the cracks and vanish.
     for (let x = 0; x < width; x++) {
       const from = Math.floor(x * per);
       const to = Math.min(samples.length, Math.floor((x + 1) * per));
@@ -81,143 +94,244 @@
         if (v > max) max = v;
       }
       if (from >= to) { min = 0; max = 0; }
-      const top = mid - max * mid * 0.95;
-      const bottom = mid - min * mid * 0.95;
+      const top = mid - max * mid * (fill ? 0.98 : 0.9);
+      const bottom = mid - min * mid * (fill ? 0.98 : 0.9);
       g.fillRect(x, top, 1, Math.max(1, bottom - top));
     }
   }
 
-  // ------------------------------------------------------------------ pads
+  // -------------------------------------------------------------------- pads
 
-  function padSubtitle(pad) {
-    const bits = [];
-    if (pad.note) bits.push(pad.note);
-    if (pad.beats) bits.push(pad.beats + (pad.beats === 1 ? " beat" : " beats"));
-    // The length of whatever is actually loaded, not of the take it came from —
-    // trimming can cut a second of dead air off the front.
-    const active = pad.usePolished && pad.polished ? pad.polished : pad.raw;
-    bits.push((active.length / pad.sampleRate).toFixed(2) + "s");
-    return bits.join(" · ");
+  function tileAt(slot) {
+    return $("grid").children[slot];
   }
 
-  function renderPads() {
-    const host = $("pads");
-    host.innerHTML = "";
-    const pads = Engine.pads();
+  function paintPad(slot) {
+    const tile = tileAt(slot);
+    const pad = Engine.padAt(slot);
+    if (!tile) return;
 
-    pads.forEach(function (pad) {
-      const tile = document.createElement("div");
-      tile.className = "pad" + (pad.mute ? " is-muted" : "");
-      tile.dataset.role = pad.role;
-      tile.dataset.id = pad.id;
-      tile.tabIndex = 0;
+    if (!pad) {
+      tile.className = "pad is-empty" + (ui.micMode ? " is-armed" : "");
+      tile.dataset.role = "";
+      tile.innerHTML = '<span class="plus">+</span><span class="hold">hold to record</span>';
+      tile.setAttribute("aria-label", "empty pad " + (slot + 1) + ", hold to record");
+      return;
+    }
 
-      const top = document.createElement("div");
-      top.className = "pad-top";
-      const name = document.createElement("span");
-      name.className = "pad-name";
-      name.textContent = pad.name;
-      const tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = pad.role;
-      top.appendChild(name);
-      top.appendChild(tag);
+    tile.className = "pad" + (pad.mute ? " is-muted" : "") + (ui.micMode ? " is-armed" : "");
+    tile.dataset.role = pad.role;
+    tile.innerHTML = '<canvas></canvas><span class="role"></span><span class="label"></span><i class="fill"></i>';
+    tile.querySelector(".role").textContent = pad.role;
+    tile.querySelector(".label").textContent = pad.name;
+    tile.setAttribute("aria-label", pad.name + ", " + pad.role);
 
-      const canvas = document.createElement("canvas");
-      const sub = document.createElement("div");
-      sub.className = "pad-sub";
-      sub.textContent = padSubtitle(pad);
-
-      const cog = document.createElement("button");
-      cog.className = "cog";
-      cog.textContent = "edit";
-
-      tile.appendChild(top);
-      tile.appendChild(canvas);
-      tile.appendChild(sub);
-      tile.appendChild(cog);
-      host.appendChild(tile);
-
-      drawWave(canvas, pad.usePolished && pad.polished ? pad.polished : pad.raw,
-        pad.role === "kick" ? "#ff3b6b" : pad.role === "bass" ? "#ffb03a" : "#4dd4ff");
-
-      function hit() {
-        Engine.tap(pad.id, 1);
-        tile.classList.add("is-hit");
-        setTimeout(function () { tile.classList.remove("is-hit"); }, 130);
-      }
-
-      // pointerdown, not click: a pad has to fire the instant it is touched.
-      tile.addEventListener("pointerdown", function (event) {
-        if (event.target === cog) return;
-        hit();
-      });
-      tile.addEventListener("keydown", function (event) {
-        if (event.key === " " || event.key === "Enter") { event.preventDefault(); hit(); }
-      });
-      cog.addEventListener("click", function (event) {
-        event.stopPropagation();
-        openSheet(pad.id);
-      });
-    });
+    const colour = pad.role === "kick" ? "#ff3b6b"
+      : pad.role === "bass" ? "#a774ff"
+      : pad.role === "snare" || pad.role === "perc" ? "#ffb03a"
+      : pad.role === "vocal" || pad.role === "chord" ? "#3ce68a" : "#4dd4ff";
+    drawWave(tile.querySelector("canvas"), pad.usePolished && pad.polished ? pad.polished : pad.raw, colour);
   }
 
-  // ------------------------------------------------------------- sequencer
-
-  function renderGrid() {
-    const host = $("grid");
-    const pads = Engine.pads();
-    host.innerHTML = "";
-    $("grid-empty").hidden = pads.length > 0;
-
-    pads.forEach(function (pad) {
-      const row = document.createElement("div");
-      row.className = "grid-row";
-      row.dataset.id = pad.id;
-
-      const label = document.createElement("div");
-      label.className = "label";
-      label.textContent = pad.name;
-      row.appendChild(label);
-
-      const existing = Engine.rows()[pad.id];
-      const steps = existing ? existing.steps : new Array(STEPS).fill(0);
-
-      for (let s = 0; s < STEPS; s++) {
-        const cell = document.createElement("button");
-        cell.className = "cell";
-        cell.dataset.step = s;
-        cell.dataset.beat = s % 4 === 0 ? "1" : "0";
-        cell.setAttribute("aria-label", pad.name + " step " + (s + 1));
-        paintCell(cell, steps[s]);
-        cell.addEventListener("click", function () {
-          const row = Engine.rows()[pad.id] || { steps: new Array(STEPS).fill(0), loop: false };
-          row.steps[s] = row.steps[s] ? 0 : 1;
-          Engine.setRow(pad.id, row.steps, row.loop);
-          paintCell(cell, row.steps[s]);
-          if (row.steps[s]) Engine.tap(pad.id, 1);
-          scheduleSave();
-        });
-        row.appendChild(cell);
-      }
-      host.appendChild(row);
-    });
+  function paintAll() {
+    for (let slot = 0; slot < SLOTS; slot++) paintPad(slot);
   }
 
-  function paintCell(cell, velocity) {
-    cell.classList.toggle("is-on", !!velocity);
-    cell.dataset.vel = velocity && velocity < 0.7 ? "soft" : "hard";
+  function flash(slot) {
+    const tile = tileAt(slot);
+    if (!tile) return;
+    tile.classList.add("is-hit");
+    setTimeout(function () { tile.classList.remove("is-hit"); }, 110);
+  }
+
+  function firstEmptySlot() {
+    for (let slot = 0; slot < SLOTS; slot++) if (!Engine.padAt(slot)) return slot;
+    return -1;
+  }
+
+  // ------------------------------------------------------------ playing pads
+
+  function hitPad(slot, fromSequencer) {
+    const pad = Engine.padAt(slot);
+    if (!pad) return;
+    flash(slot);
+    if (fromSequencer) return;
+
+    Engine.tap(pad.id, 1);
+    ui.lastPlayed = pad.id;
+
+    // Live capture: write the tap into the loop at the nearest sixteenth.
+    if (ui.capturing && Engine.isPlaying()) {
+      const at = Engine.nearestStep();
+      const row = Engine.rows()[pad.id] || { steps: new Array(STEPS).fill(0), loop: false };
+      row.steps[at.step] = 1;
+      Engine.setRow(pad.id, row.steps, row.loop);
+      scheduleSave();
+    }
   }
 
   Engine.onStep(function (step) {
-    const cells = document.querySelectorAll(".cell.is-now");
-    for (let i = 0; i < cells.length; i++) cells[i].classList.remove("is-now");
+    const lights = $("steps").children;
+    for (let i = 0; i < lights.length; i++) lights[i].classList.toggle("is-now", i === step);
     if (step < 0) return;
-    const now = document.querySelectorAll('.cell[data-step="' + step + '"]');
-    for (let i = 0; i < now.length; i++) now[i].classList.add("is-now");
+    // Light the pads the sequencer is hitting, so the grid shows the pattern
+    // playing rather than the pattern being a table somewhere else.
+    const rows = Engine.rows();
+    Engine.pads().forEach(function (pad) {
+      const row = rows[pad.id];
+      if (row && row.steps[step]) flash(pad.slot);
+    });
   });
 
-  // --------------------------------------------------------- adding sounds
+  // ------------------------------------------------------------- recording
+
+  function beginRecord(slot) {
+    const ctx = Engine.context();
+    recordingSlot = slot;
+    const tile = tileAt(slot);
+    tile.classList.add("is-recording");
+
+    Engine.resume()
+      .then(function () { return Recorder.open(ctx); })
+      .then(function () {
+        // The finger may already be gone by the time permission comes back.
+        if (recordingSlot !== slot) return;
+        Recorder.begin(ctx);
+        hud("recording…", "live");
+        recordTimer = setInterval(function () {
+          const seconds = Recorder.elapsed(ctx);
+          const fill = tile.querySelector(".fill");
+          if (fill) fill.style.height = Math.min(100, 12 + Recorder.level() * 120) + "%";
+          if (seconds > Recorder.maxSeconds) endRecord(slot);
+        }, 50);
+      })
+      .catch(function (err) {
+        cancelRecordUI(slot);
+        const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
+        hud(denied
+          ? "microphone blocked — allow it, then hold the pad again"
+          : "no microphone here — use Import in settings instead");
+        toast(denied ? "microphone denied" : "no microphone");
+      });
+  }
+
+  function cancelRecordUI(slot) {
+    clearInterval(recordTimer);
+    recordTimer = null;
+    recordingSlot = -1;
+    const tile = tileAt(slot);
+    if (tile) {
+      tile.classList.remove("is-recording");
+      const fill = tile.querySelector(".fill");
+      if (fill) fill.style.height = "0%";
+    }
+  }
+
+  function endRecord(slot) {
+    if (recordingSlot !== slot) return;
+    const ctx = Engine.context();
+    const take = Recorder.end(ctx);
+    cancelRecordUI(slot);
+
+    if (!take || take.length < ctx.sampleRate * 0.06) {
+      hud("too short — hold it a moment longer");
+      return;
+    }
+    hud("cleaning it up…", "busy");
+    afterPaint(function () {
+      const pad = addSample(slot, null, take, null);
+      if (!pad) {
+        hud("that take was silent");
+        return;
+      }
+      Engine.tap(pad.id, 1);
+      flash(slot);
+      hud(pad.report.join(" · "));
+      // A new sound with nothing to play over is a dead end, so give it a part.
+      // Not when the loop is being performed by hand, and not when this take
+      // replaced a pad that already had a part — that one was inherited on
+      // purpose, and writing over it would undo the swap.
+      const row = Engine.rows()[pad.id];
+      const hasPart = row && row.steps.some(Boolean);
+      if (!ui.capturing && !hasPart) giveDefaultRow(pad);
+    });
+  }
+
+  function giveDefaultRow(pad) {
+    const arrangement = Patterns.arrange(
+      [{ id: pad.id, role: pad.role, beats: pad.beats }], ui.genre,
+      Math.floor(Math.random() * 1e9)
+    );
+    const row = arrangement.rows[pad.id];
+    Engine.setRow(pad.id, row.steps, row.loop);
+    scheduleSave();
+  }
+
+  // ------------------------------------------------------------ pad gestures
+
+  function onPadDown(event) {
+    const tile = event.currentTarget;
+    const slot = parseInt(tile.dataset.slot, 10);
+    tile.setPointerCapture(event.pointerId);
+    const pad = Engine.padAt(slot);
+
+    // Empty pad, or the mic is armed: the press is a record.
+    if (!pad || ui.micMode) {
+      touches[event.pointerId] = { slot: slot, kind: "record" };
+      beginRecord(slot);
+      return;
+    }
+
+    hitPad(slot);
+    touches[event.pointerId] = {
+      slot: slot,
+      kind: "play",
+      // Keep holding and the editor opens; let go first and it was just a hit.
+      timer: setTimeout(function () {
+        const held = touches[event.pointerId];
+        if (held) held.kind = "opened";
+        openEditor(slot);
+      }, HOLD_MS),
+    };
+  }
+
+  function onPadUp(event) {
+    const held = touches[event.pointerId];
+    if (!held) return;
+    delete touches[event.pointerId];
+    if (held.timer) clearTimeout(held.timer);
+    if (held.kind === "record") {
+      endRecord(held.slot);
+      if (!Recorder.isRecording()) idle();
+    }
+  }
+
+  function buildGrid() {
+    const grid = $("grid");
+    grid.innerHTML = "";
+    for (let slot = 0; slot < SLOTS; slot++) {
+      const tile = document.createElement("button");
+      tile.className = "pad is-empty";
+      tile.dataset.slot = slot;
+      tile.addEventListener("pointerdown", onPadDown);
+      tile.addEventListener("pointerup", onPadUp);
+      tile.addEventListener("pointercancel", onPadUp);
+      // A press must not also fire a click, or a pad would sound twice.
+      tile.addEventListener("click", function (e) { e.preventDefault(); });
+      tile.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+      grid.appendChild(tile);
+    }
+
+    const steps = $("steps");
+    steps.innerHTML = "";
+    for (let i = 0; i < STEPS; i++) {
+      const light = document.createElement("i");
+      light.dataset.beat = i % 4 === 0 ? "1" : "0";
+      steps.appendChild(light);
+    }
+  }
+
+  // ------------------------------------------------------------ making pads
 
   function polishOptions(extra) {
     const opts = {
@@ -226,32 +340,35 @@
       keyRoot: ui.keyRoot,
       scale: ui.scale,
     };
-    if (extra) {
-      Object.keys(extra).forEach(function (key) { opts[key] = extra[key]; });
-    }
+    if (extra) Object.keys(extra).forEach(function (k) { opts[k] = extra[k]; });
     return opts;
   }
 
-  /* Turn a recording into a pad. Everything the polish pass decided is kept on
-   * the pad so the sheet can show its reasoning and so a later re-polish can
-   * start from the raw take again. */
-  function addSample(name, samples, choice) {
+  function addSample(slot, name, samples, choice) {
     const prep = Polish.prepare(samples, polishOptions());
-    if (!prep) {
-      toast("that take was silent");
-      return null;
-    }
-    return addPrepared(name, samples, prep, Polish.finish(prep, polishOptions(choice)));
-  }
-
-  /* Build the pad once the recording, its analysis and the chosen instrument
-   * have all been settled. */
-  function addPrepared(name, samples, prep, result) {
+    if (!prep) return null;
+    const result = Polish.finish(prep, polishOptions(choice));
     if (!result) return null;
+
+    // Recording over a pad replaces the sound but keeps the part it was
+    // playing — you are swapping the snare, not rewriting the bar.
+    const existing = Engine.padAt(slot);
+    let inheritedRow = null;
+    if (existing) {
+      const row = Engine.rows()[existing.id];
+      if (row) inheritedRow = { steps: row.steps.slice(), loop: row.loop };
+      Engine.removePad(existing.id);
+    }
+
     ui.counter++;
     const pad = Engine.addPad({
       id: "pad-" + Date.now().toString(36) + "-" + ui.counter,
-      name: name || "take " + ui.counter,
+      slot: slot,
+      name: name || result.instrumentLabel.toLowerCase() + " " + ui.counter,
+      // A name nobody typed follows the instrument. Leaving "hi-hat 3" on a pad
+      // that has since been rebuilt as a kick is just a lie on the front of it.
+      autoName: !name,
+      autoIndex: ui.counter,
       raw: Float32Array.from(samples),
       polished: result.samples,
       sampleRate: result.sampleRate,
@@ -273,40 +390,30 @@
       mute: false,
       choke: result.role !== "chord" && result.role !== "texture",
       version: 1,
-      // Kept in memory only: it saves re-analysing the take every time the
-      // instrument or the strength is nudged. Absent after a reload, which
-      // costs one extra analysis on the first edit and nothing after that.
+      // In memory only: saves re-analysing the take on every edit.
       _prep: prep,
     });
-
-    // A new pad gets a part straight away, otherwise pressing play does nothing.
-    const arrangement = Patterns.arrange([{ id: pad.id, role: pad.role, beats: pad.beats }], ui.genre,
-      Math.floor(Math.random() * 1e9));
-    const row = arrangement.rows[pad.id];
-    Engine.setRow(pad.id, row.steps, row.loop);
-
-    renderPads();
-    renderGrid();
+    if (inheritedRow) Engine.setRow(pad.id, inheritedRow.steps, inheritedRow.loop);
+    paintPad(slot);
     scheduleSave();
     return pad;
   }
 
   function repolish(pad, choice) {
     const previous = Polish.recipes[pad.role];
-    // Only move the fader if it is still where the previous role put it —
-    // a level the user set by hand survives a change of instrument.
     const untouched = previous && Math.abs(pad.gain - previous.level) < 0.005;
-
     if (!pad._prep) pad._prep = Polish.prepare(pad.raw, polishOptions());
     if (!pad._prep) return;
+
     const wanted = { instrument: pad.instrument, morph: pad.morph };
-    if (choice) {
-      Object.keys(choice).forEach(function (key) { wanted[key] = choice[key]; });
-    }
+    if (choice) Object.keys(choice).forEach(function (k) { wanted[k] = choice[k]; });
     const result = Polish.finish(pad._prep, polishOptions(wanted));
     if (!result) return;
 
     if (untouched) pad.gain = result.level;
+    if (pad.autoName && result.instrument !== pad.instrument) {
+      pad.name = result.instrumentLabel.toLowerCase() + " " + (pad.autoIndex || 1);
+    }
     pad.polished = result.samples;
     pad.role = result.role;
     pad.instrument = result.instrument;
@@ -318,164 +425,65 @@
     pad.shifted = result.shifted;
     pad.report = result.steps;
     pad.version++;
+    paintPad(pad.slot);
   }
 
-  // -------------------------------------------------------- instrument picker
-
-  /* Everything about the take currently waiting to be turned into a pad. */
-  let pending = null;
-  let pickTimer = null;
-
-  function openPicker(name, samples, prep) {
-    pending = {
-      name: name,
-      samples: samples,
-      prep: prep,
-      instrument: prep.guess,
-      morph: (Instrument.get(prep.guess) || {}).morph || 0.5,
-      result: null,
-    };
-    renderPickerGrid();
-    $("pick-morph").value = Math.round(pending.morph * 100);
-    $("pick-morph-out").value = $("pick-morph").value;
-    $("pick").hidden = false;
-    drawWave($("pick-wave"), prep.samples, "#a49cc4");
-    $("pick-status").textContent = "sounds like a " +
-      (Instrument.get(prep.guess) || {}).label.toLowerCase() + " to me — change it if not";
-    reshapePending(true);
-  }
-
-  function renderPickerGrid() {
-    const host = $("pick-grid");
-    host.innerHTML = "";
-    Instrument.order.forEach(function (key) {
-      const inst = Instrument.get(key);
-      const button = document.createElement("button");
-      button.className = "pick" + (key === pending.instrument ? " is-on" : "");
-      button.dataset.instrument = key;
-      button.textContent = inst.label;
-      if (key === pending.prep.guess) {
-        const badge = document.createElement("i");
-        badge.textContent = "guess";
-        button.appendChild(badge);
-      }
-      button.addEventListener("click", function () {
-        pending.instrument = key;
-        // Each instrument brings its own sensible strength, so switching from a
-        // hat to a chord does not carry the hat's 75% over to it.
-        pending.morph = inst.morph;
-        $("pick-morph").value = Math.round(inst.morph * 100);
-        $("pick-morph-out").value = $("pick-morph").value;
-        renderPickerGrid();
-        reshapePending(true);
-      });
-      host.appendChild(button);
-    });
-  }
-
-  /* Re-run the cheap half of the pipeline and, if asked, play the result. The
-   * expensive analysis was done once when the picker opened. */
-  function reshapePending(play) {
-    if (!pending) return;
-    const inst = Instrument.get(pending.instrument);
-    $("pick-hint").textContent = inst.hint;
-    $("pick-status").textContent = "shaping…";
-    afterPaint(function () {
-      if (!pending) return;
-      const result = Polish.finish(pending.prep, polishOptions({
-        instrument: pending.instrument,
-        morph: pending.morph,
-      }));
-      if (!result) return;
-      pending.result = result;
-      drawWave($("pick-wave"), result.samples, "#3ce68a");
-      $("pick-status").textContent = result.steps.join(" · ");
-      if (play) Engine.preview(result.samples, result.sampleRate);
-    });
-  }
-
-  function closePicker() {
-    $("pick").hidden = true;
-    pending = null;
-    clearTimeout(pickTimer);
-  }
-
-  function commitPending() {
-    if (!pending || !pending.result) return;
-    const pad = addPrepared(pending.name, pending.samples, pending.prep, pending.result);
-    const label = pending.result.instrumentLabel;
-    closePicker();
-    if (pad) {
-      status(pad.report.join(" · "));
-      toast("added " + pad.name + " as a " + label.toLowerCase());
-    }
-  }
-
-  // ------------------------------------------------------------- recording
-
-  let meterTimer = null;
-
-  function startRecording() {
-    const ctx = Engine.context();
-    Engine.resume().then(function () {
-      return Recorder.start(ctx);
-    }).then(function () {
-      $("btn-rec").classList.add("is-live");
-      $("rec-label").textContent = "Stop";
-      status("listening… tap stop when you are done", true);
-      meterTimer = setInterval(function () {
-        $("meter-fill").style.width = Math.min(100, Recorder.level() * 140) + "%";
-        if (Recorder.elapsed(ctx) > Recorder.maxSeconds) stopRecording();
-      }, 60);
-    }).catch(function (err) {
-      const denied = err && (err.name === "NotAllowedError" || err.name === "SecurityError");
-      status(denied
-        ? "microphone blocked — allow it in the address bar, or import a file instead"
-        : "no microphone here — import a file or load the scratch kit instead");
-      toast(denied ? "microphone permission denied" : "microphone unavailable");
-    });
-  }
-
-  function stopRecording() {
-    const ctx = Engine.context();
-    clearInterval(meterTimer);
-    meterTimer = null;
-    const take = Recorder.stop(ctx);
-    $("btn-rec").classList.remove("is-live");
-    $("rec-label").textContent = "Record a sound";
-    $("meter-fill").style.width = "0%";
-
-    if (!take || take.length < ctx.sampleRate * 0.05) {
-      status("that was too short to keep — hold it for a moment longer");
+  /* Slice a long take across the empty pads. Cut at the loudest onsets, so a
+   * bar of someone beatboxing lands one hit per pad. */
+  function chop(pad) {
+    const sr = pad.sampleRate;
+    const source = pad.usePolished && pad.polished ? pad.polished : pad.raw;
+    const empties = [];
+    for (let slot = 0; slot < SLOTS; slot++) if (!Engine.padAt(slot)) empties.push(slot);
+    if (!empties.length) {
+      toast("no empty pads to chop into");
       return;
     }
-    status("working out what that was…", true);
-    afterPaint(function () {
-      const prep = Polish.prepare(take, polishOptions());
-      if (!prep) {
-        status("that take was silent — nothing to keep");
-        return;
-      }
-      status("pick what it should be");
-      openPicker(null, take, prep);
-    });
+
+    const hop = 256;
+    const env = DSP.envelope(source, hop);
+    const peak = DSP.peak(env);
+    const gap = Math.round((sr * 0.06) / hop);      // ignore retriggers within 60 ms
+    const onsets = [];
+    let last = -gap;
+    for (let i = 1; i < env.length; i++) {
+      const rising = env[i] > env[i - 1] * 1.6 && env[i] > peak * 0.16;
+      if (rising && i - last >= gap) { onsets.push(i * hop); last = i; }
+    }
+    // Nothing rhythmic in there: fall back to equal slices, which is still the
+    // useful thing to do with a two-second pad or a held note.
+    if (onsets.length < 2) {
+      const pieces = Math.min(empties.length, 8);
+      onsets.length = 0;
+      for (let i = 0; i < pieces; i++) onsets.push(Math.floor((i * source.length) / pieces));
+    }
+
+    const made = [];
+    for (let i = 0; i < onsets.length && i < empties.length; i++) {
+      const from = onsets[i];
+      const to = i + 1 < onsets.length ? onsets[i + 1] : source.length;
+      if (to - from < sr * 0.02) continue;
+      const slice = source.slice(from, to);
+      const made_pad = addSample(empties[made.length], "chop " + (made.length + 1), slice,
+        { instrument: "asis" });
+      if (made_pad) made.push(made_pad);
+    }
+    made.forEach(giveDefaultRow);
+    paintAll();
+    toast(made.length ? "chopped into " + made.length + " pads" : "nothing to chop");
+    hud(made.length + " slices — tap them");
   }
 
-  // ------------------------------------------------------------ pad sheet
+  // ------------------------------------------------------------- pad editor
 
-  function openSheet(id) {
-    const pad = Engine.padById(id);
+  function openEditor(slot) {
+    const pad = Engine.padAt(slot);
     if (!pad) return;
-    ui.selected = id;
+    ui.editing = pad.id;
 
     $("pad-name").value = pad.name;
     $("pad-instrument").value = pad.instrument || "asis";
     $("p-morph").value = Math.round((pad.morph || 0) * 100);
-    $("p-morph-out").value = $("p-morph").value;
-    const inst = Instrument.get(pad.instrument || "asis");
-    $("pad-hint").textContent = inst ? inst.hint : "";
-    $("btn-ab").textContent = pad.usePolished ? "Polished" : "Raw take";
-    $("btn-ab").classList.toggle("is-on", pad.usePolished);
     $("p-gain").value = Math.round(pad.gain * 100);
     $("p-pitch").value = pad.pitch;
     $("p-pan").value = Math.round(pad.pan * 100);
@@ -484,56 +492,50 @@
     $("p-dly").value = Math.round(pad.sends.delay * 100);
     $("p-reverse").checked = !!pad.reverse;
     $("p-duck").checked = pad.duck >= 0.3;
+    $("btn-ab").textContent = pad.usePolished ? "Polished" : "Raw take";
+    $("btn-ab").classList.toggle("is-on", pad.usePolished);
+    const inst = Instrument.get(pad.instrument || "asis");
+    $("pad-hint").textContent = inst ? inst.hint : "";
     syncOutputs();
 
     const report = $("pad-report");
     report.innerHTML = "";
-    const head = document.createElement("div");
-    head.className = "head";
-    head.textContent = "what it did to this one";
-    report.appendChild(head);
     (pad.report || []).forEach(function (line) {
       const row = document.createElement("div");
       row.className = "line";
-      const bullet = document.createElement("b");
-      bullet.textContent = "✓";
+      const tick = document.createElement("b");
+      tick.textContent = "✓";
       const text = document.createElement("span");
       text.textContent = line;
-      row.appendChild(bullet);
+      row.appendChild(tick);
       row.appendChild(text);
       report.appendChild(row);
     });
 
-    $("sheet").hidden = false;
-    drawSheetWave(pad);
+    $("editor").hidden = false;
+    drawEditorWave(pad);
   }
 
-  function drawSheetWave(pad) {
+  function drawEditorWave(pad) {
     drawWave($("pad-wave"), pad.usePolished && pad.polished ? pad.polished : pad.raw,
-      pad.usePolished ? "#3ce68a" : "#a49cc4");
+      pad.usePolished ? "#3ce68a" : "#a49cc4", true);
   }
 
-  function closeSheet() {
-    $("sheet").hidden = true;
-    ui.selected = null;
-  }
-
-  function selected() {
-    return ui.selected ? Engine.padById(ui.selected) : null;
+  function editing() {
+    return ui.editing ? Engine.padById(ui.editing) : null;
   }
 
   function syncOutputs() {
-    $("p-gain-out").value = $("p-gain").value;
-    $("p-pitch-out").value = $("p-pitch").value;
-    $("p-pan-out").value = $("p-pan").value;
-    $("p-len-out").value = $("p-len").value;
-    $("p-rev-out").value = $("p-rev").value;
-    $("p-dly-out").value = $("p-dly").value;
+    ["p-morph", "p-gain", "p-pitch", "p-pan", "p-len", "p-rev", "p-dly",
+     "bpm", "swing", "m-vol", "m-rev", "m-dly", "m-duck"].forEach(function (id) {
+      const out = $(id + "-out");
+      if (out) out.value = $(id).value;
+    });
   }
 
-  function bindPadSlider(inputId, apply) {
-    $(inputId).addEventListener("input", function () {
-      const pad = selected();
+  function bindPadSlider(id, apply) {
+    $(id).addEventListener("input", function () {
+      const pad = editing();
       if (!pad) return;
       apply(pad, parseFloat(this.value));
       syncOutputs();
@@ -541,7 +543,7 @@
     });
   }
 
-  // ------------------------------------------------------------------ save
+  // ------------------------------------------------------------------- save
 
   function scheduleSave() {
     clearTimeout(ui.saveTimer);
@@ -551,7 +553,7 @@
         pad.steps = rows[pad.id] ? rows[pad.id].steps : [];
         pad.loop = rows[pad.id] ? rows[pad.id].loop : false;
       });
-      Store.savePads(Engine.pads()).catch(function () { /* private mode, no disk */ });
+      Store.savePads(Engine.pads()).catch(function () { /* private mode */ });
       Store.saveSession({
         bpm: Engine.state.bpm,
         swing: Engine.state.swing,
@@ -564,238 +566,241 @@
     }, 700);
   }
 
-  // ------------------------------------------------------------------ boot
-
-  function fillSelects() {
-    const key = $("key");
-    Polish.noteNames.forEach(function (note, index) {
-      const option = document.createElement("option");
-      option.value = index;
-      option.textContent = note;
-      key.appendChild(option);
-    });
-    key.value = ui.keyRoot;
-
-    const instruments = $("pad-instrument");
-    Instrument.order.forEach(function (key) {
-      const option = document.createElement("option");
-      option.value = key;
-      option.textContent = Instrument.get(key).label;
-      instruments.appendChild(option);
-    });
-
-    const genre = $("genre");
-    Object.keys(Patterns.genres).forEach(function (name) {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = Patterns.genres[name].name;
-      genre.appendChild(option);
-    });
-    genre.value = ui.genre;
+  function updateKitChip() {
+    $("kit-key").textContent = Polish.noteNames[ui.keyRoot] + " " +
+      (ui.scale === "minor" ? "min" : ui.scale === "major" ? "maj" : ui.scale);
+    $("kit-bpm").textContent = Engine.state.bpm;
   }
 
+  // ------------------------------------------------------------------- deck
+
+  function setPlaying(on) {
+    const button = $("btn-play");
+    button.classList.toggle("is-playing", on);
+    button.innerHTML = on ? "&#9632;" : "&#9654;";
+    if (!on && ui.capturing) setCapturing(false);
+  }
+
+  function setCapturing(on) {
+    ui.capturing = on;
+    $("btn-cap").classList.toggle("is-on", on);
+    $("btn-cap").setAttribute("aria-pressed", String(on));
+    idle();
+  }
+
+  /* ROLL: while held, retrigger the last pad you played on every sixteenth.
+   * Cheaper than a real beat-repeat and it is the one people actually use. */
+  function startRoll() {
+    if (rollTimer) return;
+    const padId = ui.lastPlayed || (Engine.pads()[0] || {}).id;
+    if (!padId) return;
+    const every = Engine.stepDuration() * 1000;
+    const fire = function () {
+      Engine.tap(padId, 0.9);
+      const pad = Engine.padById(padId);
+      if (pad) flash(pad.slot);
+    };
+    fire();
+    rollTimer = setInterval(fire, Math.max(50, every));
+  }
+
+  function stopRoll() {
+    clearInterval(rollTimer);
+    rollTimer = null;
+  }
+
+  function bindHold(id, down, up) {
+    const el = $(id);
+    el.addEventListener("pointerdown", function (event) {
+      el.setPointerCapture(event.pointerId);
+      el.classList.add("is-on");
+      down();
+    });
+    const release = function () {
+      if (!el.classList.contains("is-on")) return;
+      el.classList.remove("is-on");
+      up();
+    };
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    el.addEventListener("pointerleave", release);
+  }
+
+  // ------------------------------------------------------------------- bind
+
   function bind() {
-    $("btn-about").addEventListener("click", function () {
-      const box = $("about");
-      box.hidden = !box.hidden;
-      this.setAttribute("aria-expanded", String(!box.hidden));
+    $("btn-play").addEventListener("click", function () {
+      Engine.toggle().then(function () { setPlaying(Engine.isPlaying()); });
     });
 
-    $("btn-play").addEventListener("click", function () {
-      const self = this;
-      Engine.toggle().then(function () {
-        const on = Engine.isPlaying();
-        self.classList.toggle("is-playing", on);
-        self.innerHTML = on ? "&#9632;" : "&#9654;";
-        self.setAttribute("aria-label", on ? "Stop" : "Play");
+    $("btn-cap").addEventListener("click", function () {
+      const turningOn = !ui.capturing;
+      setCapturing(turningOn);
+      // Arming the loop starts it: capturing against a stopped transport would
+      // have nowhere to put the hits.
+      if (turningOn && !Engine.isPlaying()) {
+        Engine.play().then(function () { setPlaying(true); });
+      }
+    });
+
+    $("btn-mic").addEventListener("click", function () {
+      ui.micMode = !ui.micMode;
+      this.classList.toggle("is-on", ui.micMode);
+      this.setAttribute("aria-pressed", String(ui.micMode));
+      paintAll();
+      idle();
+    });
+
+    bindHold("fx-filter", function () { Engine.setSweep(0.85); }, function () { Engine.setSweep(0); });
+    bindHold("fx-roll", startRoll, stopRoll);
+
+    // --- sheets
+    const sheets = [["btn-settings", "settings"], ["btn-help", "help"]];
+    sheets.forEach(function (pair) {
+      $(pair[0]).addEventListener("click", function () { $(pair[1]).hidden = false; });
+    });
+    $("btn-kit").addEventListener("click", function () { $("settings").hidden = false; });
+    [["settings-close", "settings"], ["help-close", "help"], ["editor-close", "editor"]].forEach(function (pair) {
+      $(pair[0]).addEventListener("click", function () {
+        $(pair[1]).hidden = true;
+        if (pair[1] === "editor") ui.editing = null;
       });
     });
+    ["settings", "help", "editor"].forEach(function (id) {
+      $(id).addEventListener("pointerdown", function (event) {
+        if (event.target === this) {
+          this.hidden = true;
+          if (id === "editor") ui.editing = null;
+        }
+      });
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") return;
+      ["settings", "help", "editor"].forEach(function (id) { $(id).hidden = true; });
+      ui.editing = null;
+    });
 
+    // --- settings
     $("bpm").addEventListener("input", function () {
       Engine.setTempo(parseInt(this.value, 10));
-      $("bpm-out").value = this.value;
+      syncOutputs();
+      updateKitChip();
       scheduleSave();
     });
-
     $("swing").addEventListener("input", function () {
       Engine.setSwing(parseInt(this.value, 10) / 100);
-      $("swing-out").value = this.value + "%";
+      syncOutputs();
       scheduleSave();
     });
-
     $("key").addEventListener("change", function () {
       ui.keyRoot = parseInt(this.value, 10);
-      retuneKit("key");
+      updateKitChip();
+      retune();
     });
-
     $("scale").addEventListener("change", function () {
       ui.scale = this.value;
-      retuneKit("scale");
+      updateKitChip();
+      retune();
     });
-
     $("genre").addEventListener("change", function () {
       ui.genre = this.value;
       const genre = Patterns.genres[ui.genre];
       $("bpm").value = genre.bpm;
-      $("bpm-out").value = genre.bpm;
       Engine.setTempo(genre.bpm);
       $("swing").value = Math.round(genre.swing * 100);
-      $("swing-out").value = Math.round(genre.swing * 100) + "%";
       Engine.setSwing(genre.swing);
+      syncOutputs();
+      updateKitChip();
       arrange();
       toast(genre.name + " — " + genre.hint);
     });
 
-    $("btn-rec").addEventListener("click", function () {
-      if (Recorder.isRecording()) stopRecording();
-      else startRecording();
-    });
+    [["m-vol", "volume"], ["m-rev", "reverb"], ["m-dly", "delay"], ["m-duck", "sidechain"]]
+      .forEach(function (pair) {
+        $(pair[0]).addEventListener("input", function () {
+          Engine.setMaster(pair[1], parseInt(this.value, 10) / 100);
+          syncOutputs();
+          scheduleSave();
+        });
+      });
 
-    // --- instrument picker
-    $("pick-morph").addEventListener("input", function () {
-      if (!pending) return;
-      pending.morph = parseInt(this.value, 10) / 100;
-      $("pick-morph-out").value = this.value;
-      // Redraw as it moves, but only play once the slider settles — a preview
-      // firing on every pixel of a drag is unlistenable.
-      clearTimeout(pickTimer);
-      pickTimer = setTimeout(function () { reshapePending(true); }, 260);
-    });
-    $("pick-hear").addEventListener("click", function () {
-      if (pending && pending.result) Engine.preview(pending.result.samples, pending.result.sampleRate);
-    });
-    $("pick-add").addEventListener("click", commitPending);
-    $("pick-discard").addEventListener("click", function () {
-      closePicker();
-      status("take discarded. record another.");
-    });
-    $("pick-close").addEventListener("click", function () {
-      closePicker();
-      status("take discarded. record another.");
-    });
-
+    $("btn-arrange").addEventListener("click", function () { arrange(true); });
+    $("btn-bounce").addEventListener("click", bounce);
+    $("btn-demo").addEventListener("click", loadDemoKit);
     $("btn-import").addEventListener("click", function () { $("file").click(); });
     $("file").addEventListener("change", function () {
       importFiles(Array.prototype.slice.call(this.files));
       this.value = "";
     });
-
-    $("btn-demo").addEventListener("click", loadDemoKit);
-    $("btn-arrange").addEventListener("click", function () { arrange(true); });
-    $("btn-bounce").addEventListener("click", bounce);
-
     $("btn-clear").addEventListener("click", function () {
       if (!Engine.pads().length) return;
       if (!window.confirm("Delete every pad and start over?")) return;
       Engine.pads().slice().forEach(function (pad) { Engine.removePad(pad.id); });
       Engine.clearRows();
       Store.clear();
-      renderPads();
-      renderGrid();
-      status("cleared. record something.");
+      paintAll();
+      $("settings").hidden = true;
+      idle();
     });
 
-    // --- mix
-    [["m-vol", "volume", 100], ["m-rev", "reverb", 100], ["m-dly", "delay", 100],
-     ["m-duck", "sidechain", 100]].forEach(function (entry) {
-      $(entry[0]).addEventListener("input", function () {
-        Engine.setMaster(entry[1], parseInt(this.value, 10) / entry[2]);
-        $(entry[0] + "-out").value = this.value;
-        scheduleSave();
-      });
-    });
-
-    // --- pad sheet
-    $("sheet-close").addEventListener("click", closeSheet);
-    $("sheet").addEventListener("click", function (event) {
-      if (event.target === this) closeSheet();
-    });
-    document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && !$("sheet").hidden) closeSheet();
-    });
-
+    // --- editor
     $("pad-name").addEventListener("input", function () {
-      const pad = selected();
+      const pad = editing();
       if (!pad) return;
       pad.name = this.value || "untitled";
-      renderPads();
-      renderGrid();
+      pad.autoName = false;
+      paintPad(pad.slot);
       scheduleSave();
     });
 
+    $("btn-play-pad").addEventListener("click", function () {
+      const pad = editing();
+      if (pad) Engine.tap(pad.id, 1);
+    });
+
     $("btn-ab").addEventListener("click", function () {
-      const pad = selected();
+      const pad = editing();
       if (!pad || !pad.polished) return;
       pad.usePolished = !pad.usePolished;
       pad.version++;
       this.textContent = pad.usePolished ? "Polished" : "Raw take";
       this.classList.toggle("is-on", pad.usePolished);
-      drawSheetWave(pad);
-      renderPads();
+      drawEditorWave(pad);
+      paintPad(pad.slot);
       Engine.tap(pad.id, 1);
       scheduleSave();
     });
 
-    $("btn-play-pad").addEventListener("click", function () {
-      const pad = selected();
-      if (pad) Engine.tap(pad.id, 1);
-    });
-
     $("pad-instrument").addEventListener("change", function () {
-      const pad = selected();
+      const pad = editing();
       if (!pad) return;
+      const inst = Instrument.get(this.value);
       const name = this.value;
-      const inst = Instrument.get(name);
-      status("rebuilding as a " + inst.label.toLowerCase() + "…", true);
+      $("pad-hint").textContent = inst.hint;
       afterPaint(function () {
-        // Changing instrument brings that instrument's own strength with it.
         repolish(pad, { instrument: name, morph: inst.morph });
-        openSheet(pad.id);
-        renderPads();
+        $("p-morph").value = Math.round(pad.morph * 100);
+        syncOutputs();
+        drawEditorWave(pad);
+        openEditor(pad.slot);
         Engine.tap(pad.id, 1);
-        status(pad.report.join(" · "));
         scheduleSave();
       });
     });
 
     let morphTimer = null;
     $("p-morph").addEventListener("input", function () {
-      const pad = selected();
+      const pad = editing();
       if (!pad) return;
       const morph = parseInt(this.value, 10) / 100;
-      $("p-morph-out").value = this.value;
+      syncOutputs();
       clearTimeout(morphTimer);
       morphTimer = setTimeout(function () {
         repolish(pad, { morph: morph });
-        drawSheetWave(pad);
-        renderPads();
+        drawEditorWave(pad);
         Engine.tap(pad.id, 1);
         scheduleSave();
-      }, 260);
-    });
-
-    $("btn-repolish").addEventListener("click", function () {
-      const pad = selected();
-      if (!pad) return;
-      status("polishing again at " + Engine.state.bpm + " bpm in " +
-        Polish.noteNames[ui.keyRoot] + " " + ui.scale + "…", true);
-      afterPaint(function () {
-        repolish(pad, null);
-        openSheet(pad.id);
-        renderPads();
-        status(pad.report.join(" · "));
-        scheduleSave();
-      });
-    });
-
-    $("btn-delete").addEventListener("click", function () {
-      const pad = selected();
-      if (!pad) return;
-      Engine.removePad(pad.id);
-      closeSheet();
-      renderPads();
-      renderGrid();
-      scheduleSave();
+      }, 240);
     });
 
     bindPadSlider("p-gain", function (pad, v) { pad.gain = v / 100; });
@@ -806,27 +811,52 @@
     bindPadSlider("p-dly", function (pad, v) { pad.sends.delay = v / 100; });
 
     $("p-reverse").addEventListener("change", function () {
-      const pad = selected();
+      const pad = editing();
       if (!pad) return;
       pad.reverse = this.checked;
       pad.version++;
-      renderPads();
+      paintPad(pad.slot);
       Engine.tap(pad.id, 1);
       scheduleSave();
     });
-
     $("p-duck").addEventListener("change", function () {
-      const pad = selected();
+      const pad = editing();
+      if (pad) { pad.duck = this.checked ? 0.6 : 0; scheduleSave(); }
+    });
+
+    $("btn-chop").addEventListener("click", function () {
+      const pad = editing();
       if (!pad) return;
-      pad.duck = this.checked ? 0.6 : 0;
+      $("editor").hidden = true;
+      ui.editing = null;
+      afterPaint(function () { chop(pad); });
+    });
+
+    $("btn-clear-row").addEventListener("click", function () {
+      const pad = editing();
+      if (!pad) return;
+      Engine.setRow(pad.id, new Array(STEPS).fill(0), false);
+      toast("steps cleared");
       scheduleSave();
     });
 
-    // --- drag and drop anywhere on the page
+    $("btn-delete").addEventListener("click", function () {
+      const pad = editing();
+      if (!pad) return;
+      const slot = pad.slot;
+      Engine.removePad(pad.id);
+      $("editor").hidden = true;
+      ui.editing = null;
+      paintPad(slot);
+      scheduleSave();
+      idle();
+    });
+
+    // --- drag and drop, onto a pad if you aim at one
     let dragDepth = 0;
-    window.addEventListener("dragover", function (event) { event.preventDefault(); });
-    window.addEventListener("dragenter", function (event) {
-      event.preventDefault();
+    window.addEventListener("dragover", function (e) { e.preventDefault(); });
+    window.addEventListener("dragenter", function (e) {
+      e.preventDefault();
       dragDepth++;
       $("drop").hidden = false;
     });
@@ -842,115 +872,104 @@
       if (files && files.length) importFiles(Array.prototype.slice.call(files));
     });
 
-    // --- keyboard: number keys fire pads, space plays
+    // --- keyboard, for anyone at a desk
     document.addEventListener("keydown", function (event) {
-      if (event.target.tagName === "INPUT" || event.target.tagName === "SELECT") return;
-      if (event.code === "Space") {
-        event.preventDefault();
-        $("btn-play").click();
-        return;
-      }
-      const index = "123456789".indexOf(event.key);
-      if (index >= 0) {
-        const pad = Engine.pads()[index];
-        if (pad) Engine.tap(pad.id, 1);
-      }
+      if (event.repeat) return;
+      const tag = event.target.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (event.code === "Space") { event.preventDefault(); $("btn-play").click(); return; }
+      const index = "1234567890qwerty".indexOf(event.key.toLowerCase());
+      if (index >= 0) hitPad(index);
     });
+
+    window.addEventListener("resize", paintAll);
   }
 
-  function retuneKit(what) {
+  // ----------------------------------------------------------------- actions
+
+  function retune() {
     const pads = Engine.pads().filter(function (pad) {
       const inst = Instrument.get(pad.instrument || "asis");
       return inst && inst.pitched;
     });
     scheduleSave();
     if (!pads.length) return;
-    status("re-tuning " + pads.length + " pad" + (pads.length === 1 ? "" : "s") +
-      " to " + Polish.noteNames[ui.keyRoot] + " " + ui.scale + "…", true);
+    hud("re-tuning " + pads.length + " pad" + (pads.length === 1 ? "" : "s") + "…", "busy");
     afterPaint(function () {
       pads.forEach(function (pad) { repolish(pad, null); });
-      renderPads();
-      if (ui.selected) openSheet(ui.selected);
-      status("kit is now in " + Polish.noteNames[ui.keyRoot] + " " + ui.scale);
-      toast("re-tuned to the new " + what);
+      hud("kit is in " + Polish.noteNames[ui.keyRoot] + " " + ui.scale);
+      toast("re-tuned");
     });
+  }
+
+  function arrange(announce) {
+    const pads = Engine.pads();
+    if (!pads.length) return toast("nothing to arrange yet");
+    const result = Patterns.arrange(pads.map(function (pad) {
+      return { id: pad.id, role: pad.role, beats: pad.beats };
+    }), ui.genre, Math.floor(Math.random() * 1e9));
+    Object.keys(result.rows).forEach(function (id) {
+      Engine.setRow(id, result.rows[id].steps, result.rows[id].loop);
+    });
+    scheduleSave();
+    if (announce) {
+      toast("new " + Patterns.genres[ui.genre].name.toLowerCase() + " pattern");
+      $("settings").hidden = true;
+    }
   }
 
   function importFiles(files) {
     const audio = files.filter(function (file) {
       return file.type.indexOf("audio") === 0 || /\.(wav|mp3|m4a|ogg|aac|flac|webm)$/i.test(file.name);
     });
-    if (!audio.length) {
-      toast("that is not an audio file");
-      return;
-    }
+    if (!audio.length) return toast("not an audio file");
     const ctx = Engine.context();
-    status("reading " + audio.length + " file" + (audio.length === 1 ? "" : "s") + "…", true);
+    $("settings").hidden = true;
+    hud("reading " + audio.length + " file" + (audio.length === 1 ? "" : "s") + "…", "busy");
 
-    // One at a time: decoding and polishing four files at once just makes the
-    // page stutter for longer.
     audio.reduce(function (chain, file) {
       return chain.then(function () {
+        const slot = firstEmptySlot();
+        if (slot < 0) return null;
         return Recorder.fromFile(ctx, file).then(function (samples) {
           return new Promise(function (resolve) {
             afterPaint(function () {
-              const name = file.name.replace(/\.[^.]+$/, "").slice(0, 18);
-              const pad = addSample(name, samples, null);
-              if (pad) status(pad.name + ": " + pad.report.join(" · "));
+              const name = file.name.replace(/\.[^.]+$/, "").slice(0, 14);
+              const pad = addSample(slot, name, samples, null);
+              if (pad) { giveDefaultRow(pad); hud(pad.name + ": " + pad.report.join(" · ")); }
               resolve();
             });
           });
-        }).catch(function () {
-          toast("could not decode " + file.name);
-        });
+        }).catch(function () { toast("could not read " + file.name); });
       });
     }, Promise.resolve());
   }
 
   function loadDemoKit() {
     const ctx = Engine.context();
-    status("building a scratch kit…", true);
+    $("settings").hidden = true;
+    hud("building a scratch kit…", "busy");
     afterPaint(function () {
-      const kit = DemoKit.build(ctx.sampleRate);
-      kit.forEach(function (entry) { addSample(entry.name, entry.samples, null); });
+      DemoKit.build(ctx.sampleRate).forEach(function (entry) {
+        const slot = firstEmptySlot();
+        if (slot >= 0) addSample(slot, entry.name, entry.samples, null);
+      });
       arrange();
-      status("six rough takes in. open one to see what was done to it.");
-      toast("scratch kit loaded — press play");
+      paintAll();
+      hud("six takes in — press play, then hold a pad to open it");
+      toast("scratch kit loaded");
     });
-  }
-
-  function arrange(announce) {
-    const pads = Engine.pads();
-    if (!pads.length) {
-      toast("nothing to arrange yet");
-      return;
-    }
-    const result = Patterns.arrange(pads.map(function (pad) {
-      return { id: pad.id, role: pad.role, beats: pad.beats };
-    }), ui.genre, Math.floor(Math.random() * 1e9));
-
-    Object.keys(result.rows).forEach(function (id) {
-      Engine.setRow(id, result.rows[id].steps, result.rows[id].loop);
-    });
-    renderGrid();
-    scheduleSave();
-    if (announce) toast("new " + Patterns.genres[ui.genre].name.toLowerCase() + " arrangement");
   }
 
   function bounce() {
-    if (!Engine.pads().length) {
-      toast("nothing to bounce yet");
-      return;
-    }
+    if (!Engine.pads().length) return toast("nothing to bounce yet");
     const bars = 4;
-    status("rendering " + bars + " bars…", true);
+    hud("rendering " + bars + " bars…", "busy");
     Engine.resume().then(function () {
       return Engine.bounce(bars);
     }).then(function (rendered) {
       const channels = [];
-      for (let ch = 0; ch < rendered.numberOfChannels; ch++) {
-        channels.push(rendered.getChannelData(ch));
-      }
+      for (let ch = 0; ch < rendered.numberOfChannels; ch++) channels.push(rendered.getChannelData(ch));
       const blob = new Blob([DSP.encodeWav(channels, rendered.sampleRate)], { type: "audio/wav" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -961,11 +980,41 @@
       link.click();
       document.body.removeChild(link);
       setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-      status("bounced " + bars + " bars, " + (blob.size / 1048576).toFixed(1) + " MB");
+      hud("bounced " + bars + " bars, " + (blob.size / 1048576).toFixed(1) + " MB");
       toast("WAV saved");
     }).catch(function (err) {
-      status("could not bounce: " + (err && err.message ? err.message : "unknown error"));
+      hud("could not bounce: " + (err && err.message ? err.message : "unknown error"));
     });
+  }
+
+  // ------------------------------------------------------------------- boot
+
+  function fillSelects() {
+    const key = $("key");
+    Polish.noteNames.forEach(function (note, index) {
+      const option = document.createElement("option");
+      option.value = index;
+      option.textContent = note;
+      key.appendChild(option);
+    });
+    key.value = ui.keyRoot;
+
+    const instruments = $("pad-instrument");
+    Instrument.order.forEach(function (name) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = Instrument.get(name).label;
+      instruments.appendChild(option);
+    });
+
+    const genre = $("genre");
+    Object.keys(Patterns.genres).forEach(function (name) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = Patterns.genres[name].name;
+      genre.appendChild(option);
+    });
+    genre.value = ui.genre;
   }
 
   function restore() {
@@ -984,9 +1033,7 @@
         });
       }
       $("bpm").value = Engine.state.bpm;
-      $("bpm-out").value = Engine.state.bpm;
       $("swing").value = Math.round(Engine.state.swing * 100);
-      $("swing-out").value = Math.round(Engine.state.swing * 100) + "%";
       $("key").value = ui.keyRoot;
       $("scale").value = ui.scale;
       $("genre").value = ui.genre;
@@ -994,22 +1041,22 @@
       $("m-rev").value = Math.round(Engine.state.master.reverb * 100);
       $("m-dly").value = Math.round(Engine.state.master.delay * 100);
       $("m-duck").value = Math.round(Engine.state.master.sidechain * 100);
-      ["m-vol", "m-rev", "m-dly", "m-duck"].forEach(function (id) {
-        $(id + "-out").value = $(id).value;
-      });
       return session;
     }).then(function () {
       return Store.loadPads(ctx);
     }).then(function (records) {
       if (!records || !records.length) return false;
-      records.forEach(function (record) {
+      records.forEach(function (record, index) {
         Engine.addPad({
           id: record.id,
+          slot: record.slot === undefined ? index : record.slot,
           name: record.name,
           raw: record.raw,
           polished: record.polished,
           sampleRate: record.sampleRate || ctx.sampleRate,
           usePolished: record.usePolished !== false,
+          autoName: record.autoName !== false,
+          autoIndex: record.autoIndex || 1,
           role: record.role,
           instrument: record.instrument || "asis",
           morph: record.morph || 0,
@@ -1033,29 +1080,24 @@
         }
       });
       return true;
-    }).catch(function () {
-      return false;
-    });
+    }).catch(function () { return false; });
   }
 
   function boot() {
+    buildGrid();
     fillSelects();
     bind();
-    if (!Recorder.supported()) {
-      status("this browser will not give a page the microphone — import a file or load the scratch kit");
-    }
+    syncOutputs();
+    updateKitChip();
+
     restore().then(function (restored) {
-      renderPads();
-      renderGrid();
-      if (restored) {
-        status("picked your kit back up where you left it.");
-        toast("kit restored");
+      paintAll();
+      updateKitChip();
+      if (restored) toast("kit restored");
+      idle();
+      if (!Recorder.supported()) {
+        hud("this browser will not share a microphone — use Import in settings");
       }
-    });
-    window.addEventListener("resize", function () {
-      renderPads();
-      const pad = selected();
-      if (pad) drawSheetWave(pad);
     });
   }
 
@@ -1067,11 +1109,12 @@
 
   // Exposed so the browser test can drive the page without a microphone.
   window.LoopLab = {
-    addSample: addSample,
-    pending: function () { return pending; },
-    arrange: arrange,
     pads: function () { return Engine.pads(); },
+    padAt: function (slot) { return Engine.padAt(slot); },
+    addSample: addSample,
+    chop: chop,
+    arrange: arrange,
+    openEditor: openEditor,
     ui: ui,
-    drawWave: drawWave,
   };
 })();
