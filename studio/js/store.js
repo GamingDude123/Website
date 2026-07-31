@@ -74,10 +74,7 @@ var Store = (function () {
         store.put({
           id: pad.id,
           order: index,
-          slot: pad.slot,
           name: pad.name,
-          autoName: pad.autoName,
-          autoIndex: pad.autoIndex,
           role: pad.role,
           instrument: pad.instrument,
           morph: pad.morph,

@@ -111,15 +111,7 @@ var Engine = (function () {
     clipper.curve = curve;
     clipper.oversample = "2x";
 
-    // Held-finger filter. Sits wide open until an FX pad is pressed, so it is
-    // inaudible the rest of the time.
-    const sweep = c.createBiquadFilter();
-    sweep.type = "lowpass";
-    sweep.frequency.value = 20000;
-    sweep.Q.value = 1;
-
-    out.connect(sweep);
-    sweep.connect(glue);
+    out.connect(glue);
     glue.connect(limiter);
     limiter.connect(clipper);
     clipper.connect(c.destination);
@@ -171,7 +163,6 @@ var Engine = (function () {
       delayReturn: delayReturn,
       limiter: limiter,
       clipper: clipper,
-      sweep: sweep,
     };
   }
 
@@ -201,13 +192,6 @@ var Engine = (function () {
     buffer.copyToChannel(Float32Array.from(samples), 0);
     pad._cache.set(c, { version: pad.version, buffer: buffer });
     return buffer;
-  }
-
-  function padAt(slot) {
-    for (let i = 0; i < state.pads.length; i++) {
-      if (state.pads[i].slot === slot) return state.pads[i];
-    }
-    return null;
   }
 
   function padById(id) {
@@ -407,37 +391,6 @@ var Engine = (function () {
     });
   }
 
-  /* The step the transport is on, and how far into it, right now.
-   *
-   * A tap is quantised by rounding to the nearest sixteenth rather than the
-   * one just gone: people play slightly ahead of the beat, and flooring would
-   * drag every hit a step late. */
-  function nearestStep() {
-    if (!state.playing || !ctx) return { step: 0, drift: 0 };
-    const dur = stepDuration();
-    // How long since the step currently being scheduled was due.
-    const ahead = state.nextStepTime - ctx.currentTime;
-    const stepsAhead = ahead / dur;
-    const exact = state.step - stepsAhead;
-    const rounded = Math.round(exact);
-    return {
-      step: ((rounded % STEPS) + STEPS) % STEPS,
-      drift: (exact - rounded) * dur,
-    };
-  }
-
-  /* Hold-a-finger filter sweep. `amount` 0 is open, 1 is closed right down. */
-  function setSweep(amount) {
-    const bus = liveBus();
-    const now = ctx.currentTime;
-    // Exponential, because frequency is heard in octaves — a linear sweep does
-    // nothing for the first three quarters of its travel.
-    const hz = 20000 * Math.pow(180 / 20000, Math.max(0, Math.min(1, amount)));
-    bus.sweep.frequency.cancelScheduledValues(now);
-    bus.sweep.frequency.setTargetAtTime(hz, now, 0.02);
-    bus.sweep.Q.setTargetAtTime(1 + amount * 7, now, 0.02);
-  }
-
   function tap(padId, velocity) {
     return resume().then(function () {
       const c = context();
@@ -498,10 +451,6 @@ var Engine = (function () {
     resume: resume,
     pads: function () { return state.pads; },
     padById: padById,
-    padAt: padAt,
-    nearestStep: nearestStep,
-    setSweep: setSweep,
-    stepDuration: stepDuration,
     addPad: function (pad) { state.pads.push(pad); return pad; },
     removePad: function (id) {
       state.pads = state.pads.filter(function (p) { return p.id !== id; });
