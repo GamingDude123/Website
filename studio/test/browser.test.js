@@ -68,8 +68,11 @@ function check(name, cond, extra) {
   await page.goto(`http://localhost:${PORT}/studio/`, { waitUntil: "load" });
   check("page loads", await page.title() !== "", await page.title());
 
-  // ---- demo kit -> polish -> pads
-  await page.click("#btn-demo");
+  // ---- scratch kit -> polish -> pads
+  // It lives in the kit list now, alongside the presets.
+  await page.click("#btn-kits");
+  await page.waitForSelector("#kits:not([hidden])", { timeout: 5000 });
+  await page.click('#kit-list .kit[data-kit="scratch"]');
   await page.waitForFunction(() => window.LoopLab && window.LoopLab.pads().length >= 6, { timeout: 20000 });
 
   const pads = await page.evaluate(() => window.LoopLab.pads().map((p) => ({
@@ -249,6 +252,72 @@ function check(name, cond, extra) {
   check("discarding a take adds no pad", afterDiscard === countBeforeDiscard,
     afterDiscard + " pads, was " + countBeforeDiscard);
 
+  // ---- preset kits
+  await page.click('.tab[data-tab="sample"]');
+  await page.click("#btn-kits");
+  await page.waitForSelector("#kits:not([hidden])", { timeout: 5000 });
+  const listed = await page.evaluate(() => ({
+    rows: document.querySelectorAll("#kit-list .kit").length,
+    names: Array.from(document.querySelectorAll("#kit-list .kit b")).map((b) => b.textContent),
+  }));
+  check("the kit list offers several kits", listed.rows >= 5, listed.names.join(" / "));
+
+  await page.click('#kit-list .kit[data-kit="house"]');
+  await page.waitForFunction(() => window.LoopLab.pads().length === 7 &&
+    window.LoopLab.pads()[0].role === "kick", { timeout: 25000 });
+  const house = await page.evaluate(() => {
+    const rows = Engine.rows();
+    return {
+      pads: window.LoopLab.pads().map((p) => p.name + ":" + p.role),
+      bpm: Engine.state.bpm,
+      swing: Engine.state.swing,
+      reverb: Engine.state.master.reverb,
+      duck: Engine.state.master.sidechain,
+      kickSteps: rows[window.LoopLab.pads()[0].id].steps.reduce((n, v, i) => v ? n.concat(i) : n, []),
+      // nothing should have been rebuilt, tuned or stretched on the way in
+      untouched: window.LoopLab.pads().every((p) => p.morph === 0 && p.shifted === 0),
+      reports: window.LoopLab.pads()[0].report,
+    };
+  });
+  console.log("         " + house.pads.join("  "));
+  check("loading a kit fills the pads", house.pads.length === 7, house.pads.length + " pads");
+  check("the kit brings its own tempo and swing", house.bpm === 124 && Math.abs(house.swing - 0.06) < 0.001,
+    house.bpm + "bpm swing " + house.swing);
+  check("the kit brings its own effects", house.reverb > 0.25 && house.duck > 0.4,
+    "reverb " + house.reverb + " duck " + house.duck);
+  check("the kit's own pattern is loaded", JSON.stringify(house.kickSteps) === JSON.stringify([0, 4, 8, 12]),
+    "kick on " + house.kickSteps.join(","));
+  check("kit sounds are left alone by the polish", house.untouched, house.reports.join(" | "));
+
+  // it has to survive being played and bounced like anything else
+  await page.evaluate(() => Engine.play());
+  await page.waitForTimeout(1400);
+  check("a kit plays", await page.evaluate(() => Engine.isPlaying()));
+
+  await page.click('.tab[data-tab="sequence"]');
+  const [kitWav] = await Promise.all([
+    page.waitForEvent("download", { timeout: 60000 }),
+    page.click("#btn-bounce"),
+  ]);
+  const kitPath = path.join(OUT, "house-kit.wav");
+  await kitWav.saveAs(kitPath);
+  const kb = fs.readFileSync(kitPath);
+  const kv = new DataView(kb.buffer, kb.byteOffset, kb.byteLength);
+  let kpeak = 0, ksum = 0;
+  const kframes = (kb.length - 44) / 4;
+  for (let i = 0; i < kframes; i++) {
+    const v = kv.getInt16(44 + i * 4, true) / 32768;
+    kpeak = Math.max(kpeak, Math.abs(v));
+    ksum += v * v;
+  }
+  const krms = Math.sqrt(ksum / kframes);
+  check("a kit bounces to real audio", kpeak > 0.4 && kpeak < 0.999 && krms > 0.05,
+    "peak=" + kpeak.toFixed(3) + " rms=" + krms.toFixed(3) +
+    " crest=" + (20 * Math.log10(kpeak / krms)).toFixed(1) + "dB");
+
+  await page.evaluate(() => Engine.stop());
+  await page.click('.tab[data-tab="sample"]');
+
   // ---- bounce
   await page.click('.tab[data-tab="sequence"]');
   const [download] = await Promise.all([
@@ -300,7 +369,7 @@ function check(name, cond, extra) {
   // ---- microphone path, using chromium's fake device
   // Recording lives on the Sample tab, and the bounce above left us on Sequence.
   await page.click('.tab[data-tab="sample"]');
-  const before = pads.length;
+  const before = await page.evaluate(() => window.LoopLab.pads().length);
   await page.click("#btn-rec");
   await page.waitForTimeout(1600);
   const live = await page.evaluate(() => ({
@@ -415,8 +484,9 @@ function check(name, cond, extra) {
 
   // ---- persistence across a reload
   await page.waitForTimeout(1200);
+  const kitBefore = await page.evaluate(() => window.LoopLab.pads().map((p) => p.name).join(","));
   await page.reload({ waitUntil: "load" });
-  await page.waitForFunction(() => window.LoopLab && window.LoopLab.pads().length >= 7, { timeout: 20000 });
+  await page.waitForFunction(() => window.LoopLab && window.LoopLab.pads().length >= 8, { timeout: 20000 });
   const afterReload = await page.evaluate(() => ({
     count: window.LoopLab.pads().length,
     names: window.LoopLab.pads().map((p) => p.name),
@@ -424,7 +494,8 @@ function check(name, cond, extra) {
     bpm: document.getElementById("bpm").value,
     key: document.getElementById("key").value,
   }));
-  check("kit survives a reload", afterReload.count === 7, afterReload.count + ": " + afterReload.names.join(","));
+  check("kit survives a reload", afterReload.names.join(",") === kitBefore,
+    afterReload.count + ": " + afterReload.names.join(","));
   check("pattern survives a reload", afterReload.cells > 8, afterReload.cells + " steps");
   check("session settings survive", afterReload.key === "9", "bpm=" + afterReload.bpm + " key=" + afterReload.key);
   const choiceKept = await page.evaluate(() => {

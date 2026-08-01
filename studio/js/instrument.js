@@ -215,6 +215,159 @@ var Instrument = (function () {
     return out;
   }
 
+  // ------------------------------------------------- voices for the preset kits
+
+  /* A lowpass whose cutoff falls over the life of the sound.
+   *
+   * One pole, recomputed per sample, because the interesting part of a house
+   * stab or a plucked bass is the filter closing — a fixed filter gives you the
+   * same notes with none of the movement, and a biquad cannot have its cutoff
+   * swept sample by sample without recomputing all five coefficients each time.
+   */
+  function sweepLowpass(x, sr, startHz, endHz, tau) {
+    let y = 0;
+    for (let i = 0; i < x.length; i++) {
+      const t = i / sr;
+      const f = endHz + (startHz - endHz) * Math.exp(-t / tau);
+      const a = 1 - Math.exp((-2 * Math.PI * Math.min(f, sr * 0.45)) / sr);
+      y += a * (x[i] - y);
+      x[i] = y;
+    }
+    return x;
+  }
+
+  function saw(phase) {
+    return 2 * ((phase / (2 * Math.PI)) % 1) - 1;
+  }
+
+  /* A rimshot: a high woody click over a short low knock. */
+  function rimSynth(len, sr, o) {
+    const rnd = rng(o.seed);
+    const out = new Float32Array(len);
+    let p1 = 0;
+    let p2 = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      p1 += (2 * Math.PI * 1720) / sr;
+      p2 += (2 * Math.PI * 470) / sr;
+      const env = Math.exp(-t / 0.016) * (1 - Math.exp(-t / 0.0004));
+      out[i] = (Math.sin(p1) * 0.6 + Math.sin(p2) * 0.4 + (rnd() * 2 - 1) * 0.32) * env;
+    }
+    DSP.biquad(out, sr, "highpass", 400, 0.7);
+    DSP.biquad(out, sr, "peaking", 1720, 1.4, 5);
+    return out;
+  }
+
+  /* A shaker. The difference between this and a hat is the attack: beads take a
+   * few milliseconds to get moving, and that softness is the whole character. */
+  function shakerSynth(len, sr, o) {
+    const rnd = rng(o.seed);
+    const out = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      out[i] = (rnd() * 2 - 1) * Math.exp(-t / 0.045) * (1 - Math.exp(-t / 0.006));
+    }
+    DSP.biquad(out, sr, "highpass", 4200, 0.7);
+    DSP.biquad(out, sr, "peaking", 7500, 1.2, 4);
+    return out;
+  }
+
+  /* The house chord stab: detuned saws playing a triad, with the filter
+   * slamming shut over about a tenth of a second. */
+  function stabSynth(len, sr, o) {
+    const root = o.rootHz || 220;
+    const notes = o.notes || [0, 3, 7, 12];
+    const detune = [1, 1.004, 0.996, 1.002];
+    const out = new Float32Array(len);
+    const phase = notes.map(function () { return 0; });
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      let v = 0;
+      for (let k = 0; k < notes.length; k++) {
+        const f = root * Math.pow(2, notes[k] / 12) * detune[k % detune.length];
+        phase[k] += (2 * Math.PI * f) / sr;
+        v += saw(phase[k]);
+      }
+      out[i] = (v / notes.length) * Math.exp(-t / (o.tau || 0.15)) * (1 - Math.exp(-t / 0.003));
+    }
+    sweepLowpass(out, sr, 5400, 720, 0.075);
+    DSP.biquad(out, sr, "highpass", 180, 0.7);
+    return out;
+  }
+
+  /* A short bleep, for the percussion that is not a drum. */
+  function blipSynth(len, sr, o) {
+    const base = (o.rootHz || 220) * 4;
+    const out = new Float32Array(len);
+    let phase = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      phase += (2 * Math.PI * base * (1 + 1.4 * Math.exp(-t / 0.012))) / sr;
+      out[i] = Math.sin(phase) * Math.exp(-t / 0.05) * (1 - Math.exp(-t / 0.001));
+    }
+    return out;
+  }
+
+  /* Bass and sub, but with envelopes of their own — the versions above follow a
+   * recording's shape, and a preset kit has no recording to follow. */
+  function subVoice(len, sr, o) {
+    const f = o.pitchHz || o.rootHz || 55;
+    const out = new Float32Array(len);
+    let phase = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      phase += (2 * Math.PI * f) / sr;
+      out[i] = Math.sin(phase) * Math.exp(-t / (o.tau || 0.22)) * (1 - Math.exp(-t / 0.004));
+    }
+    return out;
+  }
+
+  function bassVoice(len, sr, o) {
+    const f = o.pitchHz || o.rootHz || 55;
+    const out = new Float32Array(len);
+    let phase = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      phase += (2 * Math.PI * f) / sr;
+      out[i] = (saw(phase) * 0.55 + Math.sin(phase) * 0.55) *
+        Math.exp(-t / (o.tau || 0.16)) * (1 - Math.exp(-t / 0.003));
+    }
+    sweepLowpass(out, sr, o.open || 2600, Math.max(120, f * 3.5), o.filterTau || 0.08);
+    return out;
+  }
+
+  /* Everything a preset kit can be built from. Length is per voice because a
+   * hat that ran as long as a kick would not be a hat. */
+  const VOICES = {
+    kick: { seconds: 0.42, role: "kick", make: kickSynth },
+    snare: { seconds: 0.26, role: "snare", make: snareSynth },
+    clap: { seconds: 0.3, role: "snare", make: clapSynth },
+    hat: { seconds: 0.08, role: "hat", make: hatSynth },
+    openhat: {
+      seconds: 0.42, role: "hat",
+      make: function (len, sr, o) { return hatSynth(len, sr, { seed: o.seed, open: true }); },
+    },
+    shaker: { seconds: 0.14, role: "hat", make: shakerSynth },
+    rim: { seconds: 0.1, role: "perc", make: rimSynth },
+    blip: { seconds: 0.16, role: "perc", make: blipSynth },
+    tom: { seconds: 0.5, role: "perc", make: tomSynth },
+    sub: { seconds: 0.6, role: "bass", make: subVoice },
+    bass: { seconds: 0.4, role: "bass", make: bassVoice },
+    stab: { seconds: 0.5, role: "chord", make: stabSynth },
+  };
+
+  /* Make one of the above from nothing. */
+  function render(name, sr, options) {
+    const voice = VOICES[name];
+    if (!voice) return null;
+    const o = options || {};
+    const len = Math.max(64, Math.round((o.seconds || voice.seconds) * sr));
+    const out = voice.make(len, sr, o);
+    DSP.normalize(out, 0.89);
+    DSP.fadeEdges(out, sr, 0.4, 4);
+    return out;
+  }
+
   /* Not a synth but a transform: stack the recording with pitch-shifted copies
    * of itself to turn one hummed note into a chord in your key. */
   function harmonise(x, sr, o) {
@@ -466,6 +619,9 @@ var Instrument = (function () {
 
   return {
     instruments: INSTRUMENTS,
+    voices: VOICES,
+    render: render,
+    sweepLowpass: sweepLowpass,
     order: ORDER,
     roleFor: ROLE_TO_INSTRUMENT,
     get: get,

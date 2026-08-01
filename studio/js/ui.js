@@ -248,7 +248,10 @@
    * the pad so the sheet can show its reasoning and so a later re-polish can
    * start from the raw take again. */
   function addSample(name, samples, choice) {
-    const prep = Polish.prepare(samples, polishOptions());
+    // `choice` also carries the stage switches, so prepare needs it as well —
+    // otherwise a preset kit's clean synth sounds get de-noised and trimmed on
+    // the way in, which is work at best and damage at worst.
+    const prep = Polish.prepare(samples, polishOptions(choice));
     if (!prep) {
       toast("that take was silent");
       return null;
@@ -792,7 +795,14 @@
       this.value = "";
     });
 
-    $("btn-demo").addEventListener("click", loadDemoKit);
+    $("btn-kits").addEventListener("click", function () {
+      renderKitList();
+      $("kits").hidden = false;
+    });
+    $("kits-close").addEventListener("click", function () { $("kits").hidden = true; });
+    $("kits").addEventListener("click", function (event) {
+      if (event.target === this) this.hidden = true;
+    });
     $("btn-arrange").addEventListener("click", function () { arrange(true); });
     $("btn-bounce").addEventListener("click", bounce);
 
@@ -823,7 +833,9 @@
       if (event.target === this) closeSheet();
     });
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && !$("sheet").hidden) closeSheet();
+      if (event.key !== "Escape") return;
+      if (!$("kits").hidden) $("kits").hidden = true;
+      if (!$("sheet").hidden) closeSheet();
     });
 
     $("pad-name").addEventListener("input", function () {
@@ -1031,6 +1043,115 @@
     });
   }
 
+  // ------------------------------------------------------------------- kits
+
+  function renderKitList() {
+    const host = $("kit-list");
+    host.innerHTML = "";
+
+    Kits.all.forEach(function (kit) {
+      const row = document.createElement("button");
+      row.className = "kit";
+      row.dataset.kit = kit.id;
+
+      const text = document.createElement("div");
+      text.className = "kit-text";
+      const title = document.createElement("b");
+      title.textContent = kit.name;
+      const hint = document.createElement("span");
+      hint.textContent = kit.hint;
+      text.appendChild(title);
+      text.appendChild(hint);
+
+      // A glance at the kick pattern, which is what tells house from garage.
+      const dots = document.createElement("div");
+      dots.className = "kit-dots";
+      const kick = kit.pads[0].steps;
+      for (let i = 0; i < 16; i += 2) {
+        const dot = document.createElement("i");
+        if (kick[i] || kick[i + 1]) dot.className = "on";
+        dots.appendChild(dot);
+      }
+
+      row.appendChild(text);
+      row.appendChild(dots);
+      row.addEventListener("click", function () { loadKit(kit.id); });
+      host.appendChild(row);
+    });
+
+    // The scratch kit stays on the list: it is the one that shows what the
+    // clean-up actually does, because those takes arrive deliberately rough.
+    const scratch = document.createElement("button");
+    scratch.className = "kit";
+    scratch.dataset.kit = "scratch";
+    scratch.innerHTML = '<div class="kit-text"><b>Scratch kit</b>' +
+      '<span>six rough takes with hiss and dead air, to hear the clean-up working</span></div>';
+    scratch.addEventListener("click", function () {
+      $("kits").hidden = true;
+      loadDemoKit();
+    });
+    host.appendChild(scratch);
+  }
+
+  /* Load a preset: replace the pads, take on its tempo, key, swing and FX. */
+  function loadKit(id) {
+    const kit = Kits.byId(id);
+    if (!kit) return;
+    const ctx = Engine.context();
+    $("kits").hidden = true;
+    status("building " + kit.name.toLowerCase() + "…", true);
+
+    afterPaint(function () {
+      Engine.pads().slice().forEach(function (pad) { Engine.removePad(pad.id); });
+      Engine.clearRows();
+
+      ui.keyRoot = kit.keyRoot;
+      ui.scale = kit.scale;
+      ui.genre = kit.genre;
+      Engine.setTempo(kit.bpm);
+      Engine.setSwing(kit.swing);
+      Object.keys(kit.master).forEach(function (key) { Engine.setMaster(key, kit.master[key]); });
+
+      $("bpm").value = kit.bpm;
+      $("swing").value = Math.round(kit.swing * 100);
+      $("key").value = kit.keyRoot;
+      $("scale").value = kit.scale;
+      $("genre").value = kit.genre;
+      $("m-rev").value = Math.round(kit.master.reverb * 100);
+      $("m-dly").value = Math.round(kit.master.delay * 100);
+      $("m-duck").value = Math.round(kit.master.sidechain * 100);
+      syncOutputs();
+
+      Kits.build(kit, ctx.sampleRate).forEach(function (entry) {
+        // These are already the instrument, so nothing gets rebuilt, tuned or
+        // stretched — they only need the role's mix treatment.
+        const pad = addSample(entry.name, entry.samples, {
+          // Every role is also the name of an instrument, so the role is the
+          // whole mapping: a clap is treated as a snare, a shaker as a hat.
+          instrument: entry.role,
+          morph: 0,
+          denoise: false,
+          trim: false,
+          tune: false,
+          fitGrid: false,
+        });
+        if (!pad) return;
+        Engine.setRow(pad.id, entry.steps.slice(), false);
+        if (entry.level !== undefined) pad.gain = entry.level;
+        if (entry.sends) {
+          if (entry.sends.reverb !== undefined) pad.sends.reverb = entry.sends.reverb;
+          if (entry.sends.delay !== undefined) pad.sends.delay = entry.sends.delay;
+        }
+      });
+
+      renderPads();
+      renderGrid();
+      scheduleSave();
+      status(kit.name + " · " + kit.hint);
+      toast(kit.name + " loaded — press play");
+    });
+  }
+
   function arrange(announce) {
     const pads = Engine.pads();
     if (!pads.length) {
@@ -1182,6 +1303,7 @@
   // Exposed so the browser test can drive the page without a microphone.
   window.LoopLab = {
     addSample: addSample,
+    loadKit: loadKit,
     pending: function () { return pending; },
     arrange: arrange,
     pads: function () { return Engine.pads(); },

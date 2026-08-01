@@ -582,6 +582,29 @@ select option { background: var(--wine); color: var(--ink); }
 .sheet-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .hint { margin: -3px 0 0; font-size: 11.5px; color: var(--ink-dim); line-height: 1.45; }
 
+/* ------------------------------------------------------------------ kits */
+
+.kit-list { display: flex; flex-direction: column; gap: 8px; }
+
+.kit {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  text-align: left;
+  padding: 12px 13px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.kit:hover { background: rgba(249, 235, 238, 0.07); }
+.kit b { font-size: 13.5px; display: block; letter-spacing: 0.02em; }
+.kit span { font-size: 11px; color: var(--ink-dim); font-weight: 600; letter-spacing: 0; }
+.kit-text { flex: 1; min-width: 0; }
+/* A row of blocks standing in for the kit's own pattern. */
+.kit-dots { display: grid; grid-template-columns: repeat(8, 5px); gap: 2px; flex: 0 0 auto; }
+.kit-dots i { height: 12px; border-radius: 2px; background: var(--stroke-soft); }
+.kit-dots i.on { background: var(--cyan); }
+
 /* ------------------------------------------------------- instrument picker */
 
 .picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 7px; }

@@ -94,7 +94,7 @@
     <p class="status" id="status">Tap record, make a noise, tap again. Or drop an audio file anywhere.</p>
     <div class="capture-side">
       <button class="ghost" id="btn-import">Import file</button>
-      <button class="ghost" id="btn-demo">Scratch kit</button>
+      <button class="ghost" id="btn-kits">Kits</button>
       <input type="file" id="file" accept="audio/*" multiple hidden>
     </div>
   </section>
@@ -126,6 +126,21 @@
     </div>
   </section>
 </main>
+
+<div class="sheet" id="kits" hidden>
+  <div class="sheet-inner" role="dialog" aria-label="Kits">
+    <header>
+      <h2 class="sheet-title">Load a kit</h2>
+      <button class="ghost" id="kits-close" aria-label="Close">&#10005;</button>
+    </header>
+    <p class="hint">
+      Every sound is synthesised in the browser, not sampled from a record.
+      Loading a kit replaces what is on the pads and sets the tempo, key, swing
+      and effects to match.
+    </p>
+    <div class="kit-list" id="kit-list"></div>
+  </div>
+</div>
 
 <div class="sheet" id="pick" hidden>
   <div class="sheet-inner" role="dialog" aria-label="Choose an instrument">
@@ -205,6 +220,7 @@
 <script src="js/dsp.js"></script>
 <script src="js/instrument.js"></script>
 <script src="js/polish.js"></script>
+<script src="js/kits.js"></script>
 <script src="js/patterns.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/record.js"></script>
