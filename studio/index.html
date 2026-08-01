@@ -17,6 +17,12 @@
   <button class="ghost" id="btn-about" aria-expanded="false">how?</button>
 </header>
 
+<div class="tabs" role="tablist">
+  <button class="tab is-on" data-tab="sample" role="tab" aria-selected="true">Sample</button>
+  <button class="tab" data-tab="sequence" role="tab" aria-selected="false">Sequence</button>
+  <button class="tab" data-tab="perform" role="tab" aria-selected="false">Perform</button>
+</div>
+
 <div class="about" id="about" hidden>
   <p>
     Every take runs through the same chain before it lands on a pad, and each
@@ -79,7 +85,7 @@
     </label>
   </section>
 
-  <section class="capture">
+  <section data-panel="sample" class="capture">
     <button class="rec" id="btn-rec">
       <span class="dot"></span>
       <span id="rec-label">Record a sound</span>
@@ -93,9 +99,9 @@
     </div>
   </section>
 
-  <section class="pads" id="pads" aria-label="Pads"></section>
+  <section data-panel="sample" class="pads" id="pads" aria-label="Pads"></section>
 
-  <section class="seq">
+  <section data-panel="sequence" class="seq">
     <div class="seq-top">
       <h2>Pattern</h2>
       <div class="seq-actions">
@@ -110,7 +116,7 @@
     </div>
   </section>
 
-  <section class="mix">
+  <section data-panel="perform" class="mix">
     <h2>Mix</h2>
     <div class="mix-rows">
       <label class="field"><span>Volume</span><input type="range" id="m-vol" min="0" max="120" value="90"><output id="m-vol-out">90</output></label>

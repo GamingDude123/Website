@@ -117,6 +117,33 @@ function check(name, cond, extra) {
   const rows = await page.evaluate(() => document.querySelectorAll(".grid-row").length);
   check("one grid row per pad", rows === 6, rows + " rows");
 
+  // ---- tabs show one panel at a time
+  const tabbed = await page.evaluate(() => {
+    const visible = () => Array.from(document.querySelectorAll("[data-panel]"))
+      .filter((el) => !el.hidden).map((el) => el.dataset.panel);
+    const before = visible();
+    document.querySelector('.tab[data-tab="perform"]').click();
+    const after = visible();
+    document.querySelector('.tab[data-tab="sample"]').click();
+    return { before: before, after: after, back: visible() };
+  });
+  check("tabs switch which panel is showing",
+    tabbed.before.every((p) => p === "sample") && tabbed.after.every((p) => p === "perform") &&
+    tabbed.back.every((p) => p === "sample"),
+    "sample -> " + tabbed.after.join(",") + " -> " + tabbed.back.join(","));
+
+  // ---- the pad controls are knobs
+  const knobs = await page.evaluate(() => {
+    const dials = document.querySelectorAll(".knob");
+    return {
+      count: dials.length,
+      names: Array.from(document.querySelectorAll(".knob-name")).map((n) => n.textContent),
+      slidersHidden: ["p-gain", "p-pitch", "p-pan"].every((id) => document.getElementById(id).closest(".field").hidden),
+    };
+  });
+  check("volume, pitch and pan are knobs", knobs.count === 3 && knobs.slidersHidden,
+    knobs.names.join(" / "));
+
   // ---- transport
   await page.click("#btn-play");
   await page.waitForTimeout(1800);
@@ -223,6 +250,7 @@ function check(name, cond, extra) {
     afterDiscard + " pads, was " + countBeforeDiscard);
 
   // ---- bounce
+  await page.click('.tab[data-tab="sequence"]');
   const [download] = await Promise.all([
     page.waitForEvent("download", { timeout: 60000 }),
     page.click("#btn-bounce"),
@@ -270,6 +298,8 @@ function check(name, cond, extra) {
     "crest factor = " + crestDb.toFixed(1) + " dB (peak " + peak.toFixed(3) + " / rms " + rms.toFixed(3) + ")");
 
   // ---- microphone path, using chromium's fake device
+  // Recording lives on the Sample tab, and the bounce above left us on Sequence.
+  await page.click('.tab[data-tab="sample"]');
   const before = pads.length;
   await page.click("#btn-rec");
   await page.waitForTimeout(1600);
@@ -366,6 +396,7 @@ function check(name, cond, extra) {
   // A second bounce, now that a microphone take is in the kit: the level of a
   // fake-device tone is not worth asserting on, but it must still be audible
   // and must still not clip.
+  await page.click('.tab[data-tab="sequence"]');
   const [download2] = await Promise.all([
     page.waitForEvent("download", { timeout: 60000 }),
     page.click("#btn-bounce"),

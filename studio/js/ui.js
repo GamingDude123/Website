@@ -12,22 +12,16 @@
   const $ = function (id) { return document.getElementById(id); };
   const STEPS = Patterns.steps;
 
-  /* One colour per pad position, not per role: the point is that you learn
-   * where your kick is by its colour and its place, the way you do on hardware.
-   * Saturated and flat, so a waveform in white sits legibly on top of any of
-   * them. */
-  const PAD_COLOURS = [
-    "#ff6b35", "#ff2e63", "#c341e8", "#7b5cff",
-    "#2e7dff", "#00b8d4", "#00c853", "#c6d90b",
-    "#ffb300", "#ff5252", "#e040fb", "#5c6bc0",
-    "#26c6da", "#66bb6a", "#d4a017", "#ec407a",
-  ];
+  /* Colour carries one meaning: a pad is either loaded or it is not. Sixteen
+   * different hues looked lively and told you nothing. */
+  const WAVE_INK = "rgba(27, 59, 77, 0.72)";
   const GRID_SLOTS = 16;
 
   const ui = {
     keyRoot: 9,          // A
     scale: "minor",
     genre: "garage",
+    tab: "sample",
     selected: null,
     counter: 0,
     saveTimer: null,
@@ -112,7 +106,7 @@
     host.innerHTML = "";
     const pads = Engine.pads();
 
-    pads.forEach(function (pad, index) {
+    pads.forEach(function (pad) {
       const tile = document.createElement("div");
       tile.className = "pad" + (pad.mute ? " is-muted" : "");
       tile.dataset.role = pad.role;
@@ -127,16 +121,13 @@
       top.appendChild(tag);
 
       const canvas = document.createElement("canvas");
+      canvas.title = padSubtitle(pad);
       const foot = document.createElement("div");
       foot.className = "pad-foot";
       const name = document.createElement("div");
       name.className = "pad-name";
       name.textContent = pad.name;
-      const sub = document.createElement("div");
-      sub.className = "pad-sub";
-      sub.textContent = padSubtitle(pad);
       foot.appendChild(name);
-      foot.appendChild(sub);
 
       const cog = document.createElement("button");
       cog.className = "cog";
@@ -146,13 +137,9 @@
       tile.appendChild(canvas);
       tile.appendChild(foot);
       tile.appendChild(cog);
-      tile.style.setProperty("--pad", PAD_COLOURS[index % PAD_COLOURS.length]);
       host.appendChild(tile);
 
-      // White on the pad's own colour, rather than a colour of its own: on a
-      // saturated background any hue but white turns to mud.
-      drawWave(canvas, pad.usePolished && pad.polished ? pad.polished : pad.raw,
-        "rgba(255,255,255,0.6)");
+      drawWave(canvas, pad.usePolished && pad.polished ? pad.polished : pad.raw, WAVE_INK);
 
       function hit() {
         Engine.tap(pad.id, 1);
@@ -195,13 +182,10 @@
     host.innerHTML = "";
     $("grid-empty").hidden = pads.length > 0;
 
-    pads.forEach(function (pad, index) {
+    pads.forEach(function (pad) {
       const row = document.createElement("div");
       row.className = "grid-row";
       row.dataset.id = pad.id;
-      // The row wears the same colour as its pad, so you can see which line is
-      // which without reading down the labels.
-      row.style.setProperty("--pad", PAD_COLOURS[index % PAD_COLOURS.length]);
 
       const label = document.createElement("div");
       label.className = "label";
@@ -367,7 +351,7 @@
     $("pick-morph").value = Math.round(pending.morph * 100);
     $("pick-morph-out").value = $("pick-morph").value;
     $("pick").hidden = false;
-    drawWave($("pick-wave"), prep.samples, "#a49cc4");
+    drawWave($("pick-wave"), prep.samples, "#d5aab3");
     $("pick-status").textContent = "sounds like a " +
       (Instrument.get(prep.guess) || {}).label.toLowerCase() + " to me — change it if not";
     reshapePending(true);
@@ -416,7 +400,7 @@
       }));
       if (!result) return;
       pending.result = result;
-      drawWave($("pick-wave"), result.samples, "#3ce68a");
+      drawWave($("pick-wave"), result.samples, "#86c8e2");
       $("pick-status").textContent = result.steps.join(" · ");
       if (play) Engine.preview(result.samples, result.sampleRate);
     });
@@ -538,7 +522,7 @@
 
   function drawSheetWave(pad) {
     drawWave($("pad-wave"), pad.usePolished && pad.polished ? pad.polished : pad.raw,
-      pad.usePolished ? "#3ce68a" : "#a49cc4");
+      pad.usePolished ? "#86c8e2" : "#d5aab3");
   }
 
   function closeSheet() {
@@ -566,6 +550,101 @@
       apply(pad, parseFloat(this.value));
       syncOutputs();
       scheduleSave();
+    });
+  }
+
+  // ------------------------------------------------------------------ tabs
+
+  function showTab(name) {
+    ui.tab = name;
+    const tabs = document.querySelectorAll(".tab");
+    for (let i = 0; i < tabs.length; i++) {
+      const on = tabs[i].dataset.tab === name;
+      tabs[i].classList.toggle("is-on", on);
+      tabs[i].setAttribute("aria-selected", String(on));
+    }
+    const panels = document.querySelectorAll("[data-panel]");
+    for (let i = 0; i < panels.length; i++) {
+      panels[i].hidden = panels[i].dataset.panel !== name;
+    }
+    // Canvases sized while hidden come back zero-width.
+    if (name === "sample") renderPads();
+  }
+
+  // ----------------------------------------------------------------- knobs
+
+  /* Turn a range input into a knob.
+   *
+   * The input stays in the DOM and keeps every listener already attached to it;
+   * the knob just drags it and fires the same `input` event a slider would, so
+   * nothing downstream needs to know the difference. Vertical drag only —
+   * a circular gesture is precise on a mouse and hopeless under a thumb.
+   */
+  function makeKnob(input, label) {
+    const wrap = document.createElement("div");
+    wrap.className = "knob";
+    const dial = document.createElement("div");
+    dial.className = "knob-dial";
+    const pointer = document.createElement("i");
+    dial.appendChild(pointer);
+    const name = document.createElement("div");
+    name.className = "knob-name";
+    name.textContent = label;
+    const value = document.createElement("div");
+    value.className = "knob-value";
+
+    wrap.appendChild(dial);
+    wrap.appendChild(name);
+    wrap.appendChild(value);
+
+    const min = parseFloat(input.min);
+    const max = parseFloat(input.max);
+
+    function paint() {
+      const fraction = (parseFloat(input.value) - min) / (max - min || 1);
+      // 270 degrees of travel, centred, the way a knob with end stops behaves.
+      pointer.style.transform = "rotate(" + (-135 + fraction * 270) + "deg)";
+      value.textContent = input.value;
+    }
+
+    let dragging = false;
+    let startY = 0;
+    let startValue = 0;
+    dial.addEventListener("pointerdown", function (event) {
+      dragging = true;
+      startY = event.clientY;
+      startValue = parseFloat(input.value);
+      dial.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    dial.addEventListener("pointermove", function (event) {
+      if (!dragging) return;
+      // A full sweep in about 150 px of travel.
+      const delta = ((startY - event.clientY) / 150) * (max - min);
+      const next = Math.max(min, Math.min(max, startValue + delta));
+      input.value = String(Math.round(next));
+      paint();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const stop = function () { dragging = false; };
+    dial.addEventListener("pointerup", stop);
+    dial.addEventListener("pointercancel", stop);
+    input.addEventListener("input", paint);
+
+    paint();
+    return wrap;
+  }
+
+  /* Swap the three controls that want a thumb on them for knobs, and hide the
+   * sliders behind them rather than removing them. */
+  function buildKnobs() {
+    [["p-gain", "Vol"], ["p-pitch", "Pitch"], ["p-pan", "Pan"]].forEach(function (pair) {
+      const input = $(pair[0]);
+      const field = input.closest(".field");
+      if (!field) return;
+      const knob = makeKnob(input, pair[1]);
+      field.parentNode.insertBefore(knob, field);
+      field.hidden = true;
     });
   }
 
@@ -623,6 +702,11 @@
   }
 
   function bind() {
+    const tabs = document.querySelectorAll(".tab");
+    for (let i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener("click", function () { showTab(this.dataset.tab); });
+    }
+
     $("btn-about").addEventListener("click", function () {
       const box = $("about");
       box.hidden = !box.hidden;
@@ -1069,6 +1153,8 @@
   function boot() {
     fillSelects();
     bind();
+    buildKnobs();
+    showTab("sample");
     if (!Recorder.supported()) {
       status("this browser will not give a page the microphone — import a file or load the scratch kit");
     }
