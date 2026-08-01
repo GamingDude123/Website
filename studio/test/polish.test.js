@@ -1,4 +1,5 @@
 global.DSP = require(__dirname + "/../js/dsp.js");
+global.Instrument = require(__dirname + "/../js/instrument.js");
 const Polish = require(__dirname + "/../js/polish.js");
 const SR = 44100;
 let fails = 0;
