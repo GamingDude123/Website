@@ -236,31 +236,223 @@ const DolphinView = (function () {
 
   /* ---------- Launching the real emulator -------------------------------- */
 
+  const DOLPHINIOS_SITE = "https://dolphinios.oatmealdome.me";
+
+  function isApplePhone() {
+    // iPadOS reports itself as a Mac, so touch points are the giveaway.
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  }
+
   function launchDolphin() {
-    const isAndroid = /android/i.test(navigator.userAgent);
-    if (!isAndroid) {
-      WiiUI.play("error");
-      WiiUI.panel(
-        "<h2>Dolphin needs Android</h2>" +
-        "<p>Dolphin has an official Android app, but no App Store release for " +
-        "iPhone — Apple doesn't allow the just-in-time compilation Dolphin needs " +
-        "to hit full speed. On an iPhone you'd have to sideload it.</p>" +
-        "<p>On a computer, Dolphin runs natively on Windows, macOS and Linux.</p>" +
-        '<div class="panel-actions">' +
-          '<a class="wii-btn" href="https://dolphin-emu.org/download/" target="_blank" ' +
-          'rel="noopener" style="text-decoration:none;display:inline-flex">Dolphin downloads</a>' +
-          '<button class="wii-btn" data-close>Close</button>' +
-        "</div>"
-      );
+    if (/android/i.test(navigator.userAgent)) {
+      // Chrome resolves this to Dolphin's launcher activity, and falls back to
+      // the Play Store listing when it isn't installed.
+      WiiUI.feedback("boot");
+      location.href = "intent:#Intent;package=" + DOLPHIN_PACKAGE +
+        ";action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;" +
+        "S.browser_fallback_url=" + encodeURIComponent(PLAY_STORE) + ";end";
       return;
     }
 
-    // Chrome resolves this to Dolphin's launcher activity, and falls back to
-    // the Play Store listing when it isn't installed.
-    WiiUI.feedback("boot");
-    location.href = "intent:#Intent;package=" + DOLPHIN_PACKAGE +
-      ";action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;" +
-      "S.browser_fallback_url=" + encodeURIComponent(PLAY_STORE) + ";end";
+    if (isApplePhone()) {
+      showIphoneRoute();
+      return;
+    }
+
+    showDesktopRoute();
+  }
+
+  /* ---------- Desktop: actually opening Dolphin --------------------------
+     If Wii Bridge is running on this computer, the button really does open
+     the emulator — the bridge is a local program and can do what the page
+     cannot. Without it there is nothing to press, so the panel says how to
+     start it rather than showing a button that does nothing. */
+
+  function showDesktopRoute() {
+    WiiUI.play("hover");
+    WiiUI.panel(
+      "<h2>Dolphin on this computer</h2>" +
+      '<div id="bridge-state">' +
+        '<p class="muted"><span class="spinner is-inline"></span> ' +
+        "Looking for Wii Bridge…</p>" +
+      "</div>" +
+      '<div class="panel-actions" id="bridge-actions">' +
+        '<button class="wii-btn" data-close>Close</button>' +
+      "</div>",
+      { noAutofocus: true }
+    );
+
+    const stateEl = document.getElementById("bridge-state");
+    const actionsEl = document.getElementById("bridge-actions");
+    if (!stateEl) return;
+
+    LocalBridge.probe().then((status) => {
+      if (!status) {
+        stateEl.innerHTML =
+          "<p>Dolphin is installed on your computer, not in this page — so " +
+          "this page can't open it on its own. <strong>Wii Bridge</strong> is " +
+          "a small helper that can.</p>" +
+          '<p class="muted">In a terminal, from your copy of this repo:</p>' +
+          '<pre class="code-block">python3 app/bridge/wiibridge.py</pre>' +
+          '<p class="muted">Leave it running and press Launch again. It also ' +
+          "turns your phone into a Wii Remote — motion and all — which is the " +
+          "only way Wii Sports is worth playing without the real thing.</p>" +
+          '<p class="muted" style="font-size:12px">Already running? The browser ' +
+          "has to trust the bridge's certificate before it will talk to it. " +
+          "The README has the one command for that.</p>";
+        return;
+      }
+
+      if (!status.canLaunch) {
+        stateEl.innerHTML =
+          "<p>Wii Bridge is running, but it can't find Dolphin on this " +
+          "computer.</p>" +
+          '<p class="muted">Put <strong>Dolphin.app</strong> in your ' +
+          "Applications folder and press Launch again.</p>";
+        actionsEl.insertAdjacentHTML("afterbegin",
+          '<a class="wii-btn is-primary" href="https://dolphin-emu.org/download/" ' +
+          'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+          "Get Dolphin</a>");
+        return;
+      }
+
+      stateEl.innerHTML =
+        "<p>Wii Bridge is running and Dolphin is installed. " +
+        "This will open it.</p>" +
+        '<p class="muted">' + (status.dolphin
+          ? "Dolphin is already talking to the bridge, so your phone's motion " +
+            "is going through."
+          : "Dolphin isn't reading the bridge yet — turn on the DSU client in " +
+            "its controller settings to use your phone as a Wii Remote.") +
+        "</p>";
+
+      const button = document.createElement("button");
+      button.className = "wii-btn is-primary";
+      button.textContent = "Open Dolphin";
+      button.addEventListener("click", () => {
+        WiiUI.feedback("boot");
+        button.disabled = true;
+        button.textContent = "Opening…";
+        LocalBridge.launch().then((result) => {
+          button.disabled = false;
+          button.textContent = "Open Dolphin";
+          if (result.ok) {
+            WiiUI.toast("Dolphin is opening", 2600);
+          } else {
+            WiiUI.toast(result.message || "Couldn't open Dolphin", 5000);
+            WiiUI.play("error");
+          }
+        });
+      });
+      actionsEl.insertBefore(button, actionsEl.firstChild);
+    });
+  }
+
+  /* iPhone can run Dolphin, but nothing on a web page can start it: iOS only
+     lets a link open an app that has registered a URL scheme, and DolphiniOS
+     publishes none. So this explains the route instead of pretending to
+     launch — including the part that catches people out. */
+  function showIphoneRoute() {
+    WiiUI.play("hover");
+    WiiUI.panel(
+      "<h2>Dolphin on iPhone</h2>" +
+      "<p>It exists — <strong>DolphiniOS</strong>, the official iOS port of " +
+      "Dolphin. It plays GameCube and Wii games on an iPhone.</p>" +
+
+      "<h3>Watch out for fakes</h3>" +
+      '<p class="muted">DolphiniOS is <strong>not on the App Store</strong>. ' +
+      "Apps there calling themselves “Dolphin Emulator” are not it — Apple " +
+      "doesn't allow what Dolphin needs to run at speed, so anything claiming " +
+      "otherwise is somebody else's app using the name.</p>" +
+
+      "<h3>The real way in</h3>" +
+      '<p class="muted">You install it yourself with <strong>SideStore</strong> ' +
+      "or <strong>AltStore Classic</strong>, which needs a computer running " +
+      "AltServer once to set up — Windows is fine, it doesn't have to be a Mac. " +
+      "After that it lives on your phone like any other app.</p>" +
+      '<p class="muted">Then add OatmealDome\'s source inside that app and ' +
+      "install DolphiniOS from it. The official site has the current steps.</p>" +
+
+      "<h3>Before you bother</h3>" +
+      '<p class="muted">GameCube wants an iPhone 13 or newer to run properly, ' +
+      "and Wii is heavier still. On an older phone it will struggle whatever " +
+      "you do.</p>" +
+
+      '<p class="muted">There is no button for this because iOS gives a web ' +
+      "page no way to open it. Once it's installed you launch it from your " +
+      "home screen, and this shelf keeps your settings and notes.</p>" +
+
+      '<div class="panel-actions">' +
+        '<a class="wii-btn is-primary" href="' + DOLPHINIOS_SITE + '" ' +
+        'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+        "Official DolphiniOS site</a>" +
+        '<button class="wii-btn" data-close>Close</button>' +
+      "</div>",
+      { noAutofocus: true }
+    );
+  }
+
+  /* ---------- Phone as a Wii Remote --------------------------------------
+     Deliberately its own button rather than a note buried in the guide: it is
+     a different job from launching the emulator, and it's the answer to the
+     one thing keyboard-and-mouse Dolphin genuinely can't do. */
+
+  function showRemoteRoute() {
+    WiiUI.feedback("click");
+    const onPhone = isApplePhone() || /android/i.test(navigator.userAgent);
+
+    WiiUI.panel(
+      "<h2>Your phone as a Wii Remote</h2>" +
+      "<p>Your phone has a gyroscope and an accelerometer — the same two " +
+      "things a Wii Remote has. <strong>Wii Bridge</strong> carries them into " +
+      "Dolphin, so swinging the phone swings the remote. That's Wii Sports, " +
+      "Wii Play, Zelda's pointer — the parts a keyboard can't do.</p>" +
+      '<div id="remote-state"><p class="muted">' +
+        '<span class="spinner is-inline"></span>Looking for the bridge…</p></div>' +
+      '<div class="panel-actions" id="remote-actions">' +
+        '<button class="wii-btn" data-close>Close</button>' +
+      "</div>",
+      { noAutofocus: true }
+    );
+
+    const stateEl = document.getElementById("remote-state");
+    const actionsEl = document.getElementById("remote-actions");
+    if (!stateEl) return;
+
+    LocalBridge.probe().then((status) => {
+      if (status) {
+        stateEl.innerHTML =
+          "<p>The bridge is running on this machine.</p>" +
+          '<p class="muted">' + (status.dolphin
+            ? "Dolphin is connected to it."
+            : "Dolphin isn't reading it yet — Config → Controllers → " +
+              "Alternate Input Sources → Enable, server 127.0.0.1:26760.") +
+          "</p>";
+        actionsEl.insertAdjacentHTML("afterbegin",
+          '<a class="wii-btn is-primary" href="' + LocalBridge.controllerUrl() + '" ' +
+          'target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex">' +
+          "Open the controller</a>");
+        return;
+      }
+
+      stateEl.innerHTML = onPhone
+        ? "<p>Start the bridge on your computer first:</p>" +
+          '<pre class="code-block">python3 app/bridge/wiibridge.py</pre>' +
+          '<p class="muted">It prints an address. Open that address on this ' +
+          "phone — the first time it walks you through trusting its " +
+          "certificate, which Safari needs before it will hand over the " +
+          "motion sensors.</p>"
+        : "<p>Run this on this computer, from your copy of the repo:</p>" +
+          '<pre class="code-block">python3 app/bridge/wiibridge.py</pre>' +
+          '<p class="muted">It prints an address to open on your phone. ' +
+          "Nothing to install — it's plain Python, and everything stays on " +
+          "your own network.</p>";
+
+      stateEl.insertAdjacentHTML("beforeend",
+        '<p class="muted" style="font-size:12px">Full walkthrough, including ' +
+        "which Dolphin fields to bind: <strong>app/bridge/README.md</strong>.</p>");
+    });
   }
 
   /* ---------- Guide ------------------------------------------------------ */
@@ -275,17 +467,23 @@ const DolphinView = (function () {
       "actual emulating.</p>" +
 
       "<h2 style='font-size:16px;margin-top:16px'>Getting Dolphin running</h2>" +
-      "<p class='muted'>1. Install Dolphin from the Play Store or " +
-      "dolphin-emu.org.<br>" +
-      "2. Put your game files somewhere Dolphin can read them, then add that " +
-      "folder in Dolphin's game list.<br>" +
-      "3. Wii U is a different emulator entirely — Cemu. It's desktop-only in any " +
-      "usable form; the Android builds are experimental and most games don't boot.</p>" +
+      "<p class='muted'><strong>Android:</strong> install Dolphin from the Play " +
+      "Store or dolphin-emu.org.<br>" +
+      "<strong>iPhone:</strong> DolphiniOS, sideloaded with SideStore or AltStore " +
+      "Classic. It is not on the App Store, and the apps there using the name are " +
+      "not it.<br>" +
+      "<strong>Computer:</strong> Dolphin installs normally on Windows, macOS and " +
+      "Linux.</p>" +
+      "<p class='muted'>Then point the emulator at a folder holding your game " +
+      "files and they appear in its list. Wii U is a different emulator entirely " +
+      "— Cemu — and is desktop-only in any usable form.</p>" +
 
       "<h2 style='font-size:16px;margin-top:16px'>The Launch button</h2>" +
-      "<p class='muted'>It opens Dolphin's game list. Dolphin doesn't publish a " +
-      "URL scheme for booting one specific game, so nothing on the web can jump " +
-      "straight into a title — pick it from Dolphin's own list once you're there.</p>" +
+      "<p class='muted'>On Android it opens Dolphin's game list. Dolphin doesn't " +
+      "publish a URL scheme for booting one specific game, so nothing on the web " +
+      "can jump straight into a title — pick it from Dolphin's own list.<br>" +
+      "On iPhone the button explains how to install DolphiniOS instead, because " +
+      "iOS gives a web page no way to open it at all.</p>" +
 
       "<h2 style='font-size:16px;margin-top:16px'>Where games come from</h2>" +
       "<p class='muted'>Dolphin plays discs you dump from your own Wii using a " +
@@ -313,7 +511,22 @@ const DolphinView = (function () {
     editEntry({ title: "Untitled", platform: "wii", status: "backlog", rating: 0, notes: "", settings: "" });
   });
 
-  document.getElementById("btn-launch").addEventListener("click", launchDolphin);
+  document.getElementById("btn-remote").addEventListener("click", showRemoteRoute);
+
+  const launchButton = document.getElementById("btn-launch");
+  launchButton.addEventListener("click", launchDolphin);
+  // Say what the button will actually do on this device.
+  const launchSub = launchButton.querySelector(".btn-sub");
+  if (launchSub) {
+    if (/android/i.test(navigator.userAgent)) {
+      launchSub.textContent = "android";
+    } else if (isApplePhone()) {
+      launchButton.firstChild.textContent = "Dolphin on iPhone";
+      launchSub.textContent = "how to install";
+    } else {
+      launchSub.textContent = "desktop";
+    }
+  }
 
   document.getElementById("filters").addEventListener("click", (event) => {
     const chip = event.target.closest(".chip");
