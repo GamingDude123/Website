@@ -126,10 +126,13 @@ var Spotify = (function () {
   async function login(clientId) {
     const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
     const challenge = b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-    set("sp_verifier", verifier); set("sp_client", clientId);
+    // `state` ties the redirect back to this tab's login attempt, so a
+    // crafted link cannot sign the page in to someone else's account.
+    const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    set("sp_verifier", verifier); set("sp_client", clientId); set("sp_state", state);
     location.href = "https://accounts.spotify.com/authorize?" + new URLSearchParams({
       client_id: clientId, response_type: "code", redirect_uri: redirectUri(),
-      scope: SCOPES, code_challenge_method: "S256", code_challenge: challenge,
+      scope: SCOPES, code_challenge_method: "S256", code_challenge: challenge, state: state,
     });
   }
 
@@ -150,6 +153,7 @@ var Spotify = (function () {
     if (q.get("error")) { history.replaceState(null, "", redirectUri()); throw new Error("Spotify: " + q.get("error")); }
     const code = q.get("code");
     if (!code || !get("sp_verifier")) return false;
+    if (q.get("state") !== get("sp_state")) { history.replaceState(null, "", redirectUri()); throw new Error("Spotify login was not started from this page — try Connect again"); }
     await tokenRequest({ grant_type: "authorization_code", code: code, redirect_uri: redirectUri(), client_id: get("sp_client"), code_verifier: get("sp_verifier") });
     history.replaceState(null, "", redirectUri());
     return true;
@@ -192,6 +196,7 @@ var Spotify = (function () {
     const out = [];
     for (;;) {
       page.items.forEach(function (it) {
+        if (!it) return;                       // removed or unavailable tracks come back as null
         const t = it.track || it.item || it;
         if (t && t.name) out.push({ title: t.name, artists: (t.artists || []).map(function (a) { return a.name; }), durationMs: t.duration_ms || 0, tempo: 0, key: null, mode: null });
       });
@@ -208,7 +213,7 @@ var Spotify = (function () {
     savedClientId: function () { return get("sp_client") || ""; },
     redirectUri: redirectUri, login: login, handleRedirect: handleRedirect,
     playlists: playlists, playlistTracks: playlistTracks,
-    disconnect: function () { ["sp_token", "sp_expires", "sp_refresh", "sp_verifier"].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) { /* ok */ } }); },
+    disconnect: function () { ["sp_token", "sp_expires", "sp_refresh", "sp_verifier", "sp_state"].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) { /* ok */ } }); },
   };
 })();
 

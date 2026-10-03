@@ -68,14 +68,34 @@ not pretend to. What it can do is use a Spotify playlist as the **setlist**:
 
 Each entry is matched to a file you have added (title, artist and duration), and
 the matched ones are queued in playlist order or ordered by the DJ. Unmatched
-entries are listed so you know which files to add. The matching and CSV parsing
-are tested; the live OAuth path needs a real Spotify app and has not been run
-against the service.
+entries are listed so you know which files to add.
+
+**Connecting for real** (about two minutes, no server needed):
+
+1. At [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+   create an app. Tick *Web API*.
+2. Under the app's settings add the **Redirect URI** the page shows under the
+   Spotify panel (it is this page's own address, e.g.
+   `https://your-site/dj/index.html`). Spotify requires `https://`, except for
+   `http://127.0.0.1`, so use that address rather than `localhost` when testing.
+3. Paste the app's **Client ID** (not the secret — this uses PKCE and never
+   needs it) into the page and press **Connect**.
+
+New Spotify apps start in development mode: only the app owner's account, plus
+any users you add under *User management*, can log in.
+
+What is tested: the whole login and playlist path runs against a stand-in
+Spotify (`test/spotify.test.js`) — PKCE (the verifier we send hashes to the
+challenge we sent), the `state` check, token refresh, paging, the playlist
+endpoint's rename (`/items`, falling back to `/tracks`), and `null` entries for
+removed tracks, which that test found crashing the import. What no test can
+show is that Spotify itself accepts the requests; that needs a real app.
 
 ## Tests
 
 ```sh
 node dj/test/logic.test.js     # analysis on tracks with known answers, planner, timeline maths, Spotify matching
+node dj/test/spotify.test.js   # login + playlist import against a stand-in Spotify
 node dj/test/browser.test.js   # the real page: offline mix measurements, then live playback
 ```
 
