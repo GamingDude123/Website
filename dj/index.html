@@ -5,108 +5,121 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Autopilot DJ — a tech-house set that mixes itself</title>
   <meta name="description" content="Drop in tracks and it beatmatches, bass-swaps, builds and drops them into a club-style set. Runs entirely in your browser.">
-  <meta name="theme-color" content="#0b0a12">
+  <meta name="theme-color" content="#07060d">
   <link rel="icon" href="../images/navbarlogo3.png">
   <link rel="stylesheet" href="css/dj.css">
 </head>
 <body>
+<div class="glow" aria-hidden="true"></div>
 
 <header class="top">
-  <a class="back" href="../index.html" title="Back to the site">&#8592;</a>
-  <h1>Autopilot&nbsp;DJ <em>drop in tracks &mdash; it plays the set</em></h1>
-  <button class="ghost" id="btn-about" aria-expanded="false">how?</button>
+  <a class="back" href="../index.html" title="Back to the site" aria-label="Back to the site">&#8592;</a>
+  <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><h1>Autopilot DJ</h1><em>drop in tracks &mdash; it plays the set</em></div>
+  <button class="ghost" id="btn-about" aria-expanded="false">How it works</button>
 </header>
 
 <div class="about" id="about" hidden>
-  <p>Each track is analysed in your browser: tempo and beat grid, the first beat of every bar, key (as a Camelot code), and where its intro, breakdowns, drops and outro are. Then:</p>
-  <ol>
-    <li><b>Order.</b> The next track is chosen for harmonic fit, tempo distance and where the energy should be going.</li>
-    <li><b>Choose a move.</b> <i>Bass swap</i>: the new intro rides over the old outro with its low end cut, and the basslines trade places on the bar where its drop lands. <i>Drop swap</i>: the old breakdown builds (filter closing, riser, loop roll, echo throw) and the new drop lands on the one. <i>Echo out</i>: when tempos are too far apart to match.</li>
-    <li><b>Lock it.</b> Both decks follow the same tempo curve, so bar lines stay aligned while tempo glides to the incoming track&rsquo;s own.</li>
-    <li><b>Schedule it.</b> Every EQ move, sweep and swap is placed on the audio clock ahead of time, so a busy page cannot make a swap late.</li>
-  </ol>
-  <p class="fine">This is signal processing and rules, not a neural network or a language model, and nothing is uploaded. It copies the <em>techniques</em> of club DJing; it has no taste, crowd or ears. Analysis is an estimate &mdash; if a key or downbeat is wrong, fix it on the track row. Tempo changes are pitch-coupled, like vinyl.</p>
+  <div class="about-grid">
+    <div><b>1 · Listen</b><p>Tempo, beat grid, the first beat of every bar, key (Camelot) and where the intro, breakdowns, drops and outro are.</p></div>
+    <div><b>2 · Choose</b><p>The next track by key fit, tempo and energy. Then a move: <i>bass swap</i>, <i>drop swap</i> or <i>echo out</i>.</p></div>
+    <div><b>3 · Lock</b><p>Both decks follow one tempo curve, so bar lines stay aligned while tempo glides to the new track&rsquo;s own.</p></div>
+    <div><b>4 · Perform</b><p>Every EQ swap, sweep, roll and riser is placed on the audio clock ahead of time, so a busy page can&rsquo;t make it late.</p></div>
+  </div>
+  <p class="fine">Signal processing and rules &mdash; not a neural network, nothing uploaded. It copies the <em>techniques</em> of club DJing; it has no taste or crowd sense. Analysis is an estimate: fix a wrong key or downbeat on the track row. Tempo changes are pitch-coupled, like vinyl.</p>
 </div>
 
 <main>
-  <section class="decks" id="decks">
-    <article class="deck" id="deck-A"><div class="empty">Deck A</div></article>
-    <article class="deck" id="deck-B"><div class="empty">Deck B</div></article>
+  <section class="booth">
+    <article class="deck" id="deck-A" data-label="A"><div class="empty"><b>A</b><span>Deck A</span></div></article>
+
+    <aside class="mixer">
+      <div class="mix-title" id="strip-title">Not playing</div>
+      <div class="xf">
+        <span class="xa">A</span>
+        <div class="xf-track"><i id="strip-bar"></i><b id="xf-knob"></b></div>
+        <span class="xb">B</span>
+      </div>
+      <div class="mix-time" id="strip-time"></div>
+      <ul class="why" id="strip-why"></ul>
+      <canvas id="meter" width="200" height="14" aria-label="Master level"></canvas>
+      <label class="vol">Volume <input type="range" id="rng-vol" min="0" max="1" step="0.01" value="0.9"></label>
+    </aside>
+
+    <article class="deck" id="deck-B" data-label="B"><div class="empty"><b>B</b><span>Deck B</span></div></article>
   </section>
 
-  <section class="strip" id="strip">
-    <div class="strip-head">
-      <b id="strip-title">Not playing</b>
-      <span id="strip-time"></span>
+  <section class="transport">
+    <div class="tr-main">
+      <button class="go" id="btn-go">&#9654; Start the set</button>
+      <button id="btn-pause" disabled>Pause</button>
+      <button class="accent" id="btn-mix" disabled title="Replace the planned transition with one that starts in a few bars">Mix now</button>
     </div>
-    <div class="bar"><i id="strip-bar"></i></div>
-    <ul id="strip-why"></ul>
-  </section>
-
-  <section class="controls">
-    <button class="go" id="btn-go">&#9654; Start the set</button>
-    <button id="btn-pause" disabled>Pause</button>
-    <button id="btn-mix" disabled title="Replace the planned transition with one that starts in a few bars">Mix now</button>
-    <label>Style
-      <select id="sel-style">
-        <option value="mixed">Mixed</option>
-        <option value="smooth">Smooth blends</option>
-        <option value="club">Club drop swaps</option>
-      </select>
-    </label>
-    <label>Energy
-      <select id="sel-arc">
-        <option value="build">Build up</option>
-        <option value="wave">Peaks &amp; valleys</option>
-        <option value="peak">Stay at peak</option>
-        <option value="warmup">Warm-up</option>
-      </select>
-    </label>
-    <label class="chk"><input type="checkbox" id="chk-endless" checked> Endless</label>
-    <label class="chk"><input type="checkbox" id="chk-fx" checked> Risers &amp; hits</label>
-    <label>Volume <input type="range" id="rng-vol" min="0" max="1" step="0.01" value="0.9"></label>
-  </section>
-
-  <section class="perform">
-    <span>Perform</span>
-    <button data-fx="echo">Echo throw</button>
-    <button data-fx="sweep">Filter sweep</button>
-    <button data-fx="riser">Riser</button>
-    <button data-fx="impact">Impact</button>
-    <button id="btn-order" title="Re-order the queue for key, tempo and energy">Auto-order queue</button>
-    <button id="btn-export" title="Render the queue as one mixed WAV file">Export mix (WAV)</button>
-  </section>
-
-  <section class="library">
-    <div class="lib-head">
-      <h2>Tracks</h2>
-      <button id="btn-demo">Add demo tracks</button>
-      <label class="filebtn">Add your files<input type="file" id="file-in" accept="audio/*" multiple hidden></label>
+    <div class="tr-opts">
+      <div class="opt"><span>Style</span>
+        <div class="seg" id="seg-style" role="radiogroup" aria-label="Transition style">
+          <button class="on" data-v="mixed" role="radio" aria-checked="true">Mixed</button>
+          <button data-v="smooth" role="radio" aria-checked="false">Smooth</button>
+          <button data-v="club" role="radio" aria-checked="false">Club</button>
+        </div>
+      </div>
+      <div class="opt"><span>Energy</span>
+        <select id="sel-arc">
+          <option value="build">Build up</option>
+          <option value="wave">Peaks &amp; valleys</option>
+          <option value="peak">Stay at peak</option>
+          <option value="warmup">Warm-up</option>
+        </select>
+      </div>
+      <label class="sw"><input type="checkbox" id="chk-endless" checked><i></i>Endless</label>
+      <label class="sw"><input type="checkbox" id="chk-fx" checked><i></i>Risers &amp; hits</label>
     </div>
-    <div class="drop" id="drop">Drop audio files here &mdash; MP3, WAV, M4A, FLAC (whatever your browser can decode)</div>
-    <ol id="tracks"></ol>
   </section>
 
-  <section class="spotify">
-    <h2>Spotify <small>use a playlist as the setlist</small></h2>
-    <p class="fine">Spotify streams can&rsquo;t be mixed &mdash; they&rsquo;re DRM-protected and the page never receives the audio. Instead, read a playlist and match each entry to an audio file you own and have dropped in above.</p>
-    <div class="sp-row">
-      <label class="filebtn">Import playlist CSV (Exportify)<input type="file" id="sp-csv" accept=".csv,text/csv" hidden></label>
-      <span class="or">or</span>
-      <input type="text" id="sp-client" placeholder="your Spotify app Client ID" spellcheck="false" autocomplete="off">
-      <button id="sp-connect">Connect</button>
-      <select id="sp-lists" hidden></select>
-      <button id="sp-load" hidden>Load playlist</button>
-      <button id="sp-off" hidden>Disconnect</button>
-    </div>
-    <p class="fine" id="sp-redirect"></p>
-    <div id="sp-result"></div>
+  <section class="pads" aria-label="Performance effects">
+    <button class="pad p1" data-fx="echo"><b>Echo</b><small>throw</small></button>
+    <button class="pad p2" data-fx="sweep"><b>Filter</b><small>sweep</small></button>
+    <button class="pad p3" data-fx="riser"><b>Riser</b><small>2 bars</small></button>
+    <button class="pad p4" data-fx="impact"><b>Impact</b><small>hit</small></button>
   </section>
 
-  <section class="log">
-    <h2>What it&rsquo;s thinking</h2>
-    <ul id="log"></ul>
-  </section>
+  <div class="cols">
+    <section class="library">
+      <div class="lib-head">
+        <h2>Tracks</h2>
+        <div class="lib-actions">
+          <button id="btn-order" title="Re-order the queue for key, tempo and energy">Auto-order</button>
+          <button id="btn-export" title="Render the queue as one mixed WAV file">Export WAV</button>
+          <button id="btn-demo">+ Demo tracks</button>
+          <label class="filebtn primary">+ Your files<input type="file" id="file-in" accept="audio/*" multiple hidden></label>
+        </div>
+      </div>
+      <div class="drop" id="drop"><b>Drop audio files here</b><span>MP3, WAV, M4A, FLAC &mdash; whatever your browser can decode</span></div>
+      <ol id="tracks"></ol>
+    </section>
+
+    <aside class="side">
+      <section class="log">
+        <h2>What it&rsquo;s thinking</h2>
+        <ul id="log"></ul>
+      </section>
+
+      <details class="spotify">
+        <summary><h2>Spotify <small>playlist as setlist</small></h2></summary>
+        <p class="fine">Spotify streams can&rsquo;t be mixed &mdash; they&rsquo;re DRM-protected and the page never gets the audio. Instead, read a playlist and match each entry to a file you own and have added.</p>
+        <div class="sp-row">
+          <label class="filebtn">Import playlist CSV<input type="file" id="sp-csv" accept=".csv,text/csv" hidden></label>
+          <span class="or">or</span>
+          <input type="text" id="sp-client" placeholder="Spotify app Client ID" spellcheck="false" autocomplete="off">
+          <button id="sp-connect">Connect</button>
+          <select id="sp-lists" hidden></select>
+          <button id="sp-load" hidden>Load</button>
+          <button id="sp-off" hidden>Disconnect</button>
+        </div>
+        <p class="fine" id="sp-redirect"></p>
+        <div id="sp-result"></div>
+      </details>
+    </aside>
+  </div>
 </main>
 
 <script src="js/analysis.js"></script>
