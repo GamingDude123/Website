@@ -15,10 +15,7 @@ var Player = (function () {
     this.queue = [];
     this.history = [];
     this.voices = [];
-    this.style = "mixed";
-    this.arc = "build";
-    this.endless = true;
-    this.fx = true;
+    this.settings = Settings.make();
     this.volume = 0.9;
     this.log = [];
     this.onChange = opts.onChange || function () {};
@@ -29,6 +26,26 @@ var Player = (function () {
     this.running = false;
     this.paused = false;
   }
+
+  // style / arc / endless / fx live in the settings object; these keep the
+  // older one-word accessors working.
+  ["style", "arc", "endless", "fx"].forEach(function (k) {
+    Object.defineProperty(Player.prototype, k, {
+      get: function () { return this.settings[k]; },
+      set: function (v) { this.settings[k] = v; this.applySettings(); },
+    });
+  });
+
+  Player.prototype.applySettings = function () {
+    this.settings = Settings.sanitize(this.settings);
+    if (this.mixer) { this.mixer.settings = this.settings; this.mixer.fxOn = this.settings.fx; }
+    this.onChange();
+  };
+
+  Player.prototype.setSettings = function (obj) {
+    this.settings = Settings.sanitize(obj);
+    this.applySettings();
+  };
 
   Player.prototype.note = function (text) {
     this.log.unshift({ t: this.ctx ? this.ctx.currentTime : 0, text: text });
@@ -51,7 +68,7 @@ var Player = (function () {
   Player.prototype.autoOrder = function () {
     const tracks = this.queue.slice();
     if (tracks.length < 3) return;
-    const order = Brain.orderSet(tracks.map(Engine.infoOf), { arc: this.arc });
+    const order = Brain.orderSet(tracks.map(Engine.infoOf), { settings: this.settings });
     this.queue = order.map(function (i) { return tracks[i]; });
     this.onChange();
   };
@@ -61,7 +78,7 @@ var Player = (function () {
     const Ctor = window.AudioContext || window.webkitAudioContext;
     this.ctx = new Ctor({ latencyHint: "playback" });
     await this.ctx.resume();
-    this.mixer = new Engine.Mixer(this.ctx, { fx: this.fx, volume: this.volume });
+    this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
     const first = this.queue.shift();
     this.history.push(first);
     this.cur = this.mixer.firstVoice(first, this.ctx.currentTime + 0.2, "A");
@@ -93,10 +110,7 @@ var Player = (function () {
     if (this.mixer) this.mixer.volume.gain.setTargetAtTime(v, this.ctx.currentTime, 0.02);
   };
 
-  Player.prototype.setFx = function (on) {
-    this.fx = on;
-    if (this.mixer) this.mixer.fxOn = on;
-  };
+  Player.prototype.setFx = function (on) { this.fx = on; };
 
   // pick what follows when the queue is empty and the set is endless
   Player.prototype.ensureNext = function () {
@@ -107,7 +121,7 @@ var Player = (function () {
     let best = null, bestScore = -Infinity;
     this.library.forEach(function (t) {
       if (recent.indexOf(t) >= 0 || t === this.cur.track) return;
-      const s = Brain.scoreNext(cur, Engine.infoOf(t), target);
+      const s = Brain.scoreNext(cur, Engine.infoOf(t), target, this.settings);
       if (s > bestScore) { bestScore = s; best = t; }
     }, this);
     if (best) this.queue.push(best);
@@ -117,7 +131,7 @@ var Player = (function () {
     const A = this.cur, ctx = this.ctx;
     const next = this.queue[0];
     if (!next) return false;
-    const opts = { entryBar: A.entryBar, style: this.style, index: this.history.length };
+    const opts = { entryBar: A.entryBar, settings: this.settings, index: this.history.length };
     if (quick) {
       const curBar = A.barAt(now);
       opts.now = true; opts.minPlay = 0; opts.earliestSwap = Math.ceil(curBar) + 10;
@@ -200,6 +214,10 @@ var Player = (function () {
       m.playFx("riser", at, 2 * bar, 0.9);
     } else if (name === "impact") {
       m.playFx("impact", at, 0, 0.8);
+    } else if (name === "crash") {
+      m.playFx("crash", at, 0, 0.5);
+    } else if (name === "down") {
+      m.playFx("downlifter", at, 2 * bar, 0.6);
     }
   };
 
