@@ -270,3 +270,14 @@ canvas.zoom.grabbing { cursor: grabbing; }
 @media (prefers-reduced-motion: reduce) { .arm { transition: none; } }
 .fine.keep { margin: .7rem 0 0; font-size: .78rem; color: var(--faint); }
 .list-msg { margin: .2rem 0; padding: .7rem 1rem; border-radius: var(--r-sm); background: rgba(255,217,143,.1); border: 1px solid rgba(255,217,143,.35); color: var(--ink); font-size: .88rem; }
+
+/* ---- hiding long lists ---- */
+.sw.mini { gap: .55rem; padding: .3rem .2rem; font-size: .84rem; color: var(--dim); }
+.sw.mini i { width: 36px; height: 20px; } .sw.mini i::after { width: 14px; height: 14px; top: 3px; left: 3px; }
+.sw.mini input:checked + i::after { transform: translateX(16px); }
+.tracks-sum { overflow-wrap: anywhere; margin: .7rem 0 0; padding: .6rem .9rem; border-radius: var(--r-sm); background: rgba(255,255,255,.05); color: var(--dim); font-size: .85rem; }
+ol.loading-list { list-style: none; margin: .6rem 0 0; padding: 0; display: grid; gap: .6rem; } ol.loading-list:empty { display: none; }
+ol#tracks[hidden] { display: none; }
+button.more { margin-top: .7rem; display: block; width: 100%; }
+#sp-result .sp-row button.soft, #sc-result .sp-row button.soft { margin-left: auto; }
+button.more[hidden], .tracks-sum[hidden], #btn-hide[hidden], ol.loading-list[hidden] { display: none !important; }

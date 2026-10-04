@@ -52,6 +52,10 @@
     return out;
   }
 
+  const MAX_TRACKS = 50;                     // the library holds this many: more makes the page, and memory, struggle
+  let addEpoch = 0;                          // Remove all / Stop adding bump this: whatever was still on its way from before is dropped
+  const adding = { verb: "Adding", total: 0, done: 0 };       // files still to come, across overlapping batches
+  let fullNoted = false;
   const ANALYSIS_REV = 1;                    // bump when analysis.js changes what it returns: saved results are then redone
   const ORDER_KEY = "autopilot-dj-queue";
   let storeOk = null;                        // null until a save has been tried; then whether it worked
@@ -67,12 +71,35 @@
     };
   }
 
-  async function analyse(buffer, ph) {
+  // `cancelled()` is asked at every progress report; a throw there ends the analysis early
+  async function analyse(buffer, ph, cancelled) {
     const channels = [];
     for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
     return Analysis.analyze(Analysis.toMono(channels), buffer.sampleRate, {
-      onProgress: function (p) { ph.progress = p; changed(); },
+      onProgress: function (p) { if (cancelled && cancelled()) throw new Error("cancelled"); ph.progress = p; changed(); },
     });
+  }
+
+  function dropLoading(ph) { const i = loading.indexOf(ph); if (i >= 0) loading.splice(i, 1); }
+
+  // Forget everything still on its way: the file being analysed is abandoned, the ones
+  // waiting are never started. Tracks already in the library are not touched.
+  function cancelAdds() {
+    addEpoch++;
+    adding.total = adding.done = 0;
+    loading.length = 0;
+    changed();
+  }
+  function stepDone(epoch) {
+    if (epoch !== addEpoch) return;
+    adding.done++;
+    if (adding.done >= adding.total) adding.total = adding.done = 0;
+    changed();
+  }
+  function fullNote() {
+    if (fullNoted) return;
+    fullNoted = true;
+    player.note("The library holds up to " + MAX_TRACKS + " tracks, to keep the page smooth. Remove some to add more.");
   }
 
   // Keep a track in this browser (see store.js). Failure is reported once and is not fatal.
@@ -98,34 +125,52 @@
     try { localStorage.setItem(ORDER_KEY, JSON.stringify({ queue: sig })); } catch (e) { /* private mode */ }
   }
 
-  async function addBuffer(name, artist, buffer, source) {
+  async function addBuffer(name, artist, buffer, source, epoch) {
     await restored;
+    const ep = epoch === undefined ? addEpoch : epoch;
+    if (ep !== addEpoch) return;
+    if (player.library.length >= MAX_TRACKS) { fullNote(); return; }
     const ph = { name: name, progress: 0 };
     loading.push(ph); changed();
     try {
-      const analysis = await analyse(buffer, ph);
+      const analysis = await analyse(buffer, ph, function () { return ep !== addEpoch; });
+      if (ep !== addEpoch) return;                                   // Remove all was pressed while it was being analysed
+      if (player.library.length >= MAX_TRACKS) { fullNote(); return; }
       const t = makeTrack(typeof Store !== "undefined" ? Store.newKey() : "k" + nextId, name, artist, buffer, analysis);
       player.add(t);
       saveTrack(t, source || {});
     } catch (err) {
-      player.note("Could not analyse " + name + ": " + err.message);
+      if (ep === addEpoch) player.note("Could not analyse " + name + ": " + err.message);
     } finally {
-      loading.splice(loading.indexOf(ph), 1); changed();
+      dropLoading(ph); changed();
     }
   }
 
   async function addFiles(files) {
     await restored;
+    files = Array.from(files);
+    const epoch = addEpoch, room = Math.max(0, MAX_TRACKS - player.library.length);
+    if (files.length > room) {
+      player.note(room ? "The library holds up to " + MAX_TRACKS + " tracks, so only the first " + room + " of these " + files.length + " files are added." :
+        "The library is full (" + MAX_TRACKS + " tracks). Remove some to add more.");
+      files = files.slice(0, room);
+    }
+    if (!files.length) return;
+    adding.verb = "Adding"; adding.total += files.length;
+    changed();
     for (const f of files) {
+      if (epoch !== addEpoch) return;                                // Remove all or Stop adding: the rest are never started
       const base = f.name.replace(/\.[^.]+$/, "");
       const parts = base.split(/\s+-\s+/);
       const artist = parts.length > 1 ? parts[0] : "", title = parts.length > 1 ? parts.slice(1).join(" - ") : base;
       try {
         const buf = await getDecodeCtx().decodeAudioData(await f.arrayBuffer());
-        await addBuffer(title, artist, buf, { file: f, name: f.name });
+        if (epoch !== addEpoch) return;
+        await addBuffer(title, artist, buf, { file: f, name: f.name }, epoch);
       } catch (err) {
-        player.note("Could not read " + f.name + " — this browser can't decode it");
+        if (epoch === addEpoch) player.note("Could not read " + f.name + " — this browser can't decode it");
       }
+      stepDone(epoch);
     }
   }
 
@@ -138,17 +183,23 @@
 
   async function addDemos() {
     await restored;
+    const epoch = addEpoch;
     $("btn-demo").disabled = true;
-    for (const d of Synth.DEMOS) {
-      if (player.library.some(function (t) { return t.title === d.title; })) continue;
-      const ph = { name: d.title + " (rendering)", progress: 0 };
-      loading.push(ph); changed();
-      await tick();
-      const buf = renderDemo(d);
-      loading.splice(loading.indexOf(ph), 1);
-      await addBuffer(d.title, d.artist, buf, { demo: d.title });
+    try {
+      for (const d of Synth.DEMOS) {
+        if (epoch !== addEpoch) return;
+        if (player.library.some(function (t) { return t.title === d.title; })) continue;
+        if (player.library.length >= MAX_TRACKS) { fullNote(); return; }
+        const ph = { name: d.title + " (rendering)", progress: 0 };
+        loading.push(ph); changed();
+        await tick();
+        const buf = renderDemo(d);
+        dropLoading(ph);
+        await addBuffer(d.title, d.artist, buf, { demo: d.title }, epoch);
+      }
+    } finally {
+      $("btn-demo").disabled = false;
     }
-    $("btn-demo").disabled = false;
   }
 
   // Bring back what was here before the refresh: decode each saved file again,
@@ -156,8 +207,14 @@
   async function restore() {
     let rows = [];
     try { rows = typeof Store === "undefined" ? [] : await Store.all(); } catch (err) { rows = []; }
-    const byKey = {};
+    const epoch = addEpoch, byKey = {};
+    if (rows.length > MAX_TRACKS) {
+      player.note("Brought back the first " + MAX_TRACKS + " of " + rows.length + " saved files (the library holds " + MAX_TRACKS + "). The rest stay saved until you make room and refresh (Remove all deletes those too).");
+      rows = rows.slice(0, MAX_TRACKS);
+    }
+    if (rows.length > 1) { adding.verb = "Restoring"; adding.total = rows.length; adding.done = 0; }
     for (const rec of rows) {
+      if (epoch !== addEpoch) break;                                  // Remove all was pressed while the files were coming back
       const ph = { name: rec.title + " (restoring)", progress: 0 };
       loading.push(ph); changed();
       try {
@@ -170,23 +227,29 @@
         } else {
           buffer = await getDecodeCtx().decodeAudioData(await rec.file.arrayBuffer());
         }
+        if (epoch !== addEpoch) break;
         const fresh = rec.rev === ANALYSIS_REV && rec.analysis;
-        const analysis = fresh ? rec.analysis : await analyse(buffer, ph);
+        const analysis = fresh ? rec.analysis : await analyse(buffer, ph, function () { return epoch !== addEpoch; });
+        if (epoch !== addEpoch) break;
         const t = makeTrack(rec.key, rec.title, rec.artist, buffer, analysis);
         t.keyOverride = rec.keyOverride || null; t.shiftBeats = rec.shiftBeats || 0;
         player.library.push(t); byKey[rec.key] = t;
         if (!fresh) Store.patch(rec.key, { analysis: analysis, rev: ANALYSIS_REV }).catch(function () { /* ok */ });
       } catch (err) {
-        player.note("Could not bring back " + rec.title + ": " + (err && err.message ? err.message : err));
+        if (epoch === addEpoch) player.note("Could not bring back " + rec.title + ": " + (err && err.message ? err.message : err));
       } finally {
-        loading.splice(loading.indexOf(ph), 1); changed();
+        dropLoading(ph);
+        if (epoch === addEpoch) { adding.done++; }
+        changed();
       }
     }
+    if (epoch === addEpoch) adding.total = adding.done = 0;
     if (rows.length && storeOk === null) storeOk = true;
     // the saved queue order first, then everything else, so every file is back and queued
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(ORDER_KEY)); } catch (err) { saved = null; }
-    const first = ((saved && saved.queue) || []).map(function (k) { return byKey[k]; }).filter(Boolean);
+    const here = function (t) { return player.library.indexOf(t) >= 0; };
+    const first = ((saved && saved.queue) || []).map(function (k) { return byKey[k]; }).filter(function (t) { return t && here(t); });
     player.queue = first.concat(player.library.filter(function (t) { return first.indexOf(t) < 0; }));
     restoreDone = true;
     changed();
@@ -195,71 +258,171 @@
 
   // -------------------------------------------------------------- track list
 
-  function statusOf(t) {
-    const cur = player.cur && player.cur.track;
-    if (cur === t) return player.ctx && player.cur.entry && player.ctx.currentTime < player.cur.entry.tStart ? "Mixing in next" : "Playing";
-    const q = player.queue.indexOf(t);
-    if (q >= 0) return q === 0 ? "Up next" : "Queued #" + (q + 1);
-    return player.history.indexOf(t) >= 0 ? "Played" : "Not queued";
-  }
+  // ------------------------------------------------------ hiding long lists
+  //
+  // Every row of the track list carries a key menu and edit buttons, and a long
+  // list redrawn on each progress tick while files are being added is what made
+  // the page stutter. So: a list can be hidden (and shows a one-line summary
+  // instead), "auto-hide" hides one automatically once it is long, only the first
+  // page of rows is ever drawn, and the edit controls exist only on the row being
+  // edited. The same goes for the matches from a Spotify or SoundCloud list.
 
-  let lastTracksHtml = "";
-  const openRows = new Set();               // tracks whose edit controls are showing
+  const VIEW_KEY = "autopilot-dj-view";
+  const AUTO_HIDE_AT = 12;                    // a list longer than this starts hidden when auto-hide is on
+  const PAGE = 60;                            // rows drawn at a time
+  const view = { autoHide: true, tracks: null, spotify: null, soundcloud: null, trackRows: PAGE };   // null = decided by auto-hide
+  try { const v = JSON.parse(localStorage.getItem(VIEW_KEY)); if (v && typeof v.autoHide === "boolean") view.autoHide = v.autoHide; } catch (err) { /* defaults */ }
+  const isShown = function (override, size) { return override !== null ? override : (!view.autoHide || size <= AUTO_HIDE_AT); };
 
-  function renderLists() {
-    const cur = player.cur && player.cur.track;
-    const rows = [], order = [];
-    if (cur) order.push(cur);
-    player.queue.forEach(function (t) { if (order.indexOf(t) < 0) order.push(t); });
-    player.library.forEach(function (t) { if (order.indexOf(t) < 0) order.push(t); });
-    order.forEach(function (t, i) {
-      const a = t.analysis, queued = player.queue.indexOf(t) >= 0;
-      const keySel = '<select data-act="key" data-id="' + t.id + '" title="Key — change it if the guess is wrong" aria-label="Key"><option value="">key: auto ' + a.key.camelot + '</option>' +
-        CAMELOT.map(function (k) { return '<option' + (t.keyOverride === k ? " selected" : "") + ">" + k + "</option>"; }).join("") + "</select>";
-      const open = openRows.has(t.id);
-      rows.push('<li class="trk' + (cur === t ? " now" : "") + (open ? " open" : "") + '"><span class="n">' + (i + 1) + '</span>' +
-        '<div class="t"><b>' + esc(t.title) + '</b><div class="sub"><span>' + esc(t.artist || "Unknown artist") + '</span><span>' + a.bpm.toFixed(0) + ' BPM</span><span>' + (t.keyOverride || a.key.camelot) + '</span><span>' + mmss(t.duration) + '</span><span class="status">' + statusOf(t) + '</span></div></div>' +
-        '<button class="edit" data-act="edit" data-id="' + t.id + '" aria-expanded="' + open + '" aria-controls="ctl-' + t.id + '" aria-label="' + (open ? "Done editing " : "Edit ") + esc(t.title) + '">' + (open ? "Done" : "Edit") + '</button>' +
-        '<div class="ctl" id="ctl-' + t.id + '">' + keySel +
+  // write to the page only when something differs, so an idle page does no layout work
+  function setText(el, t) { if (el.textContent !== t) el.textContent = t; }
+  function setHidden(el, v) { if (el.hidden !== v) el.hidden = v; }
+  function setHtml(el, h) { if (el.__html !== h) { el.innerHTML = h; el.__html = h; } }
+
+  let lastSig = "", tracksShown = true;
+  const openRows = new Set();                 // tracks whose edit controls are showing
+
+  const clip = function (t, n) { t = String(t); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+
+  function trackRow(t, i, cur, status, queued) {
+    const a = t.analysis, open = openRows.has(t.id);
+    let ctl = "";
+    if (open) {                               // the controls (24 key options each) are only built for the row being edited
+      ctl = '<select data-act="key" data-id="' + t.id + '" title="Key — change it if the guess is wrong" aria-label="Key"><option value="">key: auto ' + a.key.camelot + '</option>' +
+        CAMELOT.map(function (k) { return '<option' + (t.keyOverride === k ? " selected" : "") + ">" + k + "</option>"; }).join("") + "</select>" +
         '<button data-act="shift" data-id="' + t.id + '" title="Nudge where bar 1 is by one beat, if the downbeat guess is wrong">downbeat ' + (t.shiftBeats ? "+" + t.shiftBeats : "±0") + '</button>' +
         (queued ? '<button data-act="up" data-id="' + t.id + '" aria-label="Move up">&uarr;</button><button data-act="down" data-id="' + t.id + '" aria-label="Move down">&darr;</button><button data-act="next" data-id="' + t.id + '" aria-label="Play ' + esc(t.title) + ' next">Play next</button>' :
           (cur === t ? "" : '<button data-act="queue" data-id="' + t.id + '" aria-label="Queue ' + esc(t.title) + '">Queue</button>')) +
-        '<button data-act="del" data-id="' + t.id + '" aria-label="Remove ' + esc(t.title) + '">Remove</button></div></li>');
-    });
-    loading.forEach(function (l) {
-      rows.push('<li class="trk"><span class="n">&hellip;</span><div class="t"><b>' + esc(l.name) + '</b><div class="sub"><span class="status">analysing ' + Math.round(l.progress * 100) + '%</span></div></div><div class="prog"><i style="width:' + Math.round(l.progress * 100) + '%"></i></div></li>');
-    });
-    const html = rows.join("") || '<li class="empty-lib">Nothing here yet &mdash; add the demo tracks to hear it straight away.</li>';
-    if (html !== lastTracksHtml) {
-      // the player redraws every 200 ms; only touch the DOM when the list really changed,
-      // and keep keyboard focus on the same control if it did
+        '<button data-act="del" data-id="' + t.id + '" aria-label="Remove ' + esc(t.title) + '">Remove</button>';
+    }
+    return '<li class="trk' + (cur === t ? " now" : "") + (open ? " open" : "") + '"><span class="n">' + (i + 1) + '</span>' +
+      '<div class="t"><b>' + esc(t.title) + '</b><div class="sub"><span>' + esc(t.artist || "Unknown artist") + '</span><span>' + a.bpm.toFixed(0) + ' BPM</span><span>' + (t.keyOverride || a.key.camelot) + '</span><span>' + mmss(t.duration) + '</span><span class="status">' + status + '</span></div></div>' +
+      '<button class="edit" data-act="edit" data-id="' + t.id + '" aria-expanded="' + open + '" aria-controls="ctl-' + t.id + '" aria-label="' + (open ? "Done editing " : "Edit ") + esc(t.title) + '">' + (open ? "Done" : "Edit") + '</button>' +
+      '<div class="ctl" id="ctl-' + t.id + '">' + ctl + '</div></li>';
+  }
+
+  function renderTracks() {
+    const n = player.library.length, cur = player.cur && player.cur.track;
+    // how long the list is (or is about to be, if a big batch is still arriving) decides whether auto-hide hides it
+    const size = Math.max(n + loading.length, n + (adding.total - adding.done));
+    // a list that is open and being used (a row being edited, focus inside it) is not collapsed from under the person by auto-hide
+    const inUse = tracksShown && view.tracks === null && (openRows.size > 0 || $("tracks").contains(document.activeElement));
+    const shown = n === 0 ? true : (isShown(view.tracks, size) || inUse);          // nothing to hide yet: the "nothing here" hint must show
+    tracksShown = shown;
+    const focusWas = document.activeElement;
+
+    const hideBtn = $("btn-hide");
+    setHidden(hideBtn, n === 0);
+    setText(hideBtn, shown ? "Hide tracks" : "Show tracks (" + n + ")");
+    hideBtn.setAttribute("aria-expanded", String(shown));
+    const parts = [];
+    if (!shown && n) {
+      parts.push(n + (n === 1 ? " track" : " tracks") + " hidden");
+      if (cur) parts.push("playing " + clip(cur.title, 40));
+      if (player.queue[0]) parts.push("up next " + clip(player.queue[0].title, 40));
+    }
+    setText($("tracks-sum"), parts.join(" · "));
+    setHidden($("tracks-sum"), !parts.length);
+    setHidden($("tracks"), !shown);
+
+    // the placeholders for files still being analysed have their own list, so their progress never redraws the tracks
+    setHtml($("loading"), loading.map(function (l) {
+      return '<li class="trk"><span class="n">&hellip;</span><div class="t"><b>' + esc(l.name) + '</b><div class="sub"><span class="status">analysing ' + Math.round(l.progress * 100) + '%' +
+        (adding.total > 1 ? " · " + adding.verb.toLowerCase() + " " + Math.min(adding.done + 1, adding.total) + " of " + adding.total : "") + '</span></div></div><div class="prog"><i style="width:' + Math.round(l.progress * 100) + '%"></i></div></li>';
+    }).join(""));
+    setHidden($("btn-stop"), !(adding.total > 0 || loading.length > 0));
+
+    const more = $("tracks-more");
+    if (!shown) {
+      if (lastSig !== "hidden") { $("tracks").innerHTML = ""; $("tracks").__html = ""; lastSig = "hidden"; }
+      setHidden(more, true);
+      rescueFocus(focusWas);
+      return;
+    }
+    const qpos = new Map(), played = new Set(player.history), seen = new Set(), order = [];
+    player.queue.forEach(function (t, i) { qpos.set(t, i); });
+    if (cur) { order.push(cur); seen.add(cur); }
+    player.queue.forEach(function (t) { if (!seen.has(t)) { order.push(t); seen.add(t); } });
+    player.library.forEach(function (t) { if (!seen.has(t)) { order.push(t); seen.add(t); } });
+    const limit = Math.min(order.length, view.trackRows);
+    const status = function (t) {
+      if (cur === t) return player.ctx && player.cur.entry && player.ctx.currentTime < player.cur.entry.tStart ? "Mixing in next" : "Playing";
+      if (qpos.has(t)) return qpos.get(t) === 0 ? "Up next" : "Queued #" + (qpos.get(t) + 1);
+      return played.has(t) ? "Played" : "Not queued";
+    };
+    const sts = [], sig = [limit, order.length, loading.length ? 1 : 0];
+    for (let i = 0; i < limit; i++) {
+      const t = order[i], st = status(t);
+      sts.push(st);
+      sig.push(t.id + "|" + st + "|" + (t.keyOverride || "") + "|" + t.shiftBeats + "|" + (openRows.has(t.id) ? 1 : 0));
+    }
+    const key = sig.join(";");
+    if (key !== lastSig) {                    // the player redraws every 200 ms; most of the time nothing here changed
+      lastSig = key;
+      const rows = [];
+      for (let i = 0; i < limit; i++) rows.push(trackRow(order[i], i, cur, sts[i], qpos.has(order[i])));
+      const html = rows.join("") || (loading.length ? "" : '<li class="empty-lib">Nothing here yet &mdash; add the demo tracks to hear it straight away.</li>');
+      // keep keyboard focus on the same control across the redraw
       const f = document.activeElement, fa = f && $("tracks").contains(f) && f.dataset ? { act: f.dataset.act, id: f.dataset.id } : null;
-      $("tracks").innerHTML = html; lastTracksHtml = html;
+      setHtml($("tracks"), html);
       if (fa && fa.act) { const again = $("tracks").querySelector('[data-act="' + fa.act + '"][data-id="' + fa.id + '"]'); if (again) again.focus(); }
     }
+    const left = order.length - limit;
+    setHidden(more, left <= 0);
+    if (left > 0) setText(more, "Show " + Math.min(PAGE, left) + " more (" + left + " not drawn)");
+    rescueFocus(focusWas);
+  }
 
-    $("log").innerHTML = player.log.map(function (l) { return "<li><b>" + mmss(l.t) + "</b>" + esc(l.text) + "</li>"; }).join("") || "<li>It will explain each choice here.</li>";
+  // A button that hides itself while it has keyboard focus would drop the person to the top of the page:
+  // hand focus to the control that takes its place.
+  function rescueFocus(was) {
+    if (!was || was === document.body || !was.id) return;
+    const gone = was.hidden || !was.isConnected;
+    if (!gone) return;
+    const next = { "tracks-more": "btn-hide", "btn-stop": "btn-order" }[was.id];
+    if (next && $(next) && !$(next).hidden) $(next).focus();
+  }
+
+  function renderLists() {
+    renderTracks();
+    const logHtml = player.log.map(function (l) { return "<li><b>" + mmss(l.t) + "</b>" + esc(l.text) + "</li>"; }).join("") || "<li>It will explain each choice here.</li>";
+    setHtml($("log"), logHtml);
 
     // memory is the only real limit on how many tracks fit: a decoded track is raw audio
     let bytes = 0;
     player.library.forEach(function (t) { bytes += t.buffer.length * t.buffer.numberOfChannels * 4; });
     const mb = Math.round(bytes / 1048576), n = player.library.length;
     saveOrder();
-    $("lib-stat").textContent = n ? n + (n === 1 ? " track" : " tracks") + " · " + mb + " MB in memory" + (storeOk ? " · saved in this browser" : storeOk === false ? " · not saved (browser storage is off or full)" : "") + (mb > 1500 ? " — heavy; remove a few if the page slows" : "") : "";
+    setText($("lib-stat"), n ? n + (n === 1 ? " track" : " tracks") + (n >= MAX_TRACKS ? " (the limit)" : "") + " · " + mb + " MB in memory" + (storeOk ? " · saved in this browser" : storeOk === false ? " · not saved (browser storage is off or full)" : "") + (mb > 1500 ? " — heavy; remove a few if the page slows" : "") : "");
     $("lib-stat").classList.toggle("warn", mb > 1500);
 
     const running = player.running;
-    $("btn-go").innerHTML = running ? "&#9632; Stop the set" : "&#9654; Start the set";
+    setHtml($("btn-go"), running ? "&#9632; Stop the set" : "&#9654; Start the set");
     $("btn-go").classList.toggle("stop", running);
     $("btn-go").disabled = !running && !player.queue.length;
-    $("btn-clear").disabled = !player.library.length || running;
+    $("btn-clear").disabled = (!player.library.length && !loading.length && !adding.total) || running;
     $("btn-pause").disabled = !running;
-    $("btn-pause").textContent = player.paused ? "Resume" : "Pause";
+    setText($("btn-pause"), player.paused ? "Resume" : "Pause");
     const live = running && !player.paused && !player.pausing && !player.session;
     $("btn-mix").disabled = !live;
     document.querySelectorAll(".fxbar .pad").forEach(function (b) { b.disabled = !running || player.paused; });
     renderMatches("spotify"); renderMatches("soundcloud");
   }
+
+  $("btn-hide").addEventListener("click", function () {
+    view.tracks = !tracksShown;
+    view.trackRows = PAGE;
+    changed();
+  });
+  $("tracks-more").addEventListener("click", function () { view.trackRows += PAGE; changed(); });
+  $("auto-hide").checked = view.autoHide;
+  $("auto-hide").addEventListener("change", function (e) {
+    view.autoHide = e.target.checked;
+    view.tracks = view.spotify = view.soundcloud = null;           // back to letting it decide
+    view.trackRows = PAGE;
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify({ autoHide: view.autoHide })); } catch (err) { /* private mode */ }
+    changed();
+  });
 
   $("tracks").addEventListener("click", function (e) {
     const b = e.target.closest("button[data-act]");
@@ -858,10 +1021,13 @@
   $("btn-demo").addEventListener("click", addDemos);
   let clearTimer = null;
   function disarmClear() { clearTimeout(clearTimer); clearTimer = null; $("btn-clear").textContent = "Remove all"; }
+  $("btn-stop").addEventListener("click", function () { cancelAdds(); player.note("Stopped adding files. The ones already added stay."); });
   $("btn-clear").addEventListener("click", function () {
     if (player.running) { player.note("Stop the set before removing the tracks"); return; }
     if (!clearTimer) { $("btn-clear").textContent = "Sure? Remove all"; clearTimer = setTimeout(disarmClear, 4000); return; }   // two presses, so it cannot be done by accident
     disarmClear();
+    cancelAdds();                                                   // anything still being added from before is dropped, not carried on with
+    view.tracks = view.spotify = view.soundcloud = null; view.trackRows = PAGE;
     player.library.slice().forEach(function (t) { player.remove(t); });
     if (typeof Store !== "undefined") Store.clear().catch(function () { /* ok */ });
     try { localStorage.removeItem(ORDER_KEY); } catch (e) { /* ok */ }
@@ -920,38 +1086,68 @@
 
   const safeLink = function (u) { return typeof u === "string" && /^https:\/\//i.test(u) ? u : ""; };
 
+  // cheap fingerprint of the library, so matching runs again only when the files change
+  function libHash() {
+    let h = player.library.length;
+    player.library.forEach(function (t) { h = (Math.imul(h, 31) + t.id) | 0; });
+    return h;
+  }
+
+  function matchRows(L, limit) {
+    return L.matches.slice(0, limit).map(function (x) {
+      const sp = x.spotify;
+      let links = "";
+      if (!x.local) {
+        if (safeLink(sp.url)) links += ' <a href="' + esc(safeLink(sp.url)) + '" target="_blank" rel="noopener noreferrer">listen</a>';
+        if (safeLink(sp.buy)) links += ' <a href="' + esc(safeLink(sp.buy)) + '" target="_blank" rel="noopener noreferrer">buy</a>';
+        else if (sp.free && safeLink(sp.url)) links += " <em>(free download offered on the page)</em>";
+      }
+      return '<div class="match"><span class="' + (x.local ? "ok" : "no") + '">' + (x.local ? "✓" : "?") + "</span><span>" + esc(sp.artists.join(", ")) + (sp.artists.length ? " — " : "") + esc(sp.title) + "</span><span>" +
+        (x.local ? esc(x.local.track.title) : "drop this file in above" + links) + "</span></div>";
+    }).join("");
+  }
+
+  // The matches of a Spotify or SoundCloud list against your files. A long list
+  // starts hidden (auto-hide) behind its counts and the two queue buttons, and
+  // only a page of rows is drawn at a time; matching and drawing happen only when
+  // the list or the library changed, not every 200 ms.
   function renderMatches(kind) {
     const L = lists[kind], cfg = LISTS[kind];
     if (!L) return;
-    const locals = player.library.map(function (t) { return { track: t, title: t.title, artist: t.artist, duration: t.duration }; });
-    const m = Spotify.matchTracks(L.tracks, locals);
-    L.matches = m;
-    const have = m.filter(function (x) { return x.local; }).length;
-    $(cfg.el).innerHTML =
+    const h = libHash();
+    if (L.libHash !== h && (L.libHash === null || !(adding.total || loading.length))) {         // a new list at once; after that not while files are still arriving, but once when they have
+      L.libHash = h;
+      L.matches = Spotify.matchTracks(L.tracks, player.library.map(function (t) { return { track: t, title: t.title, artist: t.artist, duration: t.duration }; }));
+    }
+    const m = L.matches, have = m.filter(function (x) { return x.local; }).length;
+    const shown = isShown(view[kind], m.length);
+    L.shown = shown;
+    const limit = shown ? Math.min(m.length, L.rows) : 0, left = m.length - limit;
+    const box = $(cfg.el), f = document.activeElement, fa = f && box.contains(f) && f.dataset ? f.dataset.act : null;
+    setHtml(box,
       "<p><b>" + esc(L.name) + "</b> — " + have + " of " + m.length + " tracks matched to your files.</p>" +
-      '<div class="sp-row"><button id="' + cfg.q + '-q1"' + (have ? "" : " disabled") + '>Queue matched, in list order</button><button id="' + cfg.q + '-q2"' + (have ? "" : " disabled") + '>Queue matched, let the DJ order them</button></div>' +
-      m.map(function (x) {
-        const sp = x.spotify;
-        let links = "";
-        if (!x.local) {
-          if (safeLink(sp.url)) links += ' <a href="' + esc(safeLink(sp.url)) + '" target="_blank" rel="noopener noreferrer">listen</a>';
-          if (safeLink(sp.buy)) links += ' <a href="' + esc(safeLink(sp.buy)) + '" target="_blank" rel="noopener noreferrer">buy</a>';
-          else if (sp.free && safeLink(sp.url)) links += " <em>(free download offered on the page)</em>";
-        }
-        return '<div class="match"><span class="' + (x.local ? "ok" : "no") + '">' + (x.local ? "✓" : "?") + "</span><span>" + esc(sp.artists.join(", ")) + (sp.artists.length ? " — " : "") + esc(sp.title) + "</span><span>" +
-          (x.local ? esc(x.local.track.title) : "drop this file in above" + links) + "</span></div>";
-      }).join("");
-    const queue = function (order) {
-      const cur = player.cur && player.cur.track;
+      '<div class="sp-row"><button id="' + cfg.q + '-q1" data-act="q1"' + (have ? "" : " disabled") + '>Queue matched, in list order</button><button id="' + cfg.q + '-q2" data-act="q2"' + (have ? "" : " disabled") + '>Queue matched, let the DJ order them</button>' +
+      '<button class="soft" data-act="toggle" aria-expanded="' + shown + '">' + (shown ? "Hide list" : "Show list (" + m.length + ")") + "</button></div>" +
+      matchRows(L, limit) +
+      (shown && left > 0 ? '<button class="soft more" data-act="more">Show ' + Math.min(PAGE, left) + " more (" + left + " not drawn)</button>" : ""));
+    if (fa && !box.contains(document.activeElement)) { const again = box.querySelector('[data-act="' + fa + '"]') || box.querySelector('[data-act="toggle"]'); if (again) again.focus(); }   // a redraw must not drop keyboard focus
+  }
+
+  // one listener per list; the buttons inside it are redrawn
+  Object.keys(LISTS).forEach(function (kind) {
+    $(LISTS[kind].el).addEventListener("click", function (e) {
+      const b = e.target.closest("button[data-act]"), L = lists[kind];
+      if (!b || !L) return;
+      const act = b.dataset.act;
+      if (act === "toggle") { view[kind] = !L.shown; L.rows = PAGE; renderMatches(kind); return; }
+      if (act === "more") { L.rows += PAGE; renderMatches(kind); return; }
+      const cur = player.cur && player.cur.track, order = act === "q2";
       player.queue = L.matches.filter(function (x) { return x.local && x.local.track !== cur; }).map(function (x) { return x.local.track; });
       if (order) player.autoOrder();
       player.note("Queued " + player.queue.length + " tracks from " + L.name + (order ? ", ordered by the DJ" : ", in list order"));
       changed();
-    };
-    const q1 = $(cfg.q + "-q1"), q2 = $(cfg.q + "-q2");
-    if (q1) q1.onclick = function () { queue(false); };
-    if (q2) q2.onclick = function () { queue(true); };
-  }
+    });
+  });
 
   // A message in the list's own card, where the person is looking, not only in the log.
   function listNote(kind, text) {
@@ -962,8 +1158,10 @@
   }
 
   function showList(kind, name, tracks) {
-    lists[kind] = { name: name, tracks: tracks, matches: [] };
+    lists[kind] = { name: name, tracks: tracks, matches: [], rows: PAGE, libHash: null, shown: true };
+    view[kind] = null;                                          // a new list: let auto-hide decide
     document.querySelector(LISTS[kind].card).open = true;
+    $(LISTS[kind].el).__html = null;
     renderMatches(kind);
   }
   const showSpotify = function (name, tracks) { showList("spotify", name, tracks); };
@@ -1040,7 +1238,7 @@
   });
 
   // test hook
-  window.__dj = { player: player, addBuffer: addBuffer, addDemos: addDemos, restored: restored, store: typeof Store === "undefined" ? null : Store };
+  window.__dj = { player: player, addBuffer: addBuffer, addDemos: addDemos, restored: restored, store: typeof Store === "undefined" ? null : Store, render: renderLists, loading: loading };
   restore();
 
   renderLists();

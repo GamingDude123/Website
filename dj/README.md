@@ -129,12 +129,39 @@ this browser* when it worked, and a note says so once if the browser refuses
 Browsers may throw away site storage when the disk is short of space, so the page
 asks them to keep it, but cannot make them.
 
+## Hiding long lists
+
+Long lists used to make the page stutter, because every progress tick while files
+were being analysed redrew the whole list (with a 24-option key menu on every
+row). Now:
+
+- **Hide tracks / Show tracks** collapses the track list to one line (how many
+  are hidden, what is playing, what is up next). The Spotify and SoundCloud
+  result lists have the same **Hide list / Show list** button; their counts and
+  the two *Queue matched* buttons stay on show while the rows are hidden.
+- **Auto-hide** (on by default, remembered) hides a list on its own once it is
+  longer than 12, and while a big batch of files is still arriving. A list you
+  are using (a row open for editing, focus inside) is left open. Turning it off
+  shows everything; turning it back on lets it decide again.
+- Even when shown, only the first 60 rows are drawn, with **Show 60 more**; the
+  edit controls are built only for the row you are editing; the placeholder for
+  a file being analysed has its own small list, so its progress never redraws
+  the tracks; and nothing is written to the page unless it changed.
+
+Measured with 300 stand-in tracks (before the 50-track limit): a redraw that changed
+something went from about 110 ms and 13,000 page elements to under 1 ms and 720
+(the first page of rows), or 0 and under 0.1 ms while hidden. Spotify and
+SoundCloud lists can be long, so those keep the paging.
+
 ## How many tracks?
 
-There is no cap in the app. The limit is your browser's memory: a decoded
-five-minute track takes about 50 MB. The counter above the list shows the
-estimate and warns past about 1.5 GB — if the tab slows or crashes, remove a few
-tracks or add them in smaller batches.
+The library holds **50 tracks**. Adding hundreds made the page, and memory,
+struggle: a decoded five-minute track takes about 50 MB, so 50 is already around
+2.5 GB. Files beyond the limit are not added (the log says so), and a saved
+library bigger than that comes back as its first 50. The counter above the list
+shows the estimate and warns past about 1.5 GB — if the tab slows or crashes,
+remove a few tracks. **Remove all** and **Stop adding** both drop anything still
+being added.
 
 ## Things to know
 
