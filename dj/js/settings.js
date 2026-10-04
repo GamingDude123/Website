@@ -25,6 +25,9 @@ var Settings = (function () {
     flair: 60,                 // 0-100 — how showy the builds are
     rolls: true, risers: true, impacts: true, echoThrows: true,
     brakes: true,              // vinyl brakes and spinbacks as ways out
+    autoFx: "subtle",          // off | subtle | lively | wild — sound effects the DJ drops in on its own, mid-track
+    voxAuto: true,             // take the outgoing vocals out of a blend when both tracks have one there
+    tricks: true,              // the more creative moves: filter swaps, stutter cuts, vocal mashups
     sweeps: true,              // soft crashes and downlifters
     echoAmount: 55,            // 0-100
     reverbAmount: 45,          // 0-100
@@ -43,15 +46,15 @@ var Settings = (function () {
     balanced: { label: "Let the AI decide", hint: "Adapts every move to the pair of tracks", values: {} },
     warehouse: {
       label: "Warehouse", hint: "Drop swaps, rolls, peaks and valleys",
-      values: { style: "club", blendBars: 16, bassSwap: "hard", minPlay: 48, variety: 40, arc: "wave", maxTempoGap: 6, flair: 80, rolls: true, risers: true, impacts: true, echoThrows: true, echoAmount: 60 },
+      values: { style: "club", blendBars: 16, bassSwap: "hard", minPlay: 48, variety: 40, arc: "wave", maxTempoGap: 6, flair: 80, rolls: true, risers: true, impacts: true, echoThrows: true, echoAmount: 60, autoFx: "lively" },
     },
     mainstage: {
       label: "Main stage", hint: "Short, loud, everything on",
-      values: { style: "club", blendBars: 8, bassSwap: "hard", minPlay: 32, variety: 25, arc: "peak", flair: 100, rolls: true, risers: true, impacts: true, echoThrows: true, echoAmount: 70, reverbAmount: 60 },
+      values: { style: "club", blendBars: 8, bassSwap: "hard", minPlay: 32, variety: 25, arc: "peak", flair: 100, rolls: true, risers: true, impacts: true, echoThrows: true, echoAmount: 70, reverbAmount: 60, autoFx: "wild" },
     },
     smooth: {
       label: "Late night", hint: "Long blends, strict keys, few effects",
-      values: { style: "smooth", blendBars: 32, bassSwap: "smooth", minPlay: 64, variety: 10, arc: "build", keyStrictness: "strict", maxTempoGap: 3, flair: 20, rolls: false, impacts: false, echoAmount: 40, reverbAmount: 50 },
+      values: { style: "smooth", blendBars: 32, bassSwap: "smooth", minPlay: 64, variety: 10, arc: "build", keyStrictness: "strict", maxTempoGap: 3, flair: 20, rolls: false, impacts: false, echoAmount: 40, reverbAmount: 50, autoFx: "off" },
     },
     sunrise: {
       label: "Sunrise", hint: "Warm-up that slowly lifts, gentle effects",
@@ -59,7 +62,7 @@ var Settings = (function () {
     },
     open: {
       label: "Open format", hint: "Anything goes, lots of surprises",
-      values: { style: "mixed", blendBars: "auto", minPlay: 24, variety: 75, arc: "wave", keyStrictness: "loose", maxTempoGap: 8, wKey: 15, wTempo: 40, wEnergy: 45, flair: 70 },
+      values: { style: "mixed", blendBars: "auto", minPlay: 24, variety: 75, arc: "wave", keyStrictness: "loose", maxTempoGap: 8, wKey: 15, wTempo: 40, wEnergy: 45, flair: 70, autoFx: "lively" },
     },
   };
 
@@ -68,13 +71,14 @@ var Settings = (function () {
     bassSwap: ["auto", "hard", "smooth"],
     arc: ["build", "wave", "peak", "warmup"],
     keyStrictness: ["strict", "balanced", "loose"],
+    autoFx: ["off", "subtle", "lively", "wild"],
   };
   const RANGES = {
     minPlay: [8, 128, 4], variety: [0, 100, 1], maxTempoGap: [1, 10, 0.5],
     wKey: [0, 100, 1], wTempo: [0, 100, 1], wEnergy: [0, 100, 1],
     flair: [0, 100, 1], echoAmount: [0, 100, 1], reverbAmount: [0, 100, 1],
   };
-  const BOOLS = ["rolls", "risers", "impacts", "echoThrows", "brakes", "sweeps", "auto", "levelMatch", "endless", "fx"];
+  const BOOLS = ["rolls", "risers", "impacts", "echoThrows", "brakes", "voxAuto", "tricks", "sweeps", "auto", "levelMatch", "endless", "fx"];
 
   function num(v, lo, hi, step, fallback) {
     v = typeof v === "string" ? parseFloat(v) : v;
@@ -115,6 +119,24 @@ var Settings = (function () {
       if (PERSONALITY.every(function (k) { return p[k] === s[k]; })) return id;
     }
     return "custom";
+  }
+
+  // A copy saved by an earlier version has none of the newer settings (automatic effects, creative
+  // moves, taking vocals out). If it was one of the presets, the new ones follow that preset, so it
+  // still reads as that preset (and Late night stays free of automatic effects).
+  const NEWER = ["autoFx", "voxAuto", "tricks"];
+  function migrate(saved) {
+    if (!saved || typeof saved !== "object" || NEWER.some(function (k) { return saved[k] !== undefined; })) return saved;
+    const cur = sanitize(saved);
+    for (const id of Object.keys(PRESETS)) {
+      const p = make(PRESETS[id].values);
+      if (PERSONALITY.every(function (k) { return NEWER.indexOf(k) >= 0 || p[k] === cur[k]; })) {
+        const out = Object.assign({}, saved);
+        NEWER.forEach(function (k) { out[k] = p[k]; });
+        return out;
+      }
+    }
+    return saved;
   }
 
   // The key score each kind of move needs, by strictness.
@@ -181,7 +203,7 @@ var Settings = (function () {
       "tracks play ≥" + s.minPlay + " bars, keys " + s.keyStrictness + ", tempo within " + s.maxTempoGap + "%, flair " + s.flair + "%";
   }
 
-  return { DEFAULTS: DEFAULTS, PRESETS: PRESETS, ENUMS: ENUMS, RANGES: RANGES, sanitize: sanitize, make: make, applyPreset: applyPreset, presetOf: presetOf, keyFloors: keyFloors, weights: weights, rng: rng, autoTune: autoTune, describe: describe };
+  return { DEFAULTS: DEFAULTS, PRESETS: PRESETS, ENUMS: ENUMS, RANGES: RANGES, sanitize: sanitize, make: make, applyPreset: applyPreset, presetOf: presetOf, migrate: migrate, keyFloors: keyFloors, weights: weights, rng: rng, autoTune: autoTune, describe: describe };
 })();
 
 if (typeof module !== "undefined" && module.exports) module.exports = Settings;

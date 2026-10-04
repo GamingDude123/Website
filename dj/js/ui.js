@@ -56,7 +56,7 @@
   let addEpoch = 0;                          // Remove all / Stop adding bump this: whatever was still on its way from before is dropped
   const adding = { verb: "Adding", total: 0, done: 0 };       // files still to come, across overlapping batches
   let fullNoted = false;
-  const ANALYSIS_REV = 1;                    // bump when analysis.js changes what it returns: saved results are then redone
+  const ANALYSIS_REV = 3;                    // bump when analysis.js changes what it returns: saved results are then redone
   const ORDER_KEY = "autopilot-dj-queue";
   let storeOk = null;                        // null until a save has been tried; then whether it worked
   let saveWarned = false;
@@ -75,9 +75,13 @@
   async function analyse(buffer, ph, cancelled) {
     const channels = [];
     for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
-    return Analysis.analyze(Analysis.toMono(channels), buffer.sampleRate, {
+    const analysis = await Analysis.analyze(Analysis.toMono(channels), buffer.sampleRate, {
       onProgress: function (p) { if (cancelled && cancelled()) throw new Error("cancelled"); ph.progress = p; changed(); },
     });
+    // is it stereo, and where is a voice or lead in the middle? (what the vocal tools go by)
+    const sp = Analysis.stereoProfile(channels, buffer.sampleRate, analysis.downbeat, analysis.barLen, analysis.bars);
+    analysis.stereo = sp.stereo; analysis.width = sp.width; analysis.lead = sp.lead;
+    return analysis;
   }
 
   function dropLoading(ph) { const i = loading.indexOf(ph); if (i >= 0) loading.splice(i, 1); }
@@ -576,6 +580,11 @@
             '<div class="xport" role="group" aria-label="Deck ' + label + ' transport">' +
               XPORT.map(function (x) { return '<button data-act="' + x[0] + '" aria-label="' + x[1] + '" title="' + x[2] + '">' + ICON[x[0]] + '</button>'; }).join("") +
             '</div>' +
+            '<div class="vox" role="group" aria-label="Deck ' + label + ' vocals" data-k="vox">' +
+              '<button data-vox="off" aria-pressed="true" title="The track as it is">Full</button>' +
+              '<button data-vox="cut" aria-pressed="false" title="Take the centred vocals out: an instrumental">No vocals</button>' +
+              '<button data-vox="solo" aria-pressed="false" title="Take the instruments out: just the centred vocals">Vocals only</button>' +
+            '</div>' +
             '<small class="tt-note" data-k="note" aria-live="polite"></small>' +
           '</div>' +
         '</div>' +
@@ -605,6 +614,11 @@
     st.k.arm.style.setProperty("--sweep", (frac * 16).toFixed(1) + "deg");
     st.k.arm.classList.toggle("lifted", !d.started || (snap.paused && !snap.pausing));
     st.k.tt.classList.toggle("locked", !d.touch);
+    st.k.vox.querySelectorAll("button").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.vox === d.vox.mode));
+      b.disabled = !d.vox.ok || snap.paused;
+    });
+    st.k.vox.title = d.vox.ok ? "" : d.vox.mono ? "Vocal tools need a stereo track; this one is mono" : "Vocal tools need a browser with audio worklets";
     st.k.platter.tabIndex = d.touch ? 0 : -1;
     const pct = Math.round(frac * 100);
     if (pct !== st.pct) {
@@ -736,6 +750,8 @@
       moveDrag(e);
     });
     el.addEventListener("click", function (e) {
+      const vb = e.target.closest("button[data-vox]");
+      if (vb) { player.setVox(label, vb.dataset.vox); return; }
       const btn = e.target.closest("button[data-act]");
       if (!btn) return;
       const act = btn.dataset.act;
@@ -818,11 +834,13 @@
     if (plan.type === "bassSwap") o.echo = 1;
     if (plan.type === "brake") o.brake = 1;
     if (plan.type === "spinback") o.spin = 1;
+    if (plan.type === "stutter") o.roll = 1;
+    if (settings.fx) (plan.extras || []).forEach(function (e) { o[e.kind] = 1; });
     return o;
   }
   function showFx(snap) {
     const fx = snap.fx || {}, planned = {};
-    if (!Object.keys(fx).some(function (k) { return fx[k] === "plan" || fx[k] === "on"; }) && player.queue[0] && preview.plan) Object.assign(planned, plannedFx(preview.plan, player.settings));
+    if (!snap.fxBusy && player.queue[0] && preview.plan) Object.assign(planned, plannedFx(preview.plan, player.settings));
     LAMPS.forEach(function (el) {
       const k = el.dataset.lamp, st = fx[k] === "on" ? "on" : (fx[k] === "plan" || planned[k]) ? "plan" : "";
       el.classList.toggle("on", st === "on");
@@ -877,7 +895,7 @@
       knob.style.left = (curLabel === "B" ? 100 : 0) + "%"; bar.style.width = (curLabel === "B" ? 100 : 0) + "%";
       if (now - preview.at > 0.5 || preview.key !== player.queue[0].id + ":" + JSON.stringify(player.settings)) {
         preview.at = now; preview.key = player.queue[0].id + ":" + JSON.stringify(player.settings);
-        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length });
+        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length, vox: !!(player.mixer && player.mixer.voxOk) });
       }
       const pl = preview.plan;
       $("strip-title").textContent = "Next · " + Brain.label(pl) + " → " + player.queue[0].title;
@@ -906,7 +924,7 @@
   const SETTINGS_KEY = "autopilot-dj-settings";
   function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(player.settings)); } catch (e) { /* private mode */ } }
   function loadSettings() {
-    try { const raw = localStorage.getItem(SETTINGS_KEY); if (raw) player.setSettings(JSON.parse(raw)); } catch (e) { /* ignore a bad copy */ }
+    try { const raw = localStorage.getItem(SETTINGS_KEY); if (raw) player.setSettings(Settings.migrate(JSON.parse(raw))); } catch (e) { /* ignore a bad copy */ }
   }
 
   const PCT = "%";
@@ -920,6 +938,8 @@
       { key: "bassSwap", type: "seg", label: "Bass swap", options: [["auto", "Auto"], ["hard", "Hard"], ["smooth", "Soft"]], hint: "Hard trades the basslines on the one. Soft crossfades them over two beats." },
       { key: "minPlay", type: "range", label: "Play each track for at least", unit: " bars", hint: "Before the next handover may begin." },
       { key: "variety", type: "range", label: "Variety", unit: PCT, hint: "How often it takes the move it normally wouldn\u2019t." },
+      { key: "tricks", type: "toggle", label: "Filter swaps, stutter cuts and vocal mashups", hint: "The more creative ways in and out: a filter swap closes one track down as the next opens up; a stutter chops the last two beats with a gate; a mashup brings in the next track's vocal over an instrumental ending." },
+      { key: "voxAuto", type: "toggle", label: "Take clashing vocals out of blends", hint: "When the outgoing track and the intro riding over it both have a vocal or lead in the middle, the outgoing one is taken out until the swap. An estimate; the deck buttons do it by hand." },
       { key: "brakes", type: "toggle", label: "Vinyl brakes & spinbacks", hint: "Ways out that need no matching key or tempo: the deck winds down or is spun backwards as the next track lands." },
     ] },
     { group: "Taste", items: [
@@ -932,6 +952,7 @@
     ] },
     { group: "Effects", items: [
       { key: "fx", type: "toggle", label: "Effects on" },
+      { key: "autoFx", type: "seg", label: "Automatic sound effects", options: [["off", "Off"], ["subtle", "Subtle"], ["lively", "Lively"], ["wild", "Wild"]], hint: "Effects the DJ drops in on its own, mid-track: a riser into each of a track's own drops and a hit on them (Subtle); snare rolls, reverse swells and soft hits on the phrase lines (Lively); lasers and the odd siren (Wild). They keep out of the transitions." },
       { key: "flair", type: "range", label: "Flair", unit: PCT, hint: "How showy the builds get. Low is just the blend." },
       { key: "echoAmount", type: "range", label: "Echo", unit: PCT },
       { key: "reverbAmount", type: "range", label: "Reverb tails", unit: PCT },

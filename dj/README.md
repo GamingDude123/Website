@@ -3,7 +3,8 @@
 Drop in tracks and it plays them as a club-style tech-house set: beatmatched,
 key-aware, with bass swaps, drop swaps, vinyl brakes, spinbacks, filter builds,
 loop rolls and echo throws, all decided and scheduled for you. The decks are
-turntables you can grab, and Pause stops them like a DJ would.
+turntables you can grab, Pause stops them like a DJ would, it drops sound effects
+in on its own, and it can take the vocals out of a track, or keep only the vocals.
 
 Open `dj/index.html` from a web server (`localhost` or `https://`). No build
 step, no dependencies, nothing uploaded. **Add demo tracks** gives you four
@@ -24,16 +25,22 @@ artist. Treat the planner as a very tidy resident DJ.
 | Stage | File | What happens |
 | --- | --- | --- |
 | Listen | `js/analysis.js` | Band-split onset strength → autocorrelation → comb filter for tempo and beat phase; downbeat from claps on 2/4 plus where the music changes; per-bar kick presence, level between kicks and rhythmic density to find intro / break / drop / outro; chromagram (kick-gated, peaks only) against Albrecht–Shanahan key profiles, shown as a Camelot code |
-| Choose | `js/brain.js` | Next track by harmonic fit, tempo distance and the energy arc; then one of five moves from what the two tracks allow |
+| Choose | `js/brain.js` | Next track by harmonic fit, tempo distance and the energy arc; then a move from what the two tracks allow (below) |
 | Lock | `js/timeline.js`, `js/engine.js` | Both decks follow one tempo curve, so bar lines stay aligned while tempo glides to the incoming track's own. The glide's duration is solved so the outgoing deck reaches the swap bar exactly as it ends |
 | Perform | `js/engine.js` | EQ kills and swaps, filter sweeps, echo throws, loop rolls, risers and impacts — every event placed on the audio clock ahead of time |
 
-The five moves:
+The moves:
 
 - **Bass swap** — the incoming intro rides over the outgoing outro with its low
   end cut; the basslines trade places on the bar where the incoming drop lands.
   Needs keys that fit and tempos within the blend limit. A track with no
-  detected intro still gets one: its first eight bars are used.
+  detected intro still gets one: its first eight bars are used. Two variations
+  (under *Creative moves*, on by default):
+  - **Filter swap** — the outgoing track closes down through a low-pass (into
+    reverb) as the incoming one opens up from a high-pass.
+  - **Vocal mashup** — when the outgoing track has an instrumental ending and the
+    incoming one opens with a vocal, the vocal comes in alone over the
+    instrumental and its instruments join over the last two beats.
 - **Drop swap** — the outgoing breakdown builds (high-pass closing, riser, a
   loop roll in the last bar, echo throw) and the incoming drop lands on the one.
   With no detected drop it cuts on a phrase line instead. It overlaps the two
@@ -44,15 +51,17 @@ The five moves:
   last two beats, pitch falling with it, and the next track lands on the one.
 - **Spinback** — the last beat is wound backwards, fast and slowing, as the next
   track lands on the one.
+- **Stutter cut** — a gate chops the last two beats (eighths, sixteenths,
+  thirty-seconds) and the next track lands on the one.
 - **Echo out** — echo throw, cut on the downbeat, the new track starts clean.
 
-The last three need no key or tempo match. They used to be one move — echo out
+The last four need no key or tempo match. They used to be one move — echo out
 — which is what a library of mixed keys and tempos got every time. Now a pair
 that cannot blend draws from all of them (weighted by style, flair and energy, and
 the same pair always draws the same), and even a pair that could blend now and
 then takes a clean exit so the set does not repeat itself. *Vinyl brakes &
-spinbacks* can be switched off under *Moves*; *Smooth* style rarely brakes and
-never spins back.
+spinbacks* and *Creative moves* can be switched off under *Moves*; *Smooth* style
+rarely brakes and never spins back or stutters.
 
 Every decision is written in plain words in the strip under the decks and in the
 log.
@@ -82,7 +91,7 @@ and the bass swap is equal-power so the low end never dips or doubles. Turn any
 of it off under *Effects*. Even a plain blend gets a hit where the basslines
 trade (softer when the energy does not rise) once flair is about 40% or more.
 
-The **effects strip** under the decks is always on show: nine pads. Each lights
+The **effects strip** under the decks is always on show: twelve pads. Each lights
 while its effect sounds and is outlined while the transition that is lined up (or
 the one previewed) will use it, and the booth pulses on a hit. Tapping a pad acts on
 the next beat. Echo, Filter, Riser, Impact, Crash and Downlift are master-bus
@@ -122,6 +131,68 @@ rest. Speed is the same piecewise-linear curve the planner uses, so the display
 and the next mix always agree with what you hear. The tests drive a track whose
 pitch encodes its position (`test/browser.test.js`) and hold the audio to an
 independent simulation.
+
+## Automatic sound effects
+
+*Automatic sound effects* (Off / Subtle / Lively / Wild, under *Effects*) drops
+effects in on its own while a track plays, on the master bus like the pads, from
+what the track's own structure invites:
+
+- **Subtle**: a riser into each of the track's own drops and a hit on the drop.
+- **Lively**: also a snare roll or reverse swell into the drop, and soft hits and
+  reverse swells on 16-bar phrase lines.
+- **Wild**: also lasers on the last beat of a bar mid-phrase, the odd siren, more
+  of everything. Around each *swap* there is also a draw for a reverse swell, a
+  snare roll or a zap.
+
+They keep out of the transitions (the way out of a track and the first bars after
+the way in belong to the transition, which takes back any that were planned
+there), come back with the same choices on every run so an export matches the
+live set, and respect the effects switch and the riser / hit / crash switches.
+The strip lights for each one as it comes. The pads have twelve now: three more
+sounds — **Swell** (a crash played backwards), **Snare roll** (one bar, getting
+faster and louder) and **Zap** (a laser) — which are synthesised like the rest.
+
+## Vocal tools
+
+Each deck has **Full / No vocals / Vocals only**. *No vocals* takes the centred
+vocal out (an instrumental), *Vocals only* keeps just the centred vocal (an a
+cappella: the instrumental taken out).
+
+This is classic signal processing, not AI source separation. A short-time
+Fourier transform (`js/vocal-worklet.js`, an AudioWorklet) looks at each frequency
+band of the left and right channels, and where both have the same level and phase,
+the sound is in the middle of the mix; the vocal range of what is in the middle
+is turned down or kept. Measured on synthetic mixes (nobody has run it on a
+real song yet): with only a centred voice and some hard-panned instruments the
+voice drops by more than 70 dB and the panned instruments are not touched; on a
+busier mix where a lead and a pad share the voice's frequencies, *No vocals* takes
+the voice down by about 19 dB and the lead and pad by 3-4 dB along with it, and
+*Vocals only* keeps the voice but only turns those down by about 5-6 dB, while the
+centred drums and bass go by 18-29 dB. So expect a much quieter vocal, not a clean
+studio instrumental, and expect it to be at its best on music where the singer has
+the middle to themselves. Real music is harder than test tones:
+
+- it works for stereo mixes with the vocal in the middle, which is most pop, rock
+  and dance music; it does not work on mono files (the buttons are off and say so);
+- anything else in the middle in the same range (a snare, a centred lead synth, a
+  bass guitar's upper harmonics) goes with the vocal, and a vocal with stereo
+  reverb or doubling leaves some of itself behind;
+- with *No vocals* the bass and the kick (below about 150 Hz) and the cymbals
+  (above about 8 kHz) are untouched, so the track is not thinned out.
+
+The worklet adds a fixed 512 samples (about 11.6 ms) of delay. Every deck goes
+through the same delay, and the effects are delayed to match, so beats still line
+up whatever is switched on (measured in the browser test).
+
+**In blends**, *Take clashing vocals out of blends* (on by default) does it for
+you: the analysis estimates, bar by bar, how much of a track is a centred voice or
+lead (energy in 300 Hz - 3.4 kHz in the middle against the side, relative to the
+track's loud bars). When both the outgoing track's overlap and the incoming intro
+riding over it are high, the outgoing vocal is taken out until the swap. That
+estimate cannot tell a voice from a centred lead, so treat it as "something is
+singing or leading in the middle"; the deck buttons are the override. Tracks
+analysed before this was added are re-analysed the first time they are restored.
 
 ## Your files stay put
 

@@ -47,9 +47,20 @@ var Player = (function () {
   });
 
   Player.prototype.applySettings = function () {
+    const before = this.mixer && this.mixer.settings ? this.mixer.settings.autoFx : null;
     this.settings = Settings.sanitize(this.settings);
-    if (this.mixer) { this.mixer.settings = this.settings; this.mixer.fxOn = this.settings.fx; }
+    if (this.mixer) {
+      this.mixer.settings = this.settings; this.mixer.fxOn = this.settings.fx;
+      // a change of automatic effects takes the ones already scheduled back; the next tick schedules the new kind
+      if (before !== this.settings.autoFx || !this.settings.fx) this.dropAutoFx(this.ctx.currentTime);
+    }
     this.onChange();
+  };
+
+  // forget the automatic effects scheduled from `from` on, and let every deck plan them afresh
+  Player.prototype.dropAutoFx = function (from) {
+    if (this.mixer) this.mixer.cancelAutoFx(from);
+    this.voices.forEach(function (v) { v.fxBar = null; });
   };
 
   Player.prototype.setSettings = function (obj) {
@@ -84,11 +95,15 @@ var Player = (function () {
   };
 
   Player.prototype.start = async function () {
-    if (this.running || !this.queue.length) return;
+    if (this.running || this.starting || !this.queue.length) return;
+    this.starting = true;                                // (the set is only running once the audio is ready)
     const Ctor = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new Ctor({ latencyHint: "playback" });
-    await this.ctx.resume();
-    this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
+    try {
+      this.ctx = new Ctor({ latencyHint: "playback" });
+      await this.ctx.resume();
+      this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
+      await this.mixer.init();
+    } finally { this.starting = false; }
     const first = this.queue.shift();
     this.history.push(first);
     this.cur = this.mixer.firstVoice(first, this.ctx.currentTime + 0.2, "A");
@@ -184,7 +199,7 @@ var Player = (function () {
     const A = this.cur, ctx = this.ctx;
     const next = this.queue[0];
     if (!next) return false;
-    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length };
+    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length, vox: !!this.mixer.voxOk };
     const plan_ = function (opts) { return Brain.planTransition(Engine.infoOf(A.track), Engine.infoOf(next), opts); };
     const late = function (p) { return A.timeOfBar(p.startBar) < now + 0.3; };
     let plan;
@@ -242,6 +257,9 @@ var Player = (function () {
     }
     this.ensureNext();
     if (this.queue.length && !(this.cur.exit)) this.scheduleNext(now, false);
+    // automatic effects for the deck that is playing
+    const playing = this.voices.filter(function (v) { return now >= v.t0; }).pop();
+    if (playing) this.mixer.autoFxTick(playing, now);
     const track = this.cur.track;
     if (this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(track.buffer.duration) + 0.5) { this.hardCut(now); this.onChange(); return; }
     if (!this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(track.buffer.duration) + 0.5) { this.note("End of set"); this.stop(); return; }
@@ -321,6 +339,12 @@ var Player = (function () {
       m.playFx("crash", at, 0, 0.5);
     } else if (name === "down") {
       m.playFx("downlifter", at, 2 * bar, 0.6);
+    } else if (name === "swell") {
+      m.playFx("swell", at, Math.min(2.3, bar), 0.8);
+    } else if (name === "snare") {
+      m.playFx("snare", at, bar, 0.7);
+    } else if (name === "zap") {
+      m.playFx("zap", at, 0, 0.6);
     }
   };
 
@@ -349,6 +373,15 @@ var Player = (function () {
     }, (T + hold) * 1000 + 30);
   };
 
+  // The vocal remover for the deck labelled `label`: "off", "cut" (an instrumental) or "solo" (vocals only).
+  Player.prototype.setVox = function (label, mode) {
+    if (!this.ctx || this.paused) return false;
+    const v = this.voices.filter(function (x) { return x.label === label; }).pop();
+    if (!v || !v.setVox(this.ctx.currentTime + 0.02, mode, 0.3)) return false;
+    this.onChange();
+    return true;
+  };
+
   // What the UI needs to draw a frame.
   Player.prototype.snapshot = function () {
     if (!this.ctx) return null;
@@ -359,12 +392,13 @@ var Player = (function () {
       return {
         voice: v, label: v.label, track: v.track, bar: bar, pos: v.tl.posAt(now), rate: v.tl.rateAt(now),
         bpm: Math.abs(v.tempoAt(now)), started: now >= v.t0, touch: !!touch.voice && touch.voice === v,
+        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: v.track.buffer.numberOfChannels < 2 || (v.track.analysis && v.track.analysis.stereo === false) },
         eq: { low: v.low.gain.value, mid: v.mid.gain.value, high: v.high.gain.value },
         level: v.fader.gain.value,
         audible: now >= v.t0 && v.fader.gain.value > 0.02,
       };
     });
-    return { now: now, decks: decks, paused: this.paused, pausing: this.pausing, hand: !!this.session, lock: touch.voice ? "" : touch.why, fx: this.mixer ? this.mixer.fxState(now) : {} };
+    return { now: now, decks: decks, paused: this.paused, pausing: this.pausing, hand: !!this.session, lock: touch.voice ? "" : touch.why, fx: this.mixer ? this.mixer.fxState(now) : {}, fxBusy: this.mixer ? this.mixer.fxBusy(now) : false };
   };
 
   // ------------------------------------------------------------- turntables
@@ -396,6 +430,7 @@ var Player = (function () {
       this.note("Took the planned mix into " + next.title + " back — a hand is on deck " + label + "; it is planned again when you let go");
     }
     this.session = new Turntable.Session(hit.voice, this.ctx.currentTime + 0.01);
+    this.dropAutoFx(this.ctx.currentTime);                      // the effects were laid out for where the track was
     this.onChange();
     return true;
   };
@@ -432,6 +467,7 @@ var Player = (function () {
     const target = Math.max(0, Math.min(dur - 0.5, pos + bars * v.grid.barLen));
     if (Math.abs(target - pos) < 0.05) return false;
     v.seek(t, target);
+    this.dropAutoFx(t);
     this.onChange();
     return true;
   };
