@@ -488,7 +488,8 @@
       const lists = await Spotify.playlists();
       $("sp-lists").innerHTML = lists.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + "</option>"; }).join("");
     } catch (err) {
-      player.note("Spotify: " + err.message); if (/40[13]/.test(err.message)) { Spotify.disconnect(); spotifyUi(); }
+      player.note(Spotify.explain(err));
+      if (err.status === 401) { Spotify.disconnect(); spotifyUi(); }          // expired; a 403 is a refusal, not a reason to log out
     }
   }
 
@@ -509,7 +510,7 @@
     const sel = $("sp-lists");
     if (!sel.value) return;
     try { showSpotify(sel.selectedOptions[0].text, await Spotify.playlistTracks(sel.value)); }
-    catch (err) { player.note("Spotify: " + err.message); }
+    catch (err) { player.note(Spotify.explain(err)); }
   });
 
   Spotify.handleRedirect().then(function (did) { spotifyUi(); if (Spotify.connected()) loadLists(); if (did) player.note("Connected to Spotify"); })

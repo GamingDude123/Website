@@ -173,7 +173,14 @@ var Spotify = (function () {
     if (!t) throw new Error("Not connected to Spotify");
     const url = path.indexOf("http") === 0 ? path : "https://api.spotify.com/v1" + path;
     const r = await fetch(url, { headers: { Authorization: "Bearer " + t } });
-    if (!r.ok) { const e = new Error("Spotify " + r.status); e.status = r.status; throw e; }
+    if (!r.ok) {
+      // Spotify explains refusals in the body; surface it rather than a bare code.
+      let why = "";
+      try { const j = await r.json(); why = (j.error && (j.error.message || j.error)) || j.error_description || ""; } catch (e) { /* no body */ }
+      const e = new Error("Spotify " + r.status + (why ? ": " + why : ""));
+      e.status = r.status;
+      throw e;
+    }
     return r.json();
   }
 
@@ -206,13 +213,24 @@ var Spotify = (function () {
     return out;
   }
 
+  // Plain words for the refusals a new Development Mode app actually runs into.
+  function explain(err) {
+    if (err.status === 403) {
+      return "Spotify refused the request (403). For an app in Development Mode that usually means the Spotify account you logged in with is not listed under User Management for your app, or the app owner's Premium is not active. " +
+        "Spotify said: " + err.message.replace(/^Spotify 403:? ?/, "") + ". Playlists you do not own or collaborate on are also refused.";
+    }
+    if (err.status === 401) return "Spotify says the login has expired — press Connect again.";
+    if (err.status === 429) return "Spotify says to slow down — try again in a minute.";
+    return err.message;
+  }
+
   return {
     parseCSV: parseCSV, tracksFromCSV: tracksFromCSV, camelotFromSpotify: camelotFromSpotify,
     matchScore: matchScore, matchTracks: matchTracks, norm: norm,
     connected: function () { return !!get("sp_token") || !!get("sp_refresh"); },
     savedClientId: function () { return get("sp_client") || ""; },
     redirectUri: redirectUri, login: login, handleRedirect: handleRedirect,
-    playlists: playlists, playlistTracks: playlistTracks,
+    explain: explain, playlists: playlists, playlistTracks: playlistTracks,
     disconnect: function () { ["sp_token", "sp_expires", "sp_refresh", "sp_verifier", "sp_state"].forEach(function (k) { try { localStorage.removeItem(k); } catch (e) { /* ok */ } }); },
   };
 })();
