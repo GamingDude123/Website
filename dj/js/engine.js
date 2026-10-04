@@ -119,6 +119,17 @@ var Engine = (function () {
   Voice.prototype.tempoAt = function (t) { return this.grid.bpm * this.tl.rateAt(t); };
   Voice.prototype.beatSec = function (t) { return 60 / this.tempoAt(t); };
 
+  // Freeze the tempo from time t: a glide still under way is cut off there
+  // (the ramp is re-aimed at the value it has reached by t), so a later glide on
+  // this deck starts from a state the timeline knows about.
+  Voice.prototype.holdRate = function (t) {
+    const rate = this.tl.rateAt(t), p = this.src.playbackRate;
+    p.cancelScheduledValues(t);
+    p.linearRampToValueAtTime(rate, t);
+    this.tl.nodes = this.tl.nodes.filter(function (n) { return n.t < t; });
+    this.tl.nodes.push({ t: t, r: rate });
+  };
+
   Voice.prototype.rampRate = function (t0, t1, rate) {
     const cur = this.tl.rateAt(t0);
     this.src.playbackRate.setValueAtTime(cur, t0);
@@ -143,11 +154,8 @@ var Engine = (function () {
   Voice.prototype.rollback = function (now) {
     const self = this;
     [this.fader.gain, this.env.gain, this.low.gain, this.mid.gain, this.high.gain, this.hp.frequency,
-      this.echoSend.gain, this.revSend.gain, this.src.playbackRate].forEach(function (p) { p.cancelScheduledValues(now); });
-    const rate = this.tl.rateAt(now);
-    this.src.playbackRate.setValueAtTime(rate, now);
-    this.tl.nodes = this.tl.nodes.filter(function (n) { return n.t < now; });
-    this.tl.nodes.push({ t: now, r: rate });
+      this.echoSend.gain, this.revSend.gain].forEach(function (p) { p.cancelScheduledValues(now); });
+    this.holdRate(now);
     this.env.gain.setValueAtTime(1, now);
     this.fader.gain.setValueAtTime(1, now);
     this.low.gain.setValueAtTime(0, now); this.mid.gain.setValueAtTime(0, now); this.high.gain.setValueAtTime(0, now);
@@ -219,8 +227,12 @@ var Engine = (function () {
 
   Mixer.prototype.fxBuffer = function (kind, seconds) {
     const sr = this.ctx.sampleRate;
-    const key = kind + (seconds ? Math.round(seconds * 10) : "");
+    // keyed on the exact length: a riser has to end on the swap, so one built
+    // for a slightly different tempo cannot stand in for it
+    const key = kind + (seconds ? Math.round(seconds * sr) : "");
     if (!this.buffers[key]) {
+      const keys = Object.keys(this.buffers);
+      if (keys.length > 10) delete this.buffers[keys[0]];
       const chans = kind === "riser" ? FX.riser(sr, seconds) : kind === "downlifter" ? FX.downlifter(sr, seconds) : kind === "crash" ? FX.crash(sr) : FX.impact(sr);
       const b = this.ctx.createBuffer(chans.length, chans[0].length, sr);
       chans.forEach(function (c, i) { b.copyToChannel(c, i); });
@@ -296,6 +308,9 @@ var Engine = (function () {
       // blend. With the same tempo curve on both, the bar lines stay locked;
       // the duration is chosen so A reaches the swap bar exactly as it ends.
       const n = L / 2;
+      // B starts at A's tempo and holds it until the glide, so A must hold too —
+      // it may still be settling from its own entry
+      A.holdRate(tStart);
       const tg0 = A.timeOfBar(plan.swapBar - n);
       const Ta = A.tempoAt(tg0), Tb = gB.bpm;
       const D = 480 * n / (Ta + Tb);
@@ -356,11 +371,11 @@ var Engine = (function () {
       const build = plan.buildBars;
       const tBuild = A.timeOfBar(plan.swapBar - build);
       const hpTarget = plan.type === "dropSwap" ? 2200 : 700;
-      const hpEnd = plan.roll ? tSwap - bar : tSwap - 0.02;
+      const hpEnd = plan.roll && this.fxOn ? tSwap - bar : tSwap - 0.02;
       expRamp(A.hp.frequency, tBuild, hpEnd, 10, hpTarget);
       A.hp.frequency.setValueAtTime(hpTarget, tSwap + 0.02);
       // echo throw on the last beat, cut dry on the downbeat so the tail rings
-      if (plan.echoThrow !== false) {
+      if (plan.echoThrow !== false && this.fxOn) {
         A.echoSend.gain.setValueAtTime(0, tSwap - beat);
         A.echoSend.gain.linearRampToValueAtTime((plan.type === "echoOut" ? 0.75 : 0.55) * echoF, tSwap - 0.01);
         A.echoSend.gain.setValueAtTime(0, tSwap + 0.03);
@@ -370,7 +385,7 @@ var Engine = (function () {
       A.revSend.gain.setValueAtTime(0, tSwap + 0.03);
       A.fader.gain.setValueAtTime(1, tSwap - 0.004);
       A.fader.gain.linearRampToValueAtTime(0, tSwap + 0.012);
-      if (plan.roll) this.scheduleRoll(A, plan.swapBar - 1);
+      if (plan.roll && this.fxOn) this.scheduleRoll(A, plan.swapBar - 1);
       B.fader.gain.setValueAtTime(0, tSwap - 0.001);
       B.fader.gain.linearRampToValueAtTime(1, tSwap + 0.004);
       if (this.fxOn && plan.riser) {
@@ -396,7 +411,7 @@ var Engine = (function () {
     const voices = [A], plans = [];
     for (let k = 1; k < tracks.length; k++) {
       const plan = Brain.planTransition(infoOf(tracks[k - 1]), infoOf(tracks[k]), {
-        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k,
+        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k + (opts.index0 || 0),
       });
       const B = this.scheduleTransition(A, tracks[k], plan, k % 2 ? "B" : "A");
       voices.push(B); plans.push(plan);

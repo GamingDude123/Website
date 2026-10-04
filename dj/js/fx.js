@@ -42,12 +42,19 @@ var FX = (function () {
   // into the top octave.
   function sweptNoise(sr, seconds, f0, f1, Q, seed, fn) {
     const n = Math.floor(sr * seconds), out = new Float32Array(n), r = rng(seed);
-    const q = 1 / Q, fMax = sr / 3.2;
+    const q = 1 / Q, fMax = sr / 3.2, BLOCK = 16;
     let low = 0, band = 0, air = 0;
+    // the filter and the loudness are worked out once per 16 samples (0.4 ms),
+    // the loudness glided between them — the same sound for a tenth of the work
+    let f = 0, g0 = fn(0), g1 = g0;
     for (let i = 0; i < n; i++) {
-      const t = i / n;
-      const fc = Math.min(fMax, f0 * Math.pow(f1 / f0, t));
-      const f = 2 * Math.sin(Math.PI * fc / (2 * sr));
+      const j = i % BLOCK;
+      if (j === 0) {
+        const t = i / n;
+        f = 2 * Math.sin(Math.PI * Math.min(fMax, f0 * Math.pow(f1 / f0, t)) / (2 * sr));
+        g0 = g1; g1 = fn(Math.min(1, (i + BLOCK) / n));
+        if (i === 0) g0 = fn(0);
+      }
       const w = r() * 2 - 1;
       let y = 0;
       for (let k = 0; k < 2; k++) {
@@ -57,7 +64,8 @@ var FX = (function () {
         y = band;
       }
       air += 0.35 * (w - air);                 // a little un-filtered top end for shimmer
-      out[i] = (y * 0.9 + (w - air) * 0.12 * t) * fn(t);
+      const t = i / n;
+      out[i] = (y * 0.9 + (w - air) * 0.12 * t) * (g0 + (g1 - g0) * (j / BLOCK));
     }
     return out;
   }

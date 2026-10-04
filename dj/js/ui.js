@@ -113,6 +113,7 @@
     return player.history.indexOf(t) >= 0 ? "Played" : "Not queued";
   }
 
+  let lastTracksHtml = "";
   const openRows = new Set();               // tracks whose edit controls are showing
 
   function renderLists() {
@@ -128,17 +129,24 @@
       const open = openRows.has(t.id);
       rows.push('<li class="trk' + (cur === t ? " now" : "") + (open ? " open" : "") + '"><span class="n">' + (i + 1) + '</span>' +
         '<div class="t"><b>' + esc(t.title) + '</b><div class="sub"><span>' + esc(t.artist || "Unknown artist") + '</span><span>' + a.bpm.toFixed(0) + ' BPM</span><span>' + (t.keyOverride || a.key.camelot) + '</span><span>' + mmss(t.duration) + '</span><span class="status">' + statusOf(t) + '</span></div></div>' +
-        '<button class="edit" data-act="edit" data-id="' + t.id + '" aria-expanded="' + open + '">' + (open ? "Done" : "Edit") + '</button>' +
-        '<div class="ctl">' + keySel +
+        '<button class="edit" data-act="edit" data-id="' + t.id + '" aria-expanded="' + open + '" aria-controls="ctl-' + t.id + '" aria-label="' + (open ? "Done editing " : "Edit ") + esc(t.title) + '">' + (open ? "Done" : "Edit") + '</button>' +
+        '<div class="ctl" id="ctl-' + t.id + '">' + keySel +
         '<button data-act="shift" data-id="' + t.id + '" title="Nudge where bar 1 is by one beat, if the downbeat guess is wrong">downbeat ' + (t.shiftBeats ? "+" + t.shiftBeats : "±0") + '</button>' +
-        (queued ? '<button data-act="up" data-id="' + t.id + '" aria-label="Move up">&uarr;</button><button data-act="down" data-id="' + t.id + '" aria-label="Move down">&darr;</button><button data-act="next" data-id="' + t.id + '">Play next</button>' :
-          (cur === t ? "" : '<button data-act="queue" data-id="' + t.id + '">Queue</button>')) +
-        '<button data-act="del" data-id="' + t.id + '" aria-label="Remove">Remove</button></div></li>');
+        (queued ? '<button data-act="up" data-id="' + t.id + '" aria-label="Move up">&uarr;</button><button data-act="down" data-id="' + t.id + '" aria-label="Move down">&darr;</button><button data-act="next" data-id="' + t.id + '" aria-label="Play ' + esc(t.title) + ' next">Play next</button>' :
+          (cur === t ? "" : '<button data-act="queue" data-id="' + t.id + '" aria-label="Queue ' + esc(t.title) + '">Queue</button>')) +
+        '<button data-act="del" data-id="' + t.id + '" aria-label="Remove ' + esc(t.title) + '">Remove</button></div></li>');
     });
     loading.forEach(function (l) {
       rows.push('<li class="trk"><span class="n">&hellip;</span><div class="t"><b>' + esc(l.name) + '</b><div class="sub"><span class="status">analysing ' + Math.round(l.progress * 100) + '%</span></div></div><div class="prog"><i style="width:' + Math.round(l.progress * 100) + '%"></i></div></li>');
     });
-    $("tracks").innerHTML = rows.join("") || '<li class="empty-lib">Nothing here yet &mdash; add the demo tracks to hear it straight away.</li>';
+    const html = rows.join("") || '<li class="empty-lib">Nothing here yet &mdash; add the demo tracks to hear it straight away.</li>';
+    if (html !== lastTracksHtml) {
+      // the player redraws every 200 ms; only touch the DOM when the list really changed,
+      // and keep keyboard focus on the same control if it did
+      const f = document.activeElement, fa = f && $("tracks").contains(f) && f.dataset ? { act: f.dataset.act, id: f.dataset.id } : null;
+      $("tracks").innerHTML = html; lastTracksHtml = html;
+      if (fa && fa.act) { const again = $("tracks").querySelector('[data-act="' + fa.act + '"][data-id="' + fa.id + '"]'); if (again) again.focus(); }
+    }
 
     $("log").innerHTML = player.log.map(function (l) { return "<li><b>" + mmss(l.t) + "</b>" + esc(l.text) + "</li>"; }).join("") || "<li>It will explain each choice here.</li>";
 
@@ -407,9 +415,9 @@
       { key: "arc", type: "seg", label: "Energy over the set", options: [["build", "Build up"], ["wave", "Waves"], ["peak", "Stay high"], ["warmup", "Warm-up"]] },
       { key: "keyStrictness", type: "seg", label: "Key matching", options: [["strict", "Strict"], ["balanced", "Balanced"], ["loose", "Loose"]], hint: "Strict only blends neighbouring keys. Loose will try anything." },
       { key: "maxTempoGap", type: "range", label: "Beatmatch up to", unit: PCT, hint: "Further apart than this it won\u2019t blend. Bigger gaps shift pitch more." },
-      { key: "wKey", type: "range", label: "Choosing the next track: key", unit: PCT },
-      { key: "wTempo", type: "range", label: "…tempo", unit: PCT },
-      { key: "wEnergy", type: "range", label: "…energy", unit: PCT },
+      { key: "wKey", type: "range", label: "Pick next track by key", unit: PCT },
+      { key: "wTempo", type: "range", label: "Pick next track by tempo", unit: PCT },
+      { key: "wEnergy", type: "range", label: "Pick next track by energy", unit: PCT },
     ] },
     { group: "Effects", items: [
       { key: "fx", type: "toggle", label: "Effects on" },
@@ -437,8 +445,8 @@
           const r = Settings.RANGES[it.key];
           return '<div class="ctrl"><label for="s-' + it.key + '">' + it.label + ' <output id="o-' + it.key + '"></output></label><input type="range" id="s-' + it.key + '" data-k="' + it.key + '" min="' + r[0] + '" max="' + r[1] + '" step="' + r[2] + '">' + hint + "</div>";
         }
-        return '<div class="ctrl"><span class="lbl" id="l-' + it.key + '">' + it.label + '</span><div class="seg" role="radiogroup" aria-labelledby="l-' + it.key + '">' +
-          it.options.map(function (o, i) { return '<button type="button" role="radio" data-k="' + it.key + '" data-i="' + i + '">' + o[1] + "</button>"; }).join("") + "</div>" + hint + "</div>";
+        return '<div class="ctrl"><span class="lbl" id="l-' + it.key + '">' + it.label + '</span><div class="seg" role="group" aria-labelledby="l-' + it.key + '">' +
+          it.options.map(function (o, i) { return '<button type="button" data-k="' + it.key + '" data-i="' + i + '">' + o[1] + "</button>"; }).join("") + "</div>" + hint + "</div>";
       }).join("") + "</div></div>";
     }).join("") + '<div class="tune-foot"><button class="soft" id="tune-reset">Back to defaults</button></div>';
   }
@@ -450,7 +458,7 @@
       const it = items[n.dataset.k];
       if (n.type === "checkbox") n.checked = !!s[it.key];
       else if (n.type === "range") { n.value = s[it.key]; $("o-" + it.key).textContent = s[it.key] + it.unit; }
-      else n.setAttribute("aria-checked", String(it.options[+n.dataset.i][0] === s[it.key]));
+      else n.setAttribute("aria-pressed", String(it.options[+n.dataset.i][0] === s[it.key]));
     });
   }
 
@@ -458,8 +466,8 @@
     const id = Settings.presetOf(player.settings);
     const ids = ["balanced", "sunrise", "smooth", "open", "warehouse", "mainstage"];
     $("vibes").innerHTML = ids.map(function (k) {
-      return '<button type="button" class="chip-btn" role="radio" data-vibe="' + k + '" aria-checked="' + (k === id) + '">' + Settings.PRESETS[k].label + "</button>";
-    }).join("") + (id === "custom" ? '<button type="button" class="chip-btn" role="radio" aria-checked="true" disabled>Custom</button>' : "");
+      return '<button type="button" class="chip-btn" data-vibe="' + k + '" aria-pressed="' + (k === id) + '">' + Settings.PRESETS[k].label + "</button>";
+    }).join("") + (id === "custom" ? '<button type="button" class="chip-btn" aria-pressed="true" disabled>Custom</button>' : "");
     $("vibe-hint").textContent = id === "custom" ? "Your own mix — tuned below." : Settings.PRESETS[id].hint;
   }
 
@@ -472,9 +480,12 @@
   $("vibes").addEventListener("click", function (e) {
     const b = e.target.closest("button[data-vibe]");
     if (!b) return;
-    const keep = {}; ["endless", "fx", "levelMatch", "auto"].forEach(function (k) { keep[k] = player.settings[k]; });
+    const keep = {}; ["endless", "fx", "levelMatch"].concat(b.dataset.vibe === "balanced" ? [] : ["auto"]).forEach(function (k) { keep[k] = player.settings[k]; });
     const next = Object.assign(Settings.applyPreset(b.dataset.vibe), keep);
+    if (b.dataset.vibe === "balanced") next.auto = true;
     commit(next, "Vibe: " + Settings.describe(next));
+    const again = $("vibes").querySelector('[data-vibe="' + b.dataset.vibe + '"]');       // the chips were redrawn
+    if (again) again.focus();
   });
   $("tune-body").addEventListener("click", function (e) {
     const reset = e.target.closest("#tune-reset");
@@ -531,7 +542,7 @@
     b.disabled = true; b.textContent = "Rendering…";
     try {
       await tick();
-      const res = await Engine.renderSet(tracks, { settings: player.settings });
+      const res = await Engine.renderSet(tracks, { settings: player.settings, index0: player.running && player.cur ? player.history.length - 1 : 0 });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(encodeWav(res.buffer));
       a.download = "autopilot-dj-mix.wav";

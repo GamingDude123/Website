@@ -222,6 +222,20 @@ function check(name, cond, extra) {
   check("match: unrelated file is not matched", Spotify.matchTracks([{ title: "Levels", artists: ["Avicii"], durationMs: 200000 }], locals)[0].local === null);
   check("match: a file is used once", new Set(Spotify.matchTracks([sp[1], sp[1]], locals).filter((x) => x.local).map((x) => x.local)).size === 1);
 
+  // ---- review fixes
+  {
+    const O = mk("O", 126, "8A", 8), I9 = mk("I", 126.5, "8A", 9), I4 = mk("I", 127, "8A", 4);
+    const quiet = Settings.make({ flair: 20, auto: true, style: "smooth" });
+    const p = Brain.planTransition(O, I9, { settings: quiet });
+    check("auto-tune: a low flair is not raised across an effect threshold", p.intensity < 0.25 && !p.riser, "intensity=" + p.intensity + " riser=" + p.riser);
+    const down = Brain.planTransition(O, I4, { settings: Settings.make({ flair: 60, auto: true, style: "smooth" }) });
+    check("auto-tune: still tones the show down for a gentle track", down.intensity < 0.6, "intensity=" + down.intensity);
+    const clubQuiet = Brain.planTransition(O, I4, { settings: Settings.make({ style: "club", variety: 0, auto: false }) });
+    check("log: club style does not claim the incoming track is bigger", clubQuiet.type === "dropSwap" && !clubQuiet.reasons.some((r) => /much bigger/.test(r)), clubQuiet.reasons.join(" | "));
+    const strict = Brain.planTransition(mk("O", 124, "8A", 7), mk("I", 124.9, "9B", 7), { settings: Settings.make({ keyStrictness: "strict", auto: false }) });
+    check("log: strict key matching is blamed for the echo out", strict.type === "echoOut" && /key matching/.test(strict.reasons.join(" ")), strict.reasons.join(" | "));
+  }
+
   console.log(fails ? "\n" + fails + " FAILED" : "\nall passed");
   process.exit(fails ? 1 : 0);
 })();

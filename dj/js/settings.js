@@ -144,6 +144,8 @@ var Settings = (function () {
     };
   }
 
+  // the flair levels at which the planner starts using an effect (see brain.js)
+  const FLAIR_GATES = [15, 25, 30, 45, 50, 70, 80];
   const snap4 = function (n) { return Math.max(8, Math.round(n / 4) * 4); };
 
   // Per-transition adaptation. The user's settings are the baseline and the
@@ -157,7 +159,11 @@ var Settings = (function () {
     if (s.bassSwap === "auto") eff.bassSwap = s.auto && !punchy ? "smooth" : "hard";
     if (!s.auto) return { settings: eff, notes: [] };
     if (s.bassSwap === "auto") notes.push(punchy ? "hard bass swap on the one — same key and the energy lifts" : "soft two-beat bass swap for a smoother handover");
-    const flair = Math.max(0, Math.min(100, Math.round(s.flair * (0.6 + 0.08 * inn.energy))));
+    let flair = Math.max(0, Math.min(100, Math.round(s.flair * (0.6 + 0.08 * inn.energy))));
+    // it may tone the show down, or turn it up within the same band, but never
+    // far enough to bring in an effect the flair setting leaves out
+    const gate = FLAIR_GATES.filter(function (g) { return g > s.flair; })[0];
+    if (gate != null && flair >= gate) flair = gate - 1;
     if (flair !== s.flair) { eff.flair = flair; notes.push("flair " + flair + "% — " + (inn.energy >= 7 ? "a big track is coming in" : inn.energy <= 4 ? "a gentle track is coming in" : "a mid-energy track is coming in")); }
     const play = snap4(s.minPlay * (out.energy >= 8 ? 0.75 : out.energy <= 4 ? 1.25 : 1));
     if (play !== s.minPlay) { eff.minPlay = play; notes.push("lets this one play " + play + " bars — " + (out.energy >= 8 ? "peak track, keep it moving" : "slower track, give it room")); }

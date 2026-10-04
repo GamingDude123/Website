@@ -203,7 +203,7 @@ var Brain = (function () {
       reasons.push("tempos are " + gapPct + " apart, too far to beatmatch — echo out and start clean");
     } else if (!blend && !drop) {
       pick = echoOption();
-      reasons.push(ks < 0.4 ? keyNote(out.key, inn.key) + " and the structures offer no safe overlap — echo out" : "no overlap or breakdown to land on — echo out");
+      reasons.push(ks < floors.drop ? keyNote(out.key, inn.key) + " is too far apart for '" + st.keyStrictness + "' key matching, and the structures offer no safe overlap — echo out" : "no overlap or breakdown to land on — echo out");
     } else if (blend && drop) {
       // smoother by default: blend unless the incoming track is clearly bigger
       const base = style === "smooth" ? blend : style === "club" ? drop : (inn.energy >= out.energy + 2 ? drop : blend);
@@ -220,7 +220,7 @@ var Brain = (function () {
     } else if (pick.type === "dropSwap") {
       if (switched) reasons.push("switching it up — variety is set to " + st.variety + "%");
       reasons.push("build into " + (opts.now ? "the next phrase" : "the last breakdown") + ", then " + inn.title0 + "'s drop lands on the one");
-      reasons.push(blend ? (switched ? "a blend was possible too" : "the incoming track is much bigger, so the drop swap beats a quiet blend") :
+      reasons.push(blend ? (switched ? "a blend was possible too" : style === "club" ? "club style swaps on a drop rather than blending" : "the incoming track is much bigger, so the drop swap beats a quiet blend") :
         (gap > blendLimit ? "tempos are " + gapPct + " apart, over your " + st.maxTempoGap + "% blend limit" :
           ks < floors.blend ? "keys are too far apart to blend at '" + st.keyStrictness + "' strictness" :
             introBars < 8 ? "its intro is too short to blend" : "no clean outro to blend over"));

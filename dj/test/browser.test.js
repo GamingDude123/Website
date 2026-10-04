@@ -151,10 +151,77 @@ function check(name, cond, extra) {
 
   check("beat lock: the same test sees a 30 ms slip", Math.abs(Math.abs(m.slipLag) - 30) <= 4, "lag=" + m.slipLag + " ms");
 
+  // ---- a tempo glide that is still settling when the next blend is planned
+  // (a drop swap settles the new deck over 16 bars; "Mix now" can start a blend inside that)
+  const glide = await page.evaluate(() => {
+    const P = AudioParam.prototype, store = new WeakMap(), orig = { set: P.setValueAtTime, ramp: P.linearRampToValueAtTime, cancel: P.cancelScheduledValues };
+    const rec = (p) => { let e = store.get(p); if (!e) { e = []; store.set(p, e); } return e; };
+    P.setValueAtTime = function (v, t) { rec(this).push({ k: "set", v, t }); return orig.set.call(this, v, t); };
+    P.linearRampToValueAtTime = function (v, t) { rec(this).push({ k: "ramp", v, t }); return orig.ramp.call(this, v, t); };
+    P.cancelScheduledValues = function (t) { store.set(this, rec(this).filter((e) => e.t >= t ? false : true)); return orig.cancel.call(this, t); };
+    // what the audio param does at time t, per the Web Audio rules
+    function valueAt(ev, t, v0) {
+      const sorted = ev.map((e, i) => ({ e, i })).sort((a, b) => a.e.t - b.e.t || a.i - b.i).map((x) => x.e);
+      let pv = v0, pt = 0;
+      for (const e of sorted) {
+        if (e.t <= t) { pv = e.v; pt = e.t; continue; }
+        return e.k === "ramp" ? pv + (e.v - pv) * (t - pt) / (e.t - pt) : pv;
+      }
+      return pv;
+    }
+    try {
+      const lib = window.__dj.player.library, sr = 44100;
+      const club = Settings.make({ style: "club", variety: 0, auto: false, flair: 60, fx: false });
+      const smooth = Settings.make({ style: "smooth", auto: false, fx: false });
+      let found = null;
+      for (const a of lib) for (const b of lib) for (const c of lib) {
+        if (found || a === b || b === c) continue;
+        const ctx = new OfflineAudioContext(2, sr, sr);
+        const mx = new Engine.Mixer(ctx, { offline: true, settings: club });
+        const A = mx.firstVoice(a, 0.2, "A");
+        const p1 = Brain.planTransition(Engine.infoOf(a), Engine.infoOf(b), { entryBar: A.entryBar, settings: club, index: 1 });
+        if (p1.type !== "dropSwap") continue;
+        const B = mx.scheduleTransition(A, b, p1, "B");
+        const tNow = B.entry.tSwap + 5;
+        const p2 = Brain.planTransition(Engine.infoOf(b), Engine.infoOf(c), { entryBar: B.entryBar, settings: smooth, index: 2, now: true, minPlay: 0, earliestSwap: Math.ceil(B.barAt(tNow)) + 10 });
+        if (p2.type !== "bassSwap" || B.timeOfBar(p2.startBar) < tNow + 0.3) continue;
+        const settleEnd = B.tl.nodes[B.tl.nodes.length - 1].t;
+        if (B.timeOfBar(p2.startBar) > settleEnd) continue;                 // must start inside the settle
+        const initial = new Map([[A, A.tl.nodes[0].r], [B, B.tl.nodes[0].r]]);
+        const C = mx.scheduleTransition(B, c, p2, "A");
+        initial.set(C, C.tl.nodes[0].r);
+        let worst = 0;
+        [A, B, C].forEach((v) => {
+          const ev = rec(v.src.playbackRate), t0 = v.tl.nodes[0].t, t1 = C.entry.tSwap + 2;
+          for (let t = t0; t <= t1; t += 0.25) worst = Math.max(worst, Math.abs(valueAt(ev, t, initial.get(v)) - v.tl.rateAt(t)));
+        });
+        found = { worst, names: [a.title, b.title, c.title], blend: p2.blendBars };
+      }
+      return found || { none: true };
+    } finally { P.setValueAtTime = orig.set; P.linearRampToValueAtTime = orig.ramp; P.cancelScheduledValues = orig.cancel; }
+  });
+  check("tempo glide: found a blend that starts while the deck is still settling", !glide.none, JSON.stringify(glide));
+  check("tempo glide: the audio's playback rate follows the timeline the planner used", !glide.none && glide.worst < 1e-6, glide.none ? "" : "worst difference " + glide.worst.toExponential(2));
+
+  // ---- exporting a set that is already playing seeds the choices like the live one
+  const seeded = await page.evaluate(() => {
+    const lib = window.__dj.player.library.slice(0, 2), sr = 44100;
+    const S = Settings.make({ style: "mixed", variety: 60, auto: false, fx: false });
+    let same = 0, total = 0;
+    for (let off = 0; off < 12; off++) {
+      const mx = new Engine.Mixer(new OfflineAudioContext(2, sr, sr), { offline: true, settings: S });
+      const got = mx.scheduleSet(lib, { settings: S, index0: off }).plans[0];
+      const want = Brain.planTransition(Engine.infoOf(lib[0]), Engine.infoOf(lib[1]), { entryBar: 0, settings: S, index: 1 + off });
+      total++; if (got.type === want.type && got.swapBar === want.swapBar && got.blendBars === want.blendBars) same++;
+    }
+    return { same, total };
+  });
+  check("export: the seeded choices follow the live set's position", seeded.same === seeded.total, seeded.same + "/" + seeded.total);
+
   // ---- vibes and settings
   const chips = await page.$$eval("#vibes .chip-btn", (b) => b.map((x) => x.textContent));
   check("vibe chips present", chips.length === 6 && chips.indexOf("Warehouse") >= 0, chips.join(", "));
-  check("default vibe is 'Let the AI decide'", (await page.getAttribute("#vibes .chip-btn[aria-checked=true]", "data-vibe")) === "balanced");
+  check("default vibe is 'Let the AI decide'", (await page.getAttribute("#vibes .chip-btn[aria-pressed=true]", "data-vibe")) === "balanced");
   await page.click('#vibes [data-vibe="warehouse"]');
   const wh = await page.evaluate(() => window.__dj.player.settings);
   check("picking a vibe applies it", wh.style === "club" && wh.flair === 80 && wh.arc === "wave", JSON.stringify([wh.style, wh.flair, wh.arc]));
