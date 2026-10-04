@@ -276,6 +276,169 @@ function makeWav(seconds, bpm) {
   await page.click("#btn-demo");
   await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
 
+  // ---- long lists hide themselves: a long track list is not drawn (summary instead), auto-hide can be turned off,
+  //      only a page of rows is drawn, edit controls exist only on the row being edited, and nothing redraws the list while files load
+  await page.evaluate(() => { const p = window.__dj.player, base = p.library[0]; for (let i = 0; i < 8; i++) p.add(Object.assign({}, base, { id: 8000 + i, key: "fake-s" + i, title: "Sticky Track " + i, artist: "A" })); window.__dj.render(); });
+  check("twelve tracks are shown, not hidden", (await page.locator("#tracks .trk").count()) === 12);
+  const stickyId = await page.evaluate(() => window.__dj.player.library[2].id);
+  await page.click('#tracks button[data-act=edit][data-id="' + stickyId + '"]');
+  await page.waitForFunction(() => document.querySelectorAll("#tracks select[data-act=key]").length === 1, null, { timeout: 3000 });
+  await page.evaluate(() => { const p = window.__dj.player; p.add(Object.assign({}, p.library[0], { id: 8100, key: "fake-s100", title: "Sticky Track 100", artist: "A" })); window.__dj.render(); });
+  check("a 13th track does not collapse a list whose row is being edited", (await page.locator("#tracks .trk").count()) === 13 && (await page.locator("#tracks select[data-act=key]").count()) === 1);
+  await page.click('#tracks button[data-act=edit][data-id="' + stickyId + '"]');
+  await page.evaluate(() => { document.activeElement && document.activeElement.blur(); const p = window.__dj.player; p.library = p.library.filter((t) => !/^fake-s/.test(t.key)); p.queue = p.queue.filter((t) => !/^fake-s/.test(t.key)); window.__dj.render(); });
+  const hide = await page.evaluate(() => {
+    const p = window.__dj.player, base = p.library[0], R = {};
+    for (let i = 0; i < 30; i++) p.add(Object.assign({}, base, { id: 5000 + i, key: "fake" + i, title: "Fake Track " + i, artist: "Artist " + (i % 7) }));
+    window.__dj.render();
+    R.rowsHidden = document.querySelectorAll("#tracks .trk").length;
+    R.summary = document.getElementById("tracks-sum").textContent;
+    R.button = document.getElementById("btn-hide").textContent;
+    return R;
+  });
+  check("a long list starts hidden, with a summary instead of rows", hide.rowsHidden === 0 && /34 tracks hidden/.test(hide.summary) && /up next/.test(hide.summary) && hide.button === "Show tracks (34)", JSON.stringify(hide));
+  check("nothing empty is left drawn while the list is hidden", !(await page.locator("#tracks-more").isVisible()) && !(await page.locator("#loading").isVisible()));
+  await page.click("#btn-hide");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk").length === 34, null, { timeout: 3000 })
+    .then(() => check("Show draws the rows", true), () => check("Show draws the rows", false));
+  check("the button turns into Hide, and says whether the list is open", (await page.textContent("#btn-hide")) === "Hide tracks" && (await page.getAttribute("#btn-hide", "aria-expanded")) === "true");
+  check("the edit controls are not built for every row", (await page.locator("#tracks select[data-act=key]").count()) === 0);
+  const fid = await page.evaluate(() => window.__dj.player.library[5].id);
+  await page.click('#tracks button[data-act=edit][data-id="' + fid + '"]');
+  await page.waitForFunction(() => document.querySelectorAll("#tracks select[data-act=key]").length === 1, null, { timeout: 3000 })
+    .then(() => check("opening a row builds just that row's controls", true), async () => check("opening a row builds just that row's controls", false, String(await page.locator("#tracks select[data-act=key]").count())));
+  await page.click('#tracks button[data-act=edit][data-id="' + fid + '"]');
+  await page.click("#btn-hide");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk").length === 0, null, { timeout: 3000 })
+    .then(() => check("Hide removes the rows again", true), () => check("Hide removes the rows again", false));
+  await page.evaluate(() => { const p = window.__dj.player; p.queue.unshift(Object.assign({}, p.library[0], { id: 8200, key: "fake-long", title: "Some_Artist_-_Some_Track_Title_(Original_Mix)_[Label_Records]_320kbps_www.downloadsite.com_extra_long_name.mp3", artist: "A" })); window.__dj.render(); });
+  await page.setViewportSize({ width: 390, height: 900 }); await page.waitForTimeout(250);
+  const widths = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth, summary: document.getElementById("tracks-sum").textContent }));
+  check("a long file name in the hidden-list summary does not widen the page", widths.scroll <= widths.inner + 1 && /…/.test(widths.summary), JSON.stringify(widths));
+  await page.setViewportSize({ width: 1100, height: 1300 });
+  await page.evaluate(() => { const p = window.__dj.player; p.queue = p.queue.filter((t) => t.key !== "fake-long"); window.__dj.render(); });
+  await page.uncheck("#auto-hide");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk").length === 34, null, { timeout: 3000 })
+    .then(() => check("with auto-hide off a long list is shown", true), () => check("with auto-hide off a long list is shown", false));
+  check("the auto-hide choice is remembered", (await page.evaluate(() => JSON.parse(localStorage.getItem("autopilot-dj-view")).autoHide)) === false);
+  await page.check("#auto-hide");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk").length === 0, null, { timeout: 3000 })
+    .then(() => check("turning auto-hide back on hides it again", true), () => check("turning auto-hide back on hides it again", false));
+  const big = await page.evaluate(async () => {
+    const p = window.__dj.player, base = p.library[0], R = {};
+    for (let i = 0; i < 270; i++) p.add(Object.assign({}, base, { id: 6000 + i, key: "fake-b" + i, title: "Bulk Track " + i, artist: "Artist " + (i % 30) }));
+    const time = (fn, reps) => { const t0 = performance.now(); for (let i = 0; i < reps; i++) fn(); return (performance.now() - t0) / reps; };
+    window.__dj.render();
+    R.n = p.library.length;
+    R.hiddenMs = time(() => { p.queue.push(p.queue.shift()); window.__dj.render(); }, 10);
+    R.hiddenNodes = document.getElementById("tracks").getElementsByTagName("*").length;
+    return R;
+  });
+  check("300 tracks: redrawing a hidden list is cheap and draws nothing", big.n >= 300 && big.hiddenNodes === 0 && big.hiddenMs < 5, JSON.stringify(big));
+  await page.click("#btn-hide");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk").length === 60, null, { timeout: 3000 })
+    .then(() => check("a shown long list draws one page of rows", true), async () => check("a shown long list draws one page of rows", false, String(await page.locator("#tracks .trk").count())));
+  check("and offers the rest a page at a time", /Show 60 more \(\d+ not drawn\)/.test(await page.textContent("#tracks-more")), await page.textContent("#tracks-more"));
+  // files arriving: a placeholder's progress must not touch the rows of a list that is SHOWN
+  const arriving = await page.evaluate(async () => {
+    let muts = 0; const mo = new MutationObserver((l) => { muts += l.length; }); mo.observe(document.getElementById("tracks"), { childList: true, subtree: true, attributes: true, characterData: true });
+    const ph = { name: "Incoming.wav", progress: 0 }; window.__dj.loading.push(ph);
+    for (let i = 1; i <= 20; i++) { ph.progress = i / 20; window.__dj.render(); }
+    await new Promise((r) => setTimeout(r, 100));
+    const R = { loadingRow: document.querySelectorAll("#loading .trk").length, rows: document.querySelectorAll("#tracks .trk").length, stopShown: !document.getElementById("btn-stop").hidden };
+    window.__dj.loading.splice(window.__dj.loading.indexOf(ph), 1); window.__dj.render();
+    mo.disconnect(); R.mutations = muts;
+    return R;
+  });
+  check("files arriving show their progress without touching the rows of a shown list", arriving.loadingRow === 1 && arriving.rows === 60 && arriving.mutations === 0 && arriving.stopShown, JSON.stringify(arriving));
+  await page.click("#tracks-more");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk").length === 120, null, { timeout: 3000 })
+    .then(() => check("Show more draws the next page", true), () => check("Show more draws the next page", false));
+  const shownCost = await page.evaluate(() => { const p = window.__dj.player, t0 = performance.now(); for (let i = 0; i < 10; i++) { p.queue.push(p.queue.shift()); window.__dj.render(); } return (performance.now() - t0) / 10; });
+  check("even with 120 rows drawn a change redraws in a few milliseconds", shownCost < 25, shownCost.toFixed(1) + " ms");
+  await page.click("#btn-hide");
+  // a long Spotify list: counts and the queue buttons stay, the rows are hidden until asked for
+  const longCsv = "Track Name,Artist Name(s),Duration (ms),Key,Mode,Tempo\n" + Array.from({ length: 130 }, (_, i) => i === 0 ? "Fake Track 3,Artist 3,150000,4,0,127" : "Song " + i + ",Someone " + (i % 9) + ",200000,0,1,120").join("\n") + "\n";
+  fs.writeFileSync(path.join(OUT, "long.csv"), longCsv);
+  await page.setInputFiles("#sp-csv", path.join(OUT, "long.csv"));
+  await page.waitForSelector("#sp-q1");
+  check("a long Spotify list starts hidden behind its counts", (await page.locator("#sp-result .match").count()) === 0 && /1 of 130/.test(await page.textContent("#sp-result p")) && /Show list \(130\)/.test(await page.textContent("#sp-result")), await page.textContent("#sp-result p"));
+  await page.click('#sp-result button[data-act=toggle]');
+  check("Show list draws a page of it", (await page.locator("#sp-result .match").count()) === 60);
+  check("and offers the rest", /Show 60 more/.test(await page.textContent("#sp-result button[data-act=more]")));
+  await page.click('#sp-result button[data-act=more]');
+  check("Show more draws the next page of the Spotify list", (await page.locator("#sp-result .match").count()) === 120);
+  await page.focus('#sp-result button[data-act=more]'); await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll("#sp-result .match").length === 130, null, { timeout: 3000 });
+  const heldFocus = await page.evaluate(() => ({ tag: document.activeElement.tagName, inside: document.getElementById("sp-result").contains(document.activeElement) }));
+  check("when the last Show more is used from the keyboard focus moves to the list's own button, not the top of the page", heldFocus.inside, JSON.stringify(heldFocus));
+  await page.click('#sp-result button[data-act=toggle]');
+  check("Hide list takes the rows away again", (await page.locator("#sp-result .match").count()) === 0 && (await page.locator("#sp-q1").count()) === 1);
+  await page.click("#sp-q1");
+  const qt = await page.evaluate(() => window.__dj.player.queue.map((t) => t.title).join());
+  check("the queue buttons work while the list is hidden", /^Fake Track \d+$/.test(qt), qt);        // (the stand-in tracks are near-identical, so which one matches is not the point)
+  // tidy up the stand-in tracks
+  await page.evaluate(() => { const p = window.__dj.player; const real = (t) => !/^fake/.test(t.key); p.library = p.library.filter(real); p.queue = p.library.slice(); p.onChange(); });
+  await page.waitForTimeout(200);
+
+  // ---- Remove all while files are still being added drops them; Stop adding keeps what is there; two batches at once lose
+  //      nothing; and the library holds 50 tracks
+  const many = [];
+  for (let i = 0; i < 10; i++) { const f = path.join(OUT, "Batch Artist - Song " + i + ".wav"); fs.writeFileSync(f, makeWav(120, 118 + i)); many.push(f); }
+  const settle = () => page.waitForFunction(() => !window.__dj.loading.length && document.getElementById("btn-stop").hidden, null, { timeout: 90000 });
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  await page.setInputFiles("#file-in", many);
+  await page.waitForFunction(() => window.__dj.player.library.length >= 1, null, { timeout: 60000 });
+  const midway = await page.evaluate(() => ({ lib: window.__dj.player.library.length, clearEnabled: !document.getElementById("btn-clear").disabled, stopShown: !document.getElementById("btn-stop").hidden }));
+  check("while files are still being added the Remove all and Stop adding buttons are there", midway.lib < 10 && midway.clearEnabled && midway.stopShown, JSON.stringify(midway));
+  const csv20 = "Track Name,Artist Name(s),Duration (ms),Key,Mode,Tempo\n" + Array.from({ length: 20 }, (_, i) => "Batch Artist - Song " + i + ",Batch Artist," + 120000 + ",0,1,120").join("\n") + "\n";
+  fs.writeFileSync(path.join(OUT, "arriving.csv"), csv20);
+  await page.setInputFiles("#sp-csv", path.join(OUT, "arriving.csv"));
+  await page.waitForSelector("#sp-q1");
+  const during = await page.evaluate(() => ({ text: document.querySelector("#sp-result p").textContent, adding: !document.getElementById("btn-stop").hidden }));
+  check("a Spotify list loaded while files are still arriving is counted straight away", /of 20 tracks/.test(during.text) && during.adding, JSON.stringify(during));
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForTimeout(5000);
+  const dropped = await page.evaluate(async () => ({ lib: window.__dj.player.library.length, placeholders: document.querySelectorAll("#loading .trk").length, saved: (await window.__dj.store.all()).length, stopShown: !document.getElementById("btn-stop").hidden, hint: document.querySelectorAll("#tracks .empty-lib").length }));
+  check("Remove all in the middle of adding drops the rest: nothing carries on, nothing is saved", dropped.lib === 0 && dropped.placeholders === 0 && dropped.saved === 0 && !dropped.stopShown, JSON.stringify(dropped));
+  check("and the empty library says so", dropped.hint === 1);
+  await page.setInputFiles("#file-in", many);
+  await page.waitForFunction(() => window.__dj.player.library.length >= 2, null, { timeout: 60000 });
+  await page.click("#btn-stop");
+  await page.waitForTimeout(3000);
+  const stoppedAdding = await page.evaluate(() => ({ lib: window.__dj.player.library.length, placeholders: document.querySelectorAll("#loading .trk").length, stopShown: !document.getElementById("btn-stop").hidden }));
+  await page.waitForTimeout(2500);
+  const stoppedLater = await page.evaluate(() => window.__dj.player.library.length);
+  check("Stop adding keeps what was added and starts no more", stoppedAdding.lib >= 2 && stoppedAdding.lib < 10 && stoppedAdding.placeholders === 0 && !stoppedAdding.stopShown && stoppedLater === stoppedAdding.lib, JSON.stringify([stoppedAdding, stoppedLater]));
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  const errsBefore = errors.length;
+  await page.setInputFiles("#file-in", many.slice(0, 4));
+  await page.waitForTimeout(150);
+  await page.setInputFiles("#file-in", many.slice(4, 6));
+  await page.waitForFunction(() => window.__dj.player.library.length === 6, null, { timeout: 90000 })
+    .then(() => check("two batches added at once lose nothing", true), async () => check("two batches added at once lose nothing", false, String(await page.evaluate(() => window.__dj.player.library.length))));
+  check("and raise no errors", errors.length === errsBefore, errors.slice(errsBefore).join(" | "));
+  await settle();
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  await page.evaluate(() => { const p = window.__dj.player; for (let i = 0; i < 48; i++) p.add({ id: 7000 + i, key: "fake-l" + i, title: "Limit Track " + i, artist: "A", buffer: { length: 10, numberOfChannels: 1, duration: 1 }, analysis: { bpm: 120, key: { camelot: "8A", name: "A" }, energy: 5, loudnessDb: -12, bars: 8, sections: [], cues: {} }, peaks: new Float32Array(4), fine: new Float32Array(4), duration: 1, keyOverride: null, shiftBeats: 0 }); });
+  await page.setInputFiles("#file-in", many.slice(0, 4));
+  await page.waitForFunction(() => window.__dj.player.library.length === 50, null, { timeout: 90000 });
+  await settle();
+  await page.waitForTimeout(300);
+  const limited = await page.evaluate(() => ({ lib: window.__dj.player.library.length, note: window.__dj.player.log.map((l) => l.text).join(" | "), stat: document.getElementById("lib-stat").textContent }));
+  check("the library holds 50 tracks and says why the rest were not added", limited.lib === 50 && /holds up to 50 tracks/.test(limited.note) && /\(the limit\)/.test(limited.stat), JSON.stringify([limited.lib, limited.stat]));
+  await page.click("#btn-hide");                                                     // an explicit Show ...
+  await page.click("#btn-clear"); await page.click("#btn-clear");                    // ... must not outlive Remove all
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  await page.waitForTimeout(300);
+  check("after Remove all the list is empty and says so, whatever Show or Hide was chosen before", (await page.locator("#tracks .empty-lib").count()) === 1 && (await page.locator("#tracks").isVisible()));
+  await page.click("#btn-demo");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
+  check("and auto-hide works again afterwards (4 tracks are shown, not hidden)", (await page.locator("#tracks .trk").count()) === 4);
+
   // ---- vibes and settings
   const chips = await page.$$eval("#vibes .chip-btn", (b) => b.map((x) => x.textContent));
   check("vibe chips present", chips.length === 6 && chips.indexOf("Warehouse") >= 0, chips.join(", "));

@@ -83,29 +83,41 @@ var Spotify = (function () {
   function tokens(s) { return norm(s).split(" ").filter(function (w) { return w.length > 1; }); }
 
   // How likely it is that `local` ({title, artist, duration}) is `sp`.
-  function matchScore(sp, local) {
-    const hay = " " + norm((local.artist || "") + " " + (local.title || "")) + " ";
-    const tt = tokens(sp.title);
+  // the score of one entry against one file, given the entry's tokens and the file's text already prepared
+  function scoreOf(sp, tt, at, hay, local) {
     if (!tt.length) return 0;
-    const hit = tt.filter(function (w) { return hay.indexOf(" " + w + " ") >= 0; }).length / tt.length;
-    const at = [].concat.apply([], sp.artists.map(tokens));
-    const art = at.length ? at.filter(function (w) { return hay.indexOf(" " + w + " ") >= 0; }).length / at.length : 0.5;
+    let hit = 0;
+    for (let i = 0; i < tt.length; i++) if (hay.indexOf(" " + tt[i] + " ") >= 0) hit++;
+    hit /= tt.length;
+    let art = 0.5;
+    if (at.length) { let a = 0; for (let i = 0; i < at.length; i++) if (hay.indexOf(" " + at[i] + " ") >= 0) a++; art = a / at.length; }
     let dur = 0.5;
     if (sp.durationMs && local.duration) dur = Math.abs(sp.durationMs / 1000 - local.duration) <= 6 ? 1 : 0;
     return 0.6 * hit + 0.3 * art + 0.1 * dur;
   }
+  const hayOf = function (local) { return " " + norm((local.artist || "") + " " + (local.title || "")) + " "; };
+  const artistTokens = function (sp) { return [].concat.apply([], sp.artists.map(tokens)); };
+
+  function matchScore(sp, local) {
+    return scoreOf(sp, tokens(sp.title), artistTokens(sp), hayOf(local), local);
+  }
 
   // For each Spotify entry, the best unused local file above the threshold.
+  // (The text of each file is prepared once, not once per entry: with a long list
+  // and a big library the work is entries x files.)
   function matchTracks(spTracks, locals, threshold) {
     threshold = threshold == null ? 0.65 : threshold;
-    const used = new Set();
+    const used = new Set(), hays = locals.map(hayOf);
     return spTracks.map(function (sp) {
+      const tt = tokens(sp.title), at = artistTokens(sp);
       let best = null, bestScore = threshold;
-      locals.forEach(function (l) {
-        if (used.has(l)) return;
-        const s = matchScore(sp, l);
-        if (s > bestScore) { bestScore = s; best = l; }
-      });
+      if (tt.length) {
+        for (let j = 0; j < locals.length; j++) {
+          if (used.has(locals[j])) continue;
+          const s = scoreOf(sp, tt, at, hays[j], locals[j]);
+          if (s > bestScore) { bestScore = s; best = locals[j]; }
+        }
+      }
       if (best) used.add(best);
       return { spotify: sp, local: best, score: best ? bestScore : 0 };
     });
