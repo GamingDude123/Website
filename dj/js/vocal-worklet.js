@@ -35,7 +35,7 @@
  * before its first samples leave the node).
  *
  * Bypass: when cut = solo = 0 the gain would be exactly 1, so the frame is added to the overlap
- * buffer straight from the input (no FFT), about 15x cheaper, bit-identical output.  The first
+ * buffer straight from the input (no FFT), 7-14x cheaper, bit-identical output.  The first
  * block with cut or solo > 0 does the FFT work it skipped (three extra frames, once) and rebuilds
  * the coherence state from the input ring, so switching on is seamless.  (To keep the analysis
  * running before a planned transition anyway, set cut to 1e-4.)
