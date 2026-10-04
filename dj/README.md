@@ -116,6 +116,19 @@ and the next mix always agree with what you hear. The tests drive a track whose
 pitch encodes its position (`test/browser.test.js`) and hold the audio to an
 independent simulation.
 
+## Your files stay put
+
+Files you add are saved in this browser (IndexedDB, as the original bytes plus
+the analysis, a few kilobytes), so a refresh no longer empties the list. On the
+next visit each file is decoded again, the saved analysis is reused, and your
+key and downbeat fixes and the queue order come back. The generated demos are
+re-rendered. Nothing is uploaded; **Remove** deletes a track's saved copy and
+**Remove all** (press twice) empties the library. The counter says *saved in
+this browser* when it worked, and a note says so once if the browser refuses
+(a private window, a full disk): the page then works as before, just forgetfully.
+Browsers may throw away site storage when the disk is short of space, so the page
+asks them to keep it, but cannot make them.
+
 ## How many tracks?
 
 There is no cap in the app. The limit is your browser's memory: a decoded
@@ -175,6 +188,19 @@ challenge we sent), the `state` check, token refresh, paging, the playlist
 endpoint's rename (`/items`, falling back to `/tracks`), and `null` entries for
 removed tracks, which that test found crashing the import. What no test can
 show is that Spotify itself accepts the requests; that needs a real app.
+
+## SoundCloud
+
+Same story as Spotify: SoundCloud audio plays inside its own player and the page
+never gets it, so it cannot be mixed. What works, with no login and no key: paste a
+public playlist, profile or track link (or a secret link) and the page asks
+SoundCloud's own embedded player which tracks are in it, matches them to files you
+own, and shows listen / buy / free-download links for the rest. If SoundCloud does
+not answer (an ad blocker or privacy setting blocking `w.soundcloud.com`, a private
+or removed link) the message appears in the SoundCloud card itself and the
+**paste a list** box opens: one `Artist - Title` per line always works, with
+nothing sent anywhere. The widget path has only been tested against a stand-in,
+not the real service.
 
 ## Tests
 

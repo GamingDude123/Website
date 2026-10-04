@@ -29,6 +29,20 @@ function check(name, cond, extra) {
   if (!cond) fails++;
 }
 
+function makeWav(seconds, bpm) {
+  const sr = 44100, n = sr * seconds, buf = Buffer.alloc(44 + n * 2);
+  buf.write("RIFF", 0); buf.writeUInt32LE(36 + n * 2, 4); buf.write("WAVEfmt ", 8); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(sr, 24); buf.writeUInt32LE(sr * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34); buf.write("data", 36); buf.writeUInt32LE(n * 2, 40);
+  const beat = 60 / bpm; let seed = 1;
+  for (let i = 0; i < n; i++) {
+    const t = i / sr, tb = t % beat, tb2 = (t + beat / 2) % beat;
+    let v = Math.sin(2 * Math.PI * (55 + 80 * Math.exp(-tb * 30)) * tb) * Math.exp(-tb * 9) * 0.8;
+    seed = (seed * 1664525 + 1013904223) >>> 0; v += ((seed / 2147483648) - 1) * Math.exp(-tb2 * 60) * 0.25;
+    buf.writeInt16LE(Math.max(-1, Math.min(1, v)) * 32000, 44 + i * 2);
+  }
+  return buf;
+}
+
 (async () => {
   const server = http.createServer((req, res) => {
     const rel = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
@@ -222,6 +236,46 @@ function check(name, cond, extra) {
   });
   check("export: the seeded choices follow the live set's position", seeded.same === seeded.total, seeded.same + "/" + seeded.total);
 
+  // ---- the library survives a refresh: the files themselves, the by-hand fixes and the queue order
+  const ids = await page.evaluate(() => Object.fromEntries(window.__dj.player.library.map((t) => [t.title, t.id])));
+  fs.writeFileSync(path.join(OUT, "Test Artist - Four On The Floor.wav"), makeWav(40, 124));
+  await page.setInputFiles("#file-in", path.join(OUT, "Test Artist - Four On The Floor.wav"));
+  await page.waitForFunction(() => window.__dj.player.library.length >= 5, null, { timeout: 60000 });
+  await page.click('button[data-act=edit][data-id="' + ids["Chrome Hearts"] + '"]');
+  await page.selectOption('select[data-act=key][data-id="' + ids["Chrome Hearts"] + '"]', "5A");
+  await page.click('button[data-act=shift][data-id="' + ids["Chrome Hearts"] + '"]');
+  await page.click('button[data-act=edit][data-id="' + ids["Neon Static"] + '"]');
+  await page.click('button[data-act=next][data-id="' + ids["Neon Static"] + '"]');
+  await page.waitForTimeout(400);
+  check("the page says the files are kept", /saved in this browser/.test(await page.textContent("#lib-stat")), await page.textContent("#lib-stat"));
+  await page.reload();
+  await page.evaluate(() => window.__dj.restored);
+  const back = await page.evaluate(() => { const p = window.__dj.player, byTitle = (n) => p.library.find((t) => t.title === n); const w = byTitle("Four On The Floor"), c = byTitle("Chrome Hearts");
+    return { n: p.library.length, titles: p.library.map((t) => t.title), wav: w && { artist: w.artist, bpm: w.analysis.bpm, dur: w.duration, decoded: w.buffer.length > 0, peaks: w.peaks.length }, key: c && c.keyOverride, shift: c && c.shiftBeats, first: p.queue[0] && p.queue[0].title, queued: p.queue.length }; });
+  check("after a refresh every file is back", back.n === 5 && back.wav && back.wav.decoded, JSON.stringify(back.titles));
+  check("a file you added comes back with its artist, tempo and length", back.wav && back.wav.artist === "Test Artist" && Math.abs(back.wav.bpm - 124) < 1.5 && Math.abs(back.wav.dur - 40) < 0.1, JSON.stringify(back.wav));
+  check("the key and downbeat fixes you made come back", back.key === "5A" && back.shift === 1, back.key + " / " + back.shift);
+  check("the queue order comes back, and everything is queued", back.first === "Neon Static" && back.queued === 5, back.first + " / " + back.queued);
+  check("the demos are restored without being added again", back.titles.filter((t) => t === "Midnight Warehouse").length === 1);
+  const ids2 = await page.evaluate(() => Object.fromEntries(window.__dj.player.library.map((t) => [t.title, t.id])));
+  await page.click('button[data-act=edit][data-id="' + ids2["Four On The Floor"] + '"]');
+  await page.click('button[data-act=del][data-id="' + ids2["Four On The Floor"] + '"]');
+  await page.click('button[data-act=edit][data-id="' + ids2["Chrome Hearts"] + '"]');
+  await page.selectOption('select[data-act=key][data-id="' + ids2["Chrome Hearts"] + '"]', "");
+  for (let i = 0; i < 3; i++) await page.click('button[data-act=shift][data-id="' + ids2["Chrome Hearts"] + '"]');
+  await page.waitForTimeout(300);
+  await page.reload();
+  await page.evaluate(() => window.__dj.restored);
+  const back2 = await page.evaluate(() => { const p = window.__dj.player, c = p.library.find((t) => t.title === "Chrome Hearts"); return { n: p.library.length, key: c.keyOverride, shift: c.shiftBeats }; });
+  check("removing a track removes its saved copy, and edits are saved again", back2.n === 4 && back2.key === null && back2.shift === 0, JSON.stringify(back2));
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForTimeout(400);
+  await page.reload();
+  await page.evaluate(() => window.__dj.restored);
+  check("Remove all really empties the saved library", (await page.evaluate(() => window.__dj.player.library.length)) === 0);
+  await page.click("#btn-demo");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
+
   // ---- vibes and settings
   const chips = await page.$$eval("#vibes .chip-btn", (b) => b.map((x) => x.textContent));
   check("vibe chips present", chips.length === 6 && chips.indexOf("Warehouse") >= 0, chips.join(", "));
@@ -249,9 +303,9 @@ function check(name, cond, extra) {
   await page.click("details#tune summary");
   await page.click("#tune-reset");
   check("back-to-defaults resets", (await page.evaluate(() => window.__dj.player.settings.flair)) === 60);
-  // the demos were lost with the reload; bring them back for the live part
-  await page.click("#btn-demo");
-  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
+  // the demos come back by themselves after every reload
+  await page.evaluate(() => window.__dj.restored);
+  check("the demos are still there after all those reloads", (await page.evaluate(() => window.__dj.player.library.length)) === 4);
 
   // ---- the engine against a frequency-coded track: its pitch at time t says exactly where it is.
   //      Checks the DJ pause, the scrub, and the new ways out against an independent simulation.
@@ -564,8 +618,8 @@ function check(name, cond, extra) {
   await page.route("https://w.soundcloud.com/**", (route) => {
     if (/api\.js/.test(route.request().url())) {
       return route.fulfill({ contentType: "application/javascript", body:
-        'window.SC = { Widget: Object.assign(function () { return { bind: function (ev, cb) { if (ev === "ready") setTimeout(cb, 20); }, unbind: function () {},' +
-        ' getSounds: function (cb) { cb([{ title: "Midnight Warehouse", user: { username: "Demo" }, duration: 150000, permalink_url: "https://soundcloud.com/demo/mw" },' +
+        'window.SC = { Widget: Object.assign(function (frame) { var empty = /empty/.test(frame.src); return { bind: function (ev, cb) { if (ev === "ready") setTimeout(cb, 20); }, unbind: function () {},' +
+        ' getSounds: function (cb) { if (empty) { cb([]); return; } cb([{ title: "Midnight Warehouse", user: { username: "Demo" }, duration: 150000, permalink_url: "https://soundcloud.com/demo/mw" },' +
         ' { title: "Some Artist - Not In Library", user: { username: "Label" }, duration: 200000, permalink_url: "https://soundcloud.com/some/nil", purchase_url: "https://example.com/buy", downloadable: true },' +
         ' { title: "Bad Link", user: { username: "x" }, permalink_url: "javascript:alert(1)", purchase_url: "http://insecure.example" }]); },' +
         ' getCurrentSound: function (cb) { cb(null); } }; }, { Events: { READY: "ready", ERROR: "error" } }) };' });
@@ -575,7 +629,11 @@ function check(name, cond, extra) {
   await page.click("details.soundcloud summary");
   await page.fill("#sc-link", "https://evil.example.com/steal");
   await page.click("#sc-read");
-  check("soundcloud: a link that is not soundcloud.com is refused", /soundcloud\.com link/.test(await page.textContent("#log")) || (await page.evaluate(() => window.__dj.player.log.map((l) => l.text).join("|"))).includes("does not look like"));
+  check("soundcloud: a link that is not soundcloud.com is refused, in the card where it is seen", /does not look like a soundcloud\.com link/.test(await page.textContent("#sc-result")), await page.textContent("#sc-result"));
+  await page.fill("#sc-link", "https://soundcloud.com/demo/sets/empty-set");
+  await page.click("#sc-read");
+  await page.waitForFunction(() => /had no tracks/.test(document.getElementById("sc-result").textContent), null, { timeout: 15000 })
+    .then(() => check("soundcloud: an empty answer is explained in the card, after retrying", true), async () => check("soundcloud: an empty answer is explained in the card, after retrying", false, await page.textContent("#sc-result")));
   await page.fill("#sc-link", "https://soundcloud.com/demo/sets/my-set");
   await page.click("#sc-read");
   await page.waitForSelector("#sc-q1");
@@ -585,7 +643,7 @@ function check(name, cond, extra) {
   await page.click("#sc-q1");
   const scq = await page.evaluate(() => window.__dj.player.queue.map((t) => t.title));
   check("soundcloud: matched file is queued", scq.join() === "Midnight Warehouse", scq.join());
-  await page.click("details.soundcloud details.paste summary");
+  await page.evaluate(() => { document.querySelector("details.soundcloud details.paste").open = true; });      // (an error opens it by itself)
   await page.fill("#sc-paste", "1. Chrome Hearts\nNeon Static\n");
   await page.click("#sc-paste-go");
   check("soundcloud: a pasted list works without the widget", /2 of 2/.test(await page.textContent("#sc-result")), await page.textContent("#sc-result p"));
