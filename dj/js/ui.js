@@ -414,13 +414,13 @@
     { group: "Effects", items: [
       { key: "fx", type: "toggle", label: "Effects on" },
       { key: "flair", type: "range", label: "Flair", unit: PCT, hint: "How showy the builds get. Low is just the blend." },
+      { key: "echoAmount", type: "range", label: "Echo", unit: PCT },
+      { key: "reverbAmount", type: "range", label: "Reverb tails", unit: PCT },
       { key: "risers", type: "toggle", label: "Risers" },
       { key: "impacts", type: "toggle", label: "Sub hits" },
       { key: "sweeps", type: "toggle", label: "Soft crashes & downlifters" },
       { key: "rolls", type: "toggle", label: "Loop rolls" },
       { key: "echoThrows", type: "toggle", label: "Echo throws" },
-      { key: "echoAmount", type: "range", label: "Echo", unit: PCT },
-      { key: "reverbAmount", type: "range", label: "Reverb tails", unit: PCT },
     ] },
     { group: "Output", items: [
       { key: "levelMatch", type: "toggle", label: "Match track loudness" },

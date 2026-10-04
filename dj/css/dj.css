@@ -1,7 +1,7 @@
 /* Soft, quiet, a little dreamy: dusk gradients, frosted glass, big radii,
    one accent per deck, and as little visible chrome as possible. */
 :root {
-  --ink: #f4f0ff; --dim: #b4aad6; --faint: #7f75a8;
+  --ink: #f4f0ff; --dim: #b4aad6; --faint: #a69dcc;
   --glass: rgba(255,255,255,.07); --glass-2: rgba(255,255,255,.12); --edge: rgba(255,255,255,.14);
   --a: #ff9ad5; --b: #8fe6ff; --go: #b9ffd6; --warn: #ffd98f;
   --r: 26px; --r-sm: 14px;

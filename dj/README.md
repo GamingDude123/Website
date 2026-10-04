@@ -39,6 +39,37 @@ The three moves:
 Every decision is written in plain words in the strip under the decks and in the
 log.
 
+## Vibes and the AI settings
+
+Pick a **vibe** under the decks and it sets everything at once: Let the AI
+decide, Warehouse, Main stage, Late night, Sunrise or Open. **Fine-tune** under
+*Details* opens the individual settings: style of mix, blend length, bass swap
+style, how long each track plays, variety, energy arc, key strictness, how far
+apart tempos may be, how the next track is chosen, flair, echo and reverb
+amounts, and which effects are allowed. Changing one by hand switches the vibe to
+*Custom*. Settings are remembered in your browser.
+
+**Auto-tune** (on by default) is the automix: for each transition it nudges the
+flair, play time and bass-swap style to suit the two tracks — a smooth blend
+for a gentle step, a hard swap when the key matches and the energy jumps. It
+writes what it changed into the reason text. The preview and the live mix use
+the same seeded choices, so what you preview is what plays.
+
+## Effects
+
+Everything is generated, nothing is sampled: a swept-noise **riser** with a
+rising pulse, a sub **impact** on the drop, a soft **crash** and a **downlifter**
+on exits, plus loop rolls and echo throws. Faders and EQ follow smooth curves,
+and the bass swap is equal-power so the low end never dips or doubles. Turn any
+of it off under *Effects*.
+
+## How many tracks?
+
+There is no cap in the app. The limit is your browser's memory: a decoded
+five-minute track takes about 50 MB. The counter above the list shows the
+estimate and warns past about 1.5 GB — if the tab slows or crashes, remove a few
+tracks or add them in smaller batches.
+
 ## Things to know
 
 - **Key detection is an estimate.** It is tuned on the synthetic demo tracks
