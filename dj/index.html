@@ -3,125 +3,124 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Autopilot DJ — a tech-house set that mixes itself</title>
-  <meta name="description" content="Drop in tracks and it beatmatches, bass-swaps, builds and drops them into a club-style set. Runs entirely in your browser.">
-  <meta name="theme-color" content="#07060d">
+  <title>Autopilot DJ — a set that mixes itself</title>
+  <meta name="description" content="Drop in tracks, pick a vibe, and it beatmatches, blends and drops them into a set. Runs entirely in your browser.">
+  <meta name="theme-color" content="#120d2b">
   <link rel="icon" href="../images/navbarlogo3.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap">
   <link rel="stylesheet" href="css/dj.css">
 </head>
 <body>
-<div class="glow" aria-hidden="true"></div>
+<div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
 
 <header class="top">
   <a class="back" href="../index.html" title="Back to the site" aria-label="Back to the site">&#8592;</a>
-  <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><h1>Autopilot DJ</h1><em>drop in tracks &mdash; it plays the set</em></div>
-  <button class="ghost" id="btn-about" aria-expanded="false">How it works</button>
+  <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><h1>Autopilot DJ</h1></div>
+  <button class="soft" id="btn-about" aria-expanded="false">How it works</button>
 </header>
 
 <div class="about" id="about" hidden>
-  <div class="about-grid">
-    <div><b>1 · Listen</b><p>Tempo, beat grid, the first beat of every bar, key (Camelot) and where the intro, breakdowns, drops and outro are.</p></div>
-    <div><b>2 · Choose</b><p>The next track by key fit, tempo and energy. Then a move: <i>bass swap</i>, <i>drop swap</i> or <i>echo out</i>.</p></div>
-    <div><b>3 · Lock</b><p>Both decks follow one tempo curve, so bar lines stay aligned while tempo glides to the new track&rsquo;s own.</p></div>
-    <div><b>4 · Perform</b><p>Every EQ swap, sweep, roll and riser is placed on the audio clock ahead of time, so a busy page can&rsquo;t make it late.</p></div>
-  </div>
-  <p class="fine">Signal processing and rules &mdash; not a neural network, nothing uploaded. It copies the <em>techniques</em> of club DJing; it has no taste or crowd sense. Analysis is an estimate: fix a wrong key or downbeat on the track row. Tempo changes are pitch-coupled, like vinyl.</p>
+  <p><b>Listen.</b> Every track is analysed here in your browser: tempo, beat grid, the first beat of each bar, key, and where the intro, breakdowns, drops and outro sit.</p>
+  <p><b>Choose.</b> The next track is picked for key, tempo and energy, and each handover is planned from what the two tracks allow &mdash; a long blend, a drop swap, or an echo out.</p>
+  <p><b>Glide.</b> Both decks share one tempo curve, so beats stay locked while the tempo eases over. Fades are shaped, never straight lines.</p>
+  <p class="fine">Signal processing and rules, not a neural network; nothing is uploaded. It copies the <em>techniques</em> of club DJing, not the taste. Analysis is an estimate &mdash; fix a wrong key or downbeat from a track&rsquo;s Edit button.</p>
 </div>
 
 <main>
+  <section class="hero">
+    <p class="eyebrow">Autopilot DJ</p>
+    <h2 class="hero-title">Your set, <em>mixed itself.</em></h2>
+    <p class="hero-sub">Drop in tracks, pick a vibe, press start.</p>
+  </section>
+
   <section class="booth">
-    <article class="deck" id="deck-A" data-label="A"><div class="empty"><b>A</b><span>Deck A</span></div></article>
+    <article class="deck" id="deck-A" data-label="A"><div class="empty"><b>A</b></div></article>
 
     <aside class="mixer">
-      <div class="mix-title" id="strip-title">Not playing</div>
+      <div class="mix-title" id="strip-title">Ready when you are</div>
       <div class="xf">
         <span class="xa">A</span>
         <div class="xf-track"><i id="strip-bar"></i><b id="xf-knob"></b></div>
         <span class="xb">B</span>
       </div>
       <div class="mix-time" id="strip-time"></div>
-      <ul class="why" id="strip-why"></ul>
-      <canvas id="meter" width="200" height="14" aria-label="Master level"></canvas>
-      <label class="vol">Volume <input type="range" id="rng-vol" min="0" max="1" step="0.01" value="0.9"></label>
+      <details class="why-wrap"><summary>why</summary><ul class="why" id="strip-why"></ul></details>
+      <canvas id="meter" width="200" height="10" aria-label="Master level"></canvas>
+      <label class="vol"><span>volume</span><input type="range" id="rng-vol" min="0" max="1" step="0.01" value="0.9"></label>
     </aside>
 
-    <article class="deck" id="deck-B" data-label="B"><div class="empty"><b>B</b><span>Deck B</span></div></article>
+    <article class="deck" id="deck-B" data-label="B"><div class="empty"><b>B</b></div></article>
   </section>
 
-  <section class="transport">
-    <div class="tr-main">
-      <button class="go" id="btn-go">&#9654; Start the set</button>
-      <button id="btn-pause" disabled>Pause</button>
-      <button class="accent" id="btn-mix" disabled title="Replace the planned transition with one that starts in a few bars">Mix now</button>
+  <section class="playbar">
+    <button class="go" id="btn-go">&#9654; Start the set</button>
+    <button class="soft" id="btn-pause" disabled>Pause</button>
+    <button class="soft glow-btn" id="btn-mix" disabled title="Replace the planned transition with one that starts in a few bars">Mix now</button>
+  </section>
+
+  <section class="vibes" aria-labelledby="vibes-h">
+    <h2 id="vibes-h">Vibe</h2>
+    <div class="chips" id="vibes" role="radiogroup" aria-label="Vibe"></div>
+    <p class="fine" id="vibe-hint"></p>
+  </section>
+
+  <section class="card tracks-card">
+    <div class="card-head">
+      <h2>Tracks <small id="lib-stat"></small></h2>
+      <div class="actions">
+        <button class="soft" id="btn-order" title="Re-order the queue for key, tempo and energy">Auto-order</button>
+        <button class="soft" id="btn-demo">+ Demo tracks</button>
+        <label class="filebtn primary">+ Your files<input type="file" id="file-in" accept="audio/*" multiple hidden></label>
+      </div>
     </div>
-    <div class="tr-opts">
-      <div class="opt"><span>Style</span>
-        <div class="seg" id="seg-style" role="radiogroup" aria-label="Transition style">
-          <button class="on" data-v="mixed" role="radio" aria-checked="true">Mixed</button>
-          <button data-v="smooth" role="radio" aria-checked="false">Smooth</button>
-          <button data-v="club" role="radio" aria-checked="false">Club</button>
-        </div>
-      </div>
-      <div class="opt"><span>Energy</span>
-        <select id="sel-arc">
-          <option value="build">Build up</option>
-          <option value="wave">Peaks &amp; valleys</option>
-          <option value="peak">Stay at peak</option>
-          <option value="warmup">Warm-up</option>
-        </select>
-      </div>
-      <label class="sw"><input type="checkbox" id="chk-endless" checked><i></i>Endless</label>
-      <label class="sw"><input type="checkbox" id="chk-fx" checked><i></i>Risers &amp; hits</label>
+    <div class="drop" id="drop"><b>Drop audio files here</b><span>MP3, WAV, M4A, FLAC &mdash; whatever your browser can decode</span></div>
+    <ol id="tracks"></ol>
+  </section>
+
+  <details class="card tune" id="tune">
+    <summary><h2>Fine-tune the AI</h2><span>auto-tune, blends, taste, effects</span></summary>
+    <div class="tune-body" id="tune-body"></div>
+  </details>
+
+  <details class="card perform">
+    <summary><h2>Perform &amp; export</h2><span>effect pads, save the mix</span></summary>
+    <div class="pads" aria-label="Performance effects">
+      <button class="pad p1" data-fx="echo"><b>Echo</b><small>throw</small></button>
+      <button class="pad p2" data-fx="sweep"><b>Filter</b><small>sweep</small></button>
+      <button class="pad p3" data-fx="riser"><b>Riser</b><small>2 bars</small></button>
+      <button class="pad p4" data-fx="impact"><b>Impact</b><small>hit</small></button>
+      <button class="pad p5" data-fx="crash"><b>Crash</b><small>soft</small></button>
+      <button class="pad p6" data-fx="down"><b>Downlift</b><small>2 bars</small></button>
     </div>
-  </section>
+    <p class="fine">Pads land on the next beat. Export renders the queue as one WAV file, with the same blends you'd hear live.</p>
+    <button class="soft" id="btn-export" title="Render the queue as one mixed WAV file">Export mix (WAV)</button>
+  </details>
 
-  <section class="pads" aria-label="Performance effects">
-    <button class="pad p1" data-fx="echo"><b>Echo</b><small>throw</small></button>
-    <button class="pad p2" data-fx="sweep"><b>Filter</b><small>sweep</small></button>
-    <button class="pad p3" data-fx="riser"><b>Riser</b><small>2 bars</small></button>
-    <button class="pad p4" data-fx="impact"><b>Impact</b><small>hit</small></button>
-  </section>
+  <details class="card log">
+    <summary><h2>What it&rsquo;s thinking</h2><span>every choice, in words</span></summary>
+    <ul id="log"></ul>
+  </details>
 
-  <div class="cols">
-    <section class="library">
-      <div class="lib-head">
-        <h2>Tracks</h2>
-        <div class="lib-actions">
-          <button id="btn-order" title="Re-order the queue for key, tempo and energy">Auto-order</button>
-          <button id="btn-export" title="Render the queue as one mixed WAV file">Export WAV</button>
-          <button id="btn-demo">+ Demo tracks</button>
-          <label class="filebtn primary">+ Your files<input type="file" id="file-in" accept="audio/*" multiple hidden></label>
-        </div>
-      </div>
-      <div class="drop" id="drop"><b>Drop audio files here</b><span>MP3, WAV, M4A, FLAC &mdash; whatever your browser can decode</span></div>
-      <ol id="tracks"></ol>
-    </section>
-
-    <aside class="side">
-      <section class="log">
-        <h2>What it&rsquo;s thinking</h2>
-        <ul id="log"></ul>
-      </section>
-
-      <details class="spotify">
-        <summary><h2>Spotify <small>playlist as setlist</small></h2></summary>
-        <p class="fine">Spotify streams can&rsquo;t be mixed &mdash; they&rsquo;re DRM-protected and the page never gets the audio. Instead, read a playlist and match each entry to a file you own and have added.</p>
-        <div class="sp-row">
-          <label class="filebtn">Import playlist CSV<input type="file" id="sp-csv" accept=".csv,text/csv" hidden></label>
-          <span class="or">or</span>
-          <input type="text" id="sp-client" placeholder="Spotify app Client ID" spellcheck="false" autocomplete="off">
-          <button id="sp-connect">Connect</button>
-          <select id="sp-lists" hidden></select>
-          <button id="sp-load" hidden>Load</button>
-          <button id="sp-off" hidden>Disconnect</button>
-        </div>
-        <p class="fine" id="sp-redirect"></p>
-        <div id="sp-result"></div>
-      </details>
-    </aside>
-  </div>
+  <details class="card spotify">
+    <summary><h2>Spotify</h2><span>use a playlist as the setlist</span></summary>
+    <p class="fine">Spotify streams can&rsquo;t be mixed &mdash; they&rsquo;re DRM-protected and the page never gets the audio. Read a playlist and match each entry to a file you own and have added.</p>
+    <div class="sp-row">
+      <label class="filebtn">Import playlist CSV<input type="file" id="sp-csv" accept=".csv,text/csv" hidden></label>
+      <span class="or">or</span>
+      <input type="text" id="sp-client" placeholder="Spotify app Client ID" spellcheck="false" autocomplete="off">
+      <button class="soft" id="sp-connect">Connect</button>
+      <select id="sp-lists" hidden></select>
+      <button class="soft" id="sp-load" hidden>Load</button>
+      <button class="soft" id="sp-off" hidden>Disconnect</button>
+    </div>
+    <p class="fine" id="sp-redirect"></p>
+    <div id="sp-result"></div>
+  </details>
 </main>
 
+<script src="js/settings.js"></script>
 <script src="js/analysis.js"></script>
 <script src="js/synth.js"></script>
 <script src="js/brain.js"></script>

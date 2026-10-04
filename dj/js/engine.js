@@ -26,6 +26,17 @@ var Engine = (function () {
     p.setValueAtTime(v0, t0);
     p.linearRampToValueAtTime(v1, t1);
   }
+  // An eased S-curve from v0 to v1 (raised cosine). A straight-line fade has a
+  // corner at each end that the ear picks up as a lurch; this does not. Values
+  // are interpolated in the parameter's own units, so for EQ gains that means
+  // dB, which is the perceptually even way.
+  function curve(p, t0, t1, v0, v1) {
+    const n = 96, arr = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = i / (n - 1); arr[i] = v0 + (v1 - v0) * (0.5 - 0.5 * Math.cos(Math.PI * x)); }
+    p.setValueCurveAtTime(arr, t0, Math.max(0.01, t1 - t0));
+  }
+  const EPS = 1e-3;                 // events may not start inside a curve; begin the next just after it
+
   function expRamp(p, t0, t1, v0, v1) {
     p.setValueAtTime(v0, t0);
     p.exponentialRampToValueAtTime(v1, t1);
@@ -49,7 +60,8 @@ var Engine = (function () {
     };
   }
 
-  function replayGain(track) {
+  function replayGain(track, settings) {
+    if (settings && settings.levelMatch === false) return 1;
     return Math.max(0.3, Math.min(2.5, db(TARGET_DB - track.analysis.loudnessDb)));
   }
 
@@ -68,7 +80,7 @@ var Engine = (function () {
     src.buffer = track.buffer;
     src.playbackRate.setValueAtTime(rate, t0);
     this.env = ctx.createGain();
-    this.trim = ctx.createGain(); this.trim.gain.value = replayGain(track);
+    this.trim = ctx.createGain(); this.trim.gain.value = replayGain(track, mixer.settings);
     this.low = ctx.createBiquadFilter(); this.low.type = "lowshelf"; this.low.frequency.value = 200;
     this.mid = ctx.createBiquadFilter(); this.mid.type = "peaking"; this.mid.frequency.value = 1000; this.mid.Q.value = 0.7;
     this.high = ctx.createBiquadFilter(); this.high.type = "highshelf"; this.high.frequency.value = 4000;
@@ -149,7 +161,8 @@ var Engine = (function () {
     opts = opts || {};
     this.ctx = ctx;
     this.offline = !!opts.offline;
-    this.fxOn = opts.fx !== false;
+    this.settings = Settings.sanitize(opts.settings);
+    this.fxOn = opts.fx !== undefined ? opts.fx !== false : this.settings.fx;
     const dest = opts.destination || ctx.destination;
 
     this.masterIn = ctx.createGain();
@@ -195,9 +208,9 @@ var Engine = (function () {
     const sr = this.ctx.sampleRate;
     const key = kind + (seconds ? Math.round(seconds * 10) : "");
     if (!this.buffers[key]) {
-      const data = kind === "riser" ? FX.riser(sr, seconds) : FX.impact(sr);
-      const b = this.ctx.createBuffer(1, data.length, sr);
-      b.copyToChannel(data, 0);
+      const chans = kind === "riser" ? FX.riser(sr, seconds) : kind === "downlifter" ? FX.downlifter(sr, seconds) : kind === "crash" ? FX.crash(sr) : FX.impact(sr);
+      const b = this.ctx.createBuffer(chans.length, chans[0].length, sr);
+      chans.forEach(function (c, i) { b.copyToChannel(c, i); });
       this.buffers[key] = b;
     }
     return this.buffers[key];
@@ -260,7 +273,7 @@ var Engine = (function () {
     const L = plan.blendBars;
     const tStart = A.timeOfBar(plan.startBar);
     const T0 = A.tempoAt(tStart);
-    let rB0 = (type => type === "echoOut" ? 1 : Math.max(0.92, Math.min(1.08, T0 / gB.bpm)))(plan.type);
+    let rB0 = (type => type === "echoOut" ? 1 : Math.max(0.88, Math.min(1.12, T0 / gB.bpm)))(plan.type);
     const B = new Voice(this, track, tStart, gB.downbeat + plan.inStartBar * gB.barLen, rB0, label);
     B.entryBar = plan.inStartBar;
 
@@ -289,37 +302,41 @@ var Engine = (function () {
 
     const beat = A.beatSec(tSwap);
     const bar = beat * 4;
+    // the plan carries the vibe: how much echo and reverb, how showy
+    const amounts = plan.amounts || { echo: 55, reverb: 45 };
+    const echoF = Math.min(1.8, amounts.echo / 55), revF = Math.min(1.8, amounts.reverb / 45);
+    const intensity = plan.intensity == null ? 0.6 : plan.intensity;
+    const riserGain = 0.4 + 0.6 * intensity, impactGain = 0.4 + 0.6 * intensity;
     this.delay.delayTime.setValueAtTime(0.75 * beat, Math.max(ctx.currentTime, tStart - 1));
 
     if (plan.type === "bassSwap") {
-      // incoming: lows held back until the swap, volume and mids/highs coming up
-      ramp(B.fader.gain, tStart, tSwap, 0.7, 1);
+      // incoming: lows held back until the swap, volume and mids/highs easing up
+      curve(B.fader.gain, tStart, tSwap, 0.6, 1);
+      // the bass trade: instant on the one, or a two-beat crossfade of the lows
+      // (in dB, so the two basslines cross at -20 dB each rather than piling up)
+      const soft = plan.bassSwapMode === "smooth", half = soft ? beat : 0.012;
       B.low.gain.setValueAtTime(KILL, tStart);
-      B.low.gain.setValueAtTime(KILL, tSwap - 0.012);
-      B.low.gain.linearRampToValueAtTime(0, tSwap + 0.012);
-      ramp(B.mid.gain, tStart, tSwap, -4, 0);
-      ramp(B.high.gain, tStart, tSwap, -6, 0);
+      B.low.gain.setValueAtTime(KILL, tSwap - half);
+      if (soft) curve(B.low.gain, tSwap - half, tSwap + half, KILL, 0); else B.low.gain.linearRampToValueAtTime(0, tSwap + half);
+      curve(B.mid.gain, tStart, tSwap, -5, 0);
+      curve(B.high.gain, tStart, tSwap, -8, 0);
       // outgoing: gives up its bass on the same beat, then gets out of the way
-      ramp(A.fader.gain, tStart, tSwap, 1, 0.85);
-      A.low.gain.setValueAtTime(0, tSwap - 0.012);
-      A.low.gain.linearRampToValueAtTime(KILL, tSwap + 0.012);
-      ramp(A.mid.gain, tStart, tSwap, 0, -5);
-      ramp(A.high.gain, tStart, tSwap, 0, -8);
+      curve(A.fader.gain, tStart, tSwap, 1, 0.88);
+      A.low.gain.setValueAtTime(0, tSwap - half);
+      if (soft) curve(A.low.gain, tSwap - half, tSwap + half, 0, KILL); else A.low.gain.linearRampToValueAtTime(KILL, tSwap + half);
+      curve(A.mid.gain, tStart, tSwap, 0, -5);
+      curve(A.high.gain, tStart, tSwap, 0, -9);
       const tail = plan.tailBars * bar;
-      if (tail > 0) {
-        ramp(A.fader.gain, tSwap, tSwap + tail, 0.85, 0);
-      } else {
-        A.fader.gain.setValueAtTime(0.85, tSwap + bar * 2);
-      }
-      expRamp(A.hp.frequency, tSwap, tSwap + Math.max(tail, bar), 10, 900);
+      if (tail > 0) curve(A.fader.gain, tSwap + EPS, tSwap + tail, 0.88, 0);
+      expRamp(A.hp.frequency, tSwap + EPS, tSwap + Math.max(tail, bar), 10, 900);
       A.echoSend.gain.setValueAtTime(0, tSwap);
-      A.echoSend.gain.linearRampToValueAtTime(0.3, tSwap + 0.5 * bar);
-      A.echoSend.gain.setValueAtTime(0.3, tSwap + Math.max(tail, bar));
+      A.echoSend.gain.linearRampToValueAtTime(0.3 * echoF, tSwap + 0.5 * bar);
+      A.echoSend.gain.setValueAtTime(0.3 * echoF, tSwap + Math.max(tail, bar));
       if (this.fxOn && plan.riser) {
         const rb = Math.min(4, Math.max(2, L / 4)) * bar;
-        this.playFx("riser", tSwap - rb, rb, 0.8);
+        this.playFx("riser", tSwap - rb, rb, riserGain);
       }
-      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, 0.7);
+      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, 0.35 + 0.5 * impactGain);
       A.transitionEnd = tSwap + Math.max(tail, bar) + 1;
       if (this.offline) A.stopAt(A.transitionEnd + 2);
     } else {
@@ -330,21 +347,26 @@ var Engine = (function () {
       expRamp(A.hp.frequency, tBuild, hpEnd, 10, hpTarget);
       A.hp.frequency.setValueAtTime(hpTarget, tSwap + 0.02);
       // echo throw on the last beat, cut dry on the downbeat so the tail rings
-      A.echoSend.gain.setValueAtTime(0, tSwap - beat);
-      A.echoSend.gain.linearRampToValueAtTime(plan.type === "echoOut" ? 0.75 : 0.55, tSwap - 0.01);
-      A.echoSend.gain.setValueAtTime(0, tSwap + 0.03);
+      if (plan.echoThrow !== false) {
+        A.echoSend.gain.setValueAtTime(0, tSwap - beat);
+        A.echoSend.gain.linearRampToValueAtTime((plan.type === "echoOut" ? 0.75 : 0.55) * echoF, tSwap - 0.01);
+        A.echoSend.gain.setValueAtTime(0, tSwap + 0.03);
+      }
       A.revSend.gain.setValueAtTime(0, tSwap - 2 * beat);
-      A.revSend.gain.linearRampToValueAtTime(0.45, tSwap);
+      A.revSend.gain.linearRampToValueAtTime(0.45 * revF, tSwap);
       A.revSend.gain.setValueAtTime(0, tSwap + 0.03);
       A.fader.gain.setValueAtTime(1, tSwap - 0.004);
       A.fader.gain.linearRampToValueAtTime(0, tSwap + 0.012);
       if (plan.roll) this.scheduleRoll(A, plan.swapBar - 1);
-      B.fader.gain.setValueAtTime(1, tSwap);
+      B.fader.gain.setValueAtTime(0, tSwap - 0.001);
+      B.fader.gain.linearRampToValueAtTime(1, tSwap + 0.004);
       if (this.fxOn && plan.riser) {
         const rb = Math.min(4, build || 2) * bar;
-        this.playFx("riser", tSwap - rb, rb, 0.8);
+        this.playFx("riser", tSwap - rb, rb, riserGain);
       }
-      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, plan.type === "dropSwap" ? 0.8 : 0.5);
+      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, (plan.type === "dropSwap" ? 0.35 : 0.2) + 0.5 * impactGain);
+      if (this.fxOn && plan.crash) this.playFx("crash", tSwap, 0, 0.18 + 0.3 * intensity);
+      if (this.fxOn && plan.downlifter) this.playFx("downlifter", tSwap, 2 * bar, 0.3 + 0.25 * intensity);
       A.transitionEnd = tSwap + 3;
       if (this.offline) A.stopAt(tSwap + 3);
     }
@@ -361,7 +383,7 @@ var Engine = (function () {
     const voices = [A], plans = [];
     for (let k = 1; k < tracks.length; k++) {
       const plan = Brain.planTransition(infoOf(tracks[k - 1]), infoOf(tracks[k]), {
-        entryBar: A.entryBar, style: opts.style || "mixed", index: k,
+        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k,
       });
       const B = this.scheduleTransition(A, tracks[k], plan, k % 2 ? "B" : "A");
       voices.push(B); plans.push(plan);
@@ -378,11 +400,11 @@ var Engine = (function () {
     const sr = opts.sampleRate || 44100;
     // pass one finds how long the set is; the context length must be known up front
     const probe = new OfflineAudioContext(2, sr, sr);
-    const pm = new Mixer(probe, { offline: true, fx: opts.fx });
+    const pm = new Mixer(probe, { offline: true, fx: opts.fx, settings: opts.settings });
     const plan = pm.scheduleSet(tracks, opts);
     const length = Math.ceil((plan.end + 3) * sr);
     const ctx = new OfflineAudioContext(2, length, sr);
-    const m = new Mixer(ctx, { offline: true, fx: opts.fx });
+    const m = new Mixer(ctx, { offline: true, fx: opts.fx, settings: opts.settings });
     const real = m.scheduleSet(tracks, opts);
     const buffer = await ctx.startRendering();
     return { buffer: buffer, plans: real.plans, voices: real.voices, end: real.end };

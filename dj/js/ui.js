@@ -113,6 +113,8 @@
     return player.history.indexOf(t) >= 0 ? "Played" : "Not queued";
   }
 
+  const openRows = new Set();               // tracks whose edit controls are showing
+
   function renderLists() {
     const cur = player.cur && player.cur.track;
     const rows = [], order = [];
@@ -121,33 +123,34 @@
     player.library.forEach(function (t) { if (order.indexOf(t) < 0) order.push(t); });
     order.forEach(function (t, i) {
       const a = t.analysis, queued = player.queue.indexOf(t) >= 0;
-      const keySel = '<select data-act="key" data-id="' + t.id + '" title="Key — change it if the guess is wrong" aria-label="Key"><option value="">auto ' + a.key.camelot + '</option>' +
+      const keySel = '<select data-act="key" data-id="' + t.id + '" title="Key — change it if the guess is wrong" aria-label="Key"><option value="">key: auto ' + a.key.camelot + '</option>' +
         CAMELOT.map(function (k) { return '<option' + (t.keyOverride === k ? " selected" : "") + ">" + k + "</option>"; }).join("") + "</select>";
-      rows.push('<li class="trk' + (cur === t ? " now" : "") + '"><span class="n">' + (i + 1) + '</span>' +
-        '<div class="t"><b>' + esc(t.title) + '</b><div class="sub"><span class="status">' + statusOf(t) + '</span>' +
-        '<span>' + esc(t.artist || "Unknown artist") + '</span><span class="chip">' + a.bpm.toFixed(1) + ' BPM</span><span class="chip">' + (t.keyOverride || a.key.camelot) + ' · ' + esc(a.key.name) +
-        '</span><span class="chip">E' + a.energy + '</span><span class="chip">' + mmss(t.duration) + '</span></div></div>' +
-        '<canvas data-id="' + t.id + '" width="260" height="68"></canvas>' +
+      const open = openRows.has(t.id);
+      rows.push('<li class="trk' + (cur === t ? " now" : "") + (open ? " open" : "") + '"><span class="n">' + (i + 1) + '</span>' +
+        '<div class="t"><b>' + esc(t.title) + '</b><div class="sub"><span>' + esc(t.artist || "Unknown artist") + '</span><span>' + a.bpm.toFixed(0) + ' BPM</span><span>' + (t.keyOverride || a.key.camelot) + '</span><span>' + mmss(t.duration) + '</span><span class="status">' + statusOf(t) + '</span></div></div>' +
+        '<button class="edit" data-act="edit" data-id="' + t.id + '" aria-expanded="' + open + '">' + (open ? "Done" : "Edit") + '</button>' +
         '<div class="ctl">' + keySel +
-        '<button data-act="shift" data-id="' + t.id + '" title="Nudge where bar 1 is by one beat, if the downbeat guess is wrong">beat ' + (t.shiftBeats ? "+" + t.shiftBeats : "±0") + '</button>' +
-        (queued ? '<button data-act="up" data-id="' + t.id + '" aria-label="Move up">&uarr;</button><button data-act="down" data-id="' + t.id + '" aria-label="Move down">&darr;</button><button data-act="next" data-id="' + t.id + '">Next</button>' :
+        '<button data-act="shift" data-id="' + t.id + '" title="Nudge where bar 1 is by one beat, if the downbeat guess is wrong">downbeat ' + (t.shiftBeats ? "+" + t.shiftBeats : "±0") + '</button>' +
+        (queued ? '<button data-act="up" data-id="' + t.id + '" aria-label="Move up">&uarr;</button><button data-act="down" data-id="' + t.id + '" aria-label="Move down">&darr;</button><button data-act="next" data-id="' + t.id + '">Play next</button>' :
           (cur === t ? "" : '<button data-act="queue" data-id="' + t.id + '">Queue</button>')) +
-        '<button class="x" data-act="del" data-id="' + t.id + '" title="Remove" aria-label="Remove">&times;</button></div></li>');
+        '<button data-act="del" data-id="' + t.id + '" aria-label="Remove">Remove</button></div></li>');
     });
     loading.forEach(function (l) {
       rows.push('<li class="trk"><span class="n">&hellip;</span><div class="t"><b>' + esc(l.name) + '</b><div class="sub"><span class="status">analysing ' + Math.round(l.progress * 100) + '%</span></div></div><div class="prog"><i style="width:' + Math.round(l.progress * 100) + '%"></i></div></li>');
     });
-    $("tracks").innerHTML = rows.join("") || '<li class="empty-lib">Nothing loaded yet &mdash; add the demo tracks to hear it straight away.</li>';
-    $("tracks").querySelectorAll("canvas[data-id]").forEach(function (c) {
-      const t = player.library.find(function (x) { return x.id === +c.dataset.id; });
-      if (t) c.getContext("2d").drawImage(waveFor(t), 0, 0, c.width, c.height);
-    });
+    $("tracks").innerHTML = rows.join("") || '<li class="empty-lib">Nothing here yet &mdash; add the demo tracks to hear it straight away.</li>';
 
     $("log").innerHTML = player.log.map(function (l) { return "<li><b>" + mmss(l.t) + "</b>" + esc(l.text) + "</li>"; }).join("") || "<li>It will explain each choice here.</li>";
 
+    // memory is the only real limit on how many tracks fit: a decoded track is raw audio
+    let bytes = 0;
+    player.library.forEach(function (t) { bytes += t.buffer.length * t.buffer.numberOfChannels * 4; });
+    const mb = Math.round(bytes / 1048576), n = player.library.length;
+    $("lib-stat").textContent = n ? n + (n === 1 ? " track" : " tracks") + " · " + mb + " MB in memory" + (mb > 1500 ? " — heavy; remove a few if the page slows" : "") : "";
+    $("lib-stat").classList.toggle("warn", mb > 1500);
+
     const running = player.running;
     $("btn-go").innerHTML = running ? "&#9632; Stop the set" : "&#9654; Start the set";
-    $("btn-go").classList.toggle("go", true);
     $("btn-go").classList.toggle("stop", running);
     $("btn-go").disabled = !running && !player.queue.length;
     $("btn-pause").disabled = !running;
@@ -163,7 +166,8 @@
     if (!t) return;
     const q = player.queue, i = q.indexOf(t);
     const act = b.dataset.act;
-    if (act === "del") player.remove(t);
+    if (act === "edit") { if (openRows.has(t.id)) openRows.delete(t.id); else openRows.add(t.id); }
+    else if (act === "del") player.remove(t);
     else if (act === "queue") q.push(t);
     else if (act === "next") { q.splice(i, 1); q.unshift(t); }
     else if (act === "up" && i > 0) { q.splice(i, 1); q.splice(i - 1, 0, t); }
@@ -261,46 +265,38 @@
   }
 
   const deckState = {};
-  const ACCENT = { A: "#ff2e88", B: "#26d9ff" };
+  const ACCENT = { A: "#ff9ad5", B: "#8fe6ff" };
 
   function eqRow(name) {
-    return '<div class="eqr"><span>' + name + '</span><div class="t"><i data-k="eq' + name[0] + '"></i></div><em data-k="eqv' + name[0] + '"></em></div>';
+    return '<div class="eqr"><span>' + name + '</span><div class="t"><i data-k="eq' + name[0] + '"></i></div></div>';
   }
 
   function deckEl(label, d) {
     const el = $("deck-" + label);
     let st = deckState[label];
     if (!d) {
-      if (st) { el.innerHTML = '<div class="empty"><b>' + label + "</b><span>Deck " + label + "</span></div>"; deckState[label] = null; el.classList.remove("audible"); }
+      if (st) { el.innerHTML = '<div class="empty"><b>' + label + "</b></div>"; deckState[label] = null; el.classList.remove("audible"); }
       return;
     }
     const a = d.track.analysis;
     if (!st || st.track !== d.track) {
       el.innerHTML = '<div class="d-top"><span class="badge">' + label + '</span><div class="ti"><b>' + esc(d.track.title) + '</b><small>' + esc(d.track.artist || "Unknown artist") + '</small></div><span class="state" data-k="sec"></span></div>' +
-        '<div class="read"><div><label>BPM</label><b class="big" data-k="bpm"></b></div><div><label>KEY</label><b>' + (d.track.keyOverride || a.key.camelot) + ' <small>' + esc(a.key.name) + '</small></b></div>' +
-        '<div><label>BAR</label><b data-k="bar"></b></div><div><label>ENERGY</label><b>' + a.energy + '<small>/10</small></b></div></div>' +
-        '<canvas class="zoom"></canvas><canvas class="over" width="900" height="68"></canvas>' +
+        '<div class="read"><div><b class="big" data-k="bpm"></b><small>BPM</small></div><div><b>' + (d.track.keyOverride || a.key.camelot) + '</b><small>' + esc(a.key.name) + '</small></div></div>' +
+        '<canvas class="zoom"></canvas>' +
         '<div class="eqs">' + eqRow("LOW") + eqRow("MID") + eqRow("HIGH") + '</div>';
-      st = deckState[label] = { track: d.track, k: {}, zoom: el.querySelector("canvas.zoom"), over: el.querySelector("canvas.over") };
+      st = deckState[label] = { track: d.track, k: {}, zoom: el.querySelector("canvas.zoom") };
       el.querySelectorAll("[data-k]").forEach(function (n) { st.k[n.dataset.k] = n; });
     }
     st.k.bpm.textContent = d.started ? d.bpm.toFixed(1) : "—";
-    st.k.bar.innerHTML = d.started ? Math.max(1, Math.floor(d.bar) + 1) + ' <small>/ ' + a.bars + '</small>' : "<small>cueing</small>";
     const sec = d.started ? a.sections.find(function (s) { return d.bar >= s.start && d.bar < s.end; }) : null;
     st.k.sec.textContent = sec ? sec.type : (d.started ? "" : "cueing");
     [["L", d.eq.low], ["M", d.eq.mid], ["H", d.eq.high]].forEach(function (e) {
-      const g = e[1], kill = g < -30;
+      const g = e[1];
       st.k["eq" + e[0]].style.setProperty("--w", Math.max(3, Math.min(100, (g + 40) / 40 * 100)) + "%");
-      st.k["eq" + e[0]].classList.toggle("kill", kill);
-      st.k["eqv" + e[0]].textContent = kill ? "KILL" : (g > -0.5 ? "0" : g.toFixed(0)) + " dB";
-      st.k["eqv" + e[0]].classList.toggle("kill", kill);
+      st.k["eq" + e[0]].classList.toggle("kill", g < -30);
     });
     $("deck-" + label).classList.toggle("audible", d.audible);
     drawZoom(st.zoom, d.track, d.pos, ACCENT[label], label, d.started);
-    const g = st.over.getContext("2d");
-    g.clearRect(0, 0, 900, 68); g.drawImage(waveFor(d.track), 0, 0);
-    const x = Math.max(0, Math.min(898, d.pos / d.track.duration * 900));
-    g.fillStyle = "#fff"; g.fillRect(x, 0, 3, 68);
   }
 
   // ----------------------------------------------------- mixer column + meter
@@ -361,9 +357,9 @@
       $("strip-why").innerHTML = plan.reasons.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("");
     } else if (player.cur && player.queue[0]) {
       knob.style.left = (curLabel === "B" ? 100 : 0) + "%"; bar.style.width = (curLabel === "B" ? 100 : 0) + "%";
-      if (now - preview.at > 0.5 || preview.key !== player.queue[0].id + ":" + player.style) {
-        preview.at = now; preview.key = player.queue[0].id + ":" + player.style;
-        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, style: player.style });
+      if (now - preview.at > 0.5 || preview.key !== player.queue[0].id + ":" + JSON.stringify(player.settings)) {
+        preview.at = now; preview.key = player.queue[0].id + ":" + JSON.stringify(player.settings);
+        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length });
       }
       const pl = preview.plan;
       $("strip-title").textContent = "Next · " + Brain.label(pl) + " → " + player.queue[0].title;
@@ -378,24 +374,129 @@
   // --------------------------------------------------------------- controls
 
   $("btn-go").addEventListener("click", function () {
-    if (player.running) player.stop();
-    else { player.fx = $("chk-fx").checked; player.start(); }
+    if (player.running) player.stop(); else player.start();
     changed();
   });
   $("btn-pause").addEventListener("click", function () { player.togglePause(); });
   $("btn-mix").addEventListener("click", function () { player.mixNow(); });
-  $("seg-style").addEventListener("click", function (e) {
-    const b = e.target.closest("button[data-v]");
-    if (!b) return;
-    player.style = b.dataset.v;
-    this.querySelectorAll("button").forEach(function (x) { const on = x === b; x.classList.toggle("on", on); x.setAttribute("aria-checked", String(on)); });
-  });
-  $("sel-arc").addEventListener("change", function (e) { player.arc = e.target.value; });
-  $("chk-endless").addEventListener("change", function (e) { player.endless = e.target.checked; });
-  $("chk-fx").addEventListener("change", function (e) { player.setFx(e.target.checked); });
   $("rng-vol").addEventListener("input", function (e) { player.setVolume(+e.target.value); });
-  $("btn-order").addEventListener("click", function () { player.autoOrder(); player.note("Queue re-ordered for key, tempo and energy (" + $("sel-arc").selectedOptions[0].text.toLowerCase() + ")"); });
+  $("btn-order").addEventListener("click", function () { player.autoOrder(); player.note("Queue re-ordered for key, tempo and energy (" + player.settings.arc + " arc)"); });
   document.querySelectorAll("[data-fx]").forEach(function (b) { b.addEventListener("click", function () { player.perform(b.dataset.fx); }); });
+
+  // ------------------------------------------------------------ vibe + settings
+
+  const SETTINGS_KEY = "autopilot-dj-settings";
+  function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(player.settings)); } catch (e) { /* private mode */ } }
+  function loadSettings() {
+    try { const raw = localStorage.getItem(SETTINGS_KEY); if (raw) player.setSettings(JSON.parse(raw)); } catch (e) { /* ignore a bad copy */ }
+  }
+
+  const PCT = "%";
+  const TUNE = [
+    { group: "Auto-tune", items: [
+      { key: "auto", type: "toggle", label: "Adapt to every pair of tracks", hint: "Decides anything left on Auto, and nudges flair and play time to suit each handover." },
+    ] },
+    { group: "Moves", items: [
+      { key: "style", type: "seg", label: "Style", options: [["mixed", "Mixed"], ["smooth", "Smooth"], ["club", "Club"]], hint: "Mixed blends unless a much bigger track is coming. Smooth always prefers a blend. Club prefers swapping on a drop." },
+      { key: "blendBars", type: "seg", label: "Blend length", options: [["auto", "Auto"], [8, "8 bars"], [16, "16"], [32, "32"]], hint: "The longest a blend may run." },
+      { key: "bassSwap", type: "seg", label: "Bass swap", options: [["auto", "Auto"], ["hard", "Hard"], ["smooth", "Soft"]], hint: "Hard trades the basslines on the one. Soft crossfades them over two beats." },
+      { key: "minPlay", type: "range", label: "Play each track for at least", unit: " bars", hint: "Before the next handover may begin." },
+      { key: "variety", type: "range", label: "Variety", unit: PCT, hint: "How often it takes the move it normally wouldn\u2019t." },
+    ] },
+    { group: "Taste", items: [
+      { key: "arc", type: "seg", label: "Energy over the set", options: [["build", "Build up"], ["wave", "Waves"], ["peak", "Stay high"], ["warmup", "Warm-up"]] },
+      { key: "keyStrictness", type: "seg", label: "Key matching", options: [["strict", "Strict"], ["balanced", "Balanced"], ["loose", "Loose"]], hint: "Strict only blends neighbouring keys. Loose will try anything." },
+      { key: "maxTempoGap", type: "range", label: "Beatmatch up to", unit: PCT, hint: "Further apart than this it won\u2019t blend. Bigger gaps shift pitch more." },
+      { key: "wKey", type: "range", label: "Choosing the next track: key", unit: PCT },
+      { key: "wTempo", type: "range", label: "…tempo", unit: PCT },
+      { key: "wEnergy", type: "range", label: "…energy", unit: PCT },
+    ] },
+    { group: "Effects", items: [
+      { key: "fx", type: "toggle", label: "Effects on" },
+      { key: "flair", type: "range", label: "Flair", unit: PCT, hint: "How showy the builds get. Low is just the blend." },
+      { key: "risers", type: "toggle", label: "Risers" },
+      { key: "impacts", type: "toggle", label: "Sub hits" },
+      { key: "sweeps", type: "toggle", label: "Soft crashes & downlifters" },
+      { key: "rolls", type: "toggle", label: "Loop rolls" },
+      { key: "echoThrows", type: "toggle", label: "Echo throws" },
+      { key: "echoAmount", type: "range", label: "Echo", unit: PCT },
+      { key: "reverbAmount", type: "range", label: "Reverb tails", unit: PCT },
+    ] },
+    { group: "Output", items: [
+      { key: "levelMatch", type: "toggle", label: "Match track loudness" },
+      { key: "endless", type: "toggle", label: "Keep going when the queue runs out" },
+    ] },
+  ];
+
+  function buildTune() {
+    $("tune-body").innerHTML = TUNE.map(function (g) {
+      return '<div class="tgroup"><h3>' + g.group + '</h3><div class="tgrid">' + g.items.map(function (it) {
+        const hint = it.hint ? '<span class="hint">' + it.hint + "</span>" : "";
+        if (it.type === "toggle") return '<div class="ctrl"><label class="sw"><span>' + it.label + '</span><input type="checkbox" data-k="' + it.key + '"><i></i></label>' + hint + "</div>";
+        if (it.type === "range") {
+          const r = Settings.RANGES[it.key];
+          return '<div class="ctrl"><label for="s-' + it.key + '">' + it.label + ' <output id="o-' + it.key + '"></output></label><input type="range" id="s-' + it.key + '" data-k="' + it.key + '" min="' + r[0] + '" max="' + r[1] + '" step="' + r[2] + '">' + hint + "</div>";
+        }
+        return '<div class="ctrl"><span class="lbl" id="l-' + it.key + '">' + it.label + '</span><div class="seg" role="radiogroup" aria-labelledby="l-' + it.key + '">' +
+          it.options.map(function (o, i) { return '<button type="button" role="radio" data-k="' + it.key + '" data-i="' + i + '">' + o[1] + "</button>"; }).join("") + "</div>" + hint + "</div>";
+      }).join("") + "</div></div>";
+    }).join("") + '<div class="tune-foot"><button class="soft" id="tune-reset">Back to defaults</button></div>';
+  }
+
+  function syncTune() {
+    const s = player.settings, items = {};
+    TUNE.forEach(function (g) { g.items.forEach(function (it) { items[it.key] = it; }); });
+    $("tune-body").querySelectorAll("[data-k]").forEach(function (n) {
+      const it = items[n.dataset.k];
+      if (n.type === "checkbox") n.checked = !!s[it.key];
+      else if (n.type === "range") { n.value = s[it.key]; $("o-" + it.key).textContent = s[it.key] + it.unit; }
+      else n.setAttribute("aria-checked", String(it.options[+n.dataset.i][0] === s[it.key]));
+    });
+  }
+
+  function renderVibes() {
+    const id = Settings.presetOf(player.settings);
+    const ids = ["balanced", "sunrise", "smooth", "open", "warehouse", "mainstage"];
+    $("vibes").innerHTML = ids.map(function (k) {
+      return '<button type="button" class="chip-btn" role="radio" data-vibe="' + k + '" aria-checked="' + (k === id) + '">' + Settings.PRESETS[k].label + "</button>";
+    }).join("") + (id === "custom" ? '<button type="button" class="chip-btn" role="radio" aria-checked="true" disabled>Custom</button>' : "");
+    $("vibe-hint").textContent = id === "custom" ? "Your own mix — tuned below." : Settings.PRESETS[id].hint;
+  }
+
+  function commit(next, why) {
+    player.setSettings(next);
+    saveSettings(); syncTune(); renderVibes();
+    if (why) player.note(why);
+  }
+
+  $("vibes").addEventListener("click", function (e) {
+    const b = e.target.closest("button[data-vibe]");
+    if (!b) return;
+    const keep = {}; ["endless", "fx", "levelMatch", "auto"].forEach(function (k) { keep[k] = player.settings[k]; });
+    const next = Object.assign(Settings.applyPreset(b.dataset.vibe), keep);
+    commit(next, "Vibe: " + Settings.describe(next));
+  });
+  $("tune-body").addEventListener("click", function (e) {
+    const reset = e.target.closest("#tune-reset");
+    if (reset) { commit(Settings.make(), "Settings back to defaults"); return; }
+    const b = e.target.closest("button[data-k]");
+    if (!b) return;
+    let opt;
+    TUNE.forEach(function (g) { g.items.forEach(function (it) { if (it.key === b.dataset.k) opt = it.options[+b.dataset.i][0]; }); });
+    commit(Object.assign({}, player.settings, { [b.dataset.k]: opt }));
+  });
+  $("tune-body").addEventListener("input", function (e) {
+    const n = e.target.closest("input[type=range]");
+    if (n) commit(Object.assign({}, player.settings, { [n.dataset.k]: +n.value }));
+  });
+  $("tune-body").addEventListener("change", function (e) {
+    const n = e.target.closest("input[type=checkbox]");
+    if (n) commit(Object.assign({}, player.settings, { [n.dataset.k]: n.checked }));
+  });
+
+  loadSettings();
+  buildTune(); syncTune(); renderVibes();
+
   $("btn-about").addEventListener("click", function () {
     const open = $("about").hidden; $("about").hidden = !open; $("btn-about").setAttribute("aria-expanded", String(open));
   });
@@ -430,7 +531,7 @@
     b.disabled = true; b.textContent = "Rendering…";
     try {
       await tick();
-      const res = await Engine.renderSet(tracks, { style: player.style, fx: player.fx });
+      const res = await Engine.renderSet(tracks, { settings: player.settings });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(encodeWav(res.buffer));
       a.download = "autopilot-dj-mix.wav";
