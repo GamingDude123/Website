@@ -51,7 +51,7 @@ var Timeline = (function () {
   Timeline.prototype.timeAtPos = function (p) {
     const n = this.nodes;
     let pos = this.offset;
-    if (p <= pos) return n[0].t - (pos - p) / n[0].r;
+    if (p <= pos) return n[0].r > 1e-9 ? n[0].t - (pos - p) / n[0].r : -Infinity;   // a deck that starts from rest has no "before"
     for (let i = 1; i < n.length; i++) {
       const a = n[i - 1], b = n[i];
       const dt = b.t - a.t;

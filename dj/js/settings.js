@@ -24,6 +24,7 @@ var Settings = (function () {
     // effects
     flair: 60,                 // 0-100 — how showy the builds are
     rolls: true, risers: true, impacts: true, echoThrows: true,
+    brakes: true,              // vinyl brakes and spinbacks as ways out
     sweeps: true,              // soft crashes and downlifters
     echoAmount: 55,            // 0-100
     reverbAmount: 45,          // 0-100
@@ -73,7 +74,7 @@ var Settings = (function () {
     wKey: [0, 100, 1], wTempo: [0, 100, 1], wEnergy: [0, 100, 1],
     flair: [0, 100, 1], echoAmount: [0, 100, 1], reverbAmount: [0, 100, 1],
   };
-  const BOOLS = ["rolls", "risers", "impacts", "echoThrows", "sweeps", "auto", "levelMatch", "endless", "fx"];
+  const BOOLS = ["rolls", "risers", "impacts", "echoThrows", "brakes", "sweeps", "auto", "levelMatch", "endless", "fx"];
 
   function num(v, lo, hi, step, fallback) {
     v = typeof v === "string" ? parseFloat(v) : v;
@@ -118,7 +119,8 @@ var Settings = (function () {
 
   // The key score each kind of move needs, by strictness.
   function keyFloors(s) {
-    return { strict: { blend: 0.85, drop: 0.55 }, balanced: { blend: 0.55, drop: 0.4 }, loose: { blend: 0, drop: 0 } }[s.keyStrictness];
+    // a drop swap overlaps the two tracks for an instant, so only a strict DJ minds the key there
+    return { strict: { blend: 0.85, drop: 0.55 }, balanced: { blend: 0.55, drop: 0 }, loose: { blend: 0, drop: 0 } }[s.keyStrictness];
   }
 
   // Normalised scoring weights for choosing the next track (sum to 1).

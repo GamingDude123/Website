@@ -51,7 +51,9 @@ function check(name, cond, extra) {
   check("keys: wheel wraps 12 -> 1", Brain.keyScore("12A", "1A") > 0.8);
   const mk = (title0, bpm, key, energy) => ({ title0, bpm, key, energy, bars: 80, cues: { firstDrop: 16, dropStarts: [24, 48], outroStart: 64 } });
   const A = mk("A", 126, "8A", 6), B = mk("B", 127, "9A", 6), C = mk("C", 140, "3B", 8);
-  check("plan: tempo gap too wide -> echo out", Brain.planTransition(A, C).type === "echoOut");
+  const EXITS = ["echoOut", "brake", "spinback", "dropSwap"];
+  const wide = Brain.planTransition(A, C);
+  check("plan: tempo gap too wide -> never a beatmatched blend", EXITS.indexOf(wide.type) >= 0 && wide.freshTempo === true, wide.type);
   const smooth = Brain.planTransition(A, B, { style: "smooth" });
   check("plan: smooth style blends", smooth.type === "bassSwap" && smooth.blendBars >= 8 && smooth.swapBar <= 80);
   check("plan: incoming drop lands on the swap bar", smooth.inStartBar + smooth.blendBars === 16 && smooth.startBar + smooth.blendBars === smooth.swapBar);
@@ -254,7 +256,38 @@ function check(name, cond, extra) {
     const clubQuiet = Brain.planTransition(O, I4, { settings: Settings.make({ style: "club", variety: 0, auto: false }) });
     check("log: club style does not claim the incoming track is bigger", clubQuiet.type === "dropSwap" && !clubQuiet.reasons.some((r) => /much bigger/.test(r)), clubQuiet.reasons.join(" | "));
     const strict = Brain.planTransition(mk("O", 124, "8A", 7), mk("I", 124.9, "9B", 7), { settings: Settings.make({ keyStrictness: "strict", auto: false }) });
-    check("log: strict key matching is blamed for the echo out", strict.type === "echoOut" && /key matching/.test(strict.reasons.join(" ")), strict.reasons.join(" | "));
+    check("log: strict key matching is blamed for the clean exit", ["echoOut", "brake", "spinback"].indexOf(strict.type) >= 0 && /key matching/.test(strict.reasons.join(" ")), strict.reasons.join(" | "));
+
+    // ---- variety: echo out must not be the only way out
+    function lcg(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+    const R = lcg(11);
+    const rt = (i) => ({ title0: "t" + i, bpm: 100 + Math.floor(R() * 40), key: (1 + Math.floor(R() * 12)) + (R() < 0.5 ? "A" : "B"), energy: 3 + Math.floor(R() * 6), bars: 72 + Math.floor(R() * 60),
+      cues: { firstDrop: [0, 8, 16, 32][Math.floor(R() * 4)], dropStarts: R() < 0.5 ? [] : [40, 72], outroStart: 56 + Math.floor(R() * 4) * 4 } });
+    const tally = {}; let n = 0;
+    for (let i = 0; i < 300; i++) { const p = Brain.planTransition(rt(2 * i), rt(2 * i + 1), { index: i }); tally[p.type] = (tally[p.type] || 0) + 1; n++; }
+    check("variety: on mixed keys and tempos echo out is a minority", (tally.echoOut || 0) / n < 0.25, JSON.stringify(tally));
+    check("variety: brakes and spinbacks both turn up", (tally.brake || 0) / n > 0.08 && (tally.spinback || 0) / n > 0.05, JSON.stringify(tally));
+    check("variety: drop swaps and blends are still used", (tally.dropSwap || 0) / n > 0.1 && (tally.bassSwap || 0) / n > 0.01, JSON.stringify(tally));
+    const R2 = lcg(5), tally2 = {};
+    const rt2 = (i) => Object.assign(rt(i), { bpm: 100 + Math.floor(R2() * 40) });
+    for (let i = 0; i < 200; i++) { const p = Brain.planTransition(rt2(2 * i), rt2(2 * i + 1), { index: i, settings: Settings.make({ brakes: false }) }); tally2[p.type] = (tally2[p.type] || 0) + 1; }
+    check("brakes off: no brakes or spinbacks", !tally2.brake && !tally2.spinback, JSON.stringify(tally2));
+    const tally3 = {};
+    for (let i = 0; i < 200; i++) { const p = Brain.planTransition(rt(2 * i), rt(2 * i + 1), { index: i, settings: Settings.make({ style: "smooth" }) }); tally3[p.type] = (tally3[p.type] || 0) + 1; }
+    check("smooth style: no spinbacks", !tally3.spinback, JSON.stringify(tally3));
+    const a1 = Brain.planTransition(mk("X", 100, "1A", 5), mk("Y", 137, "7B", 5), { index: 3 }), a2 = Brain.planTransition(mk("X", 100, "1A", 5), mk("Y", 137, "7B", 5), { index: 3 });
+    check("variety: the same pair at the same point always gets the same move", a1.type === a2.type && a1.swapBar === a2.swapBar);
+    const clash = Brain.planTransition(mk("X", 126, "1A", 5), mk("Y", 127, "7B", 5), { settings: Settings.make({ style: "club", variety: 0 }) });
+    check("a key clash no longer rules out a drop swap (only a strict DJ minds)", clash.type === "dropSwap", clash.type);
+    const noIntro = Brain.planTransition(mk("X", 126, "8A", 5), Object.assign(mk("Y", 126, "8A", 5), { cues: { firstDrop: 0, dropStarts: [], outroStart: 64 } }), { style: "smooth" });
+    check("a track with no detected intro can still be blended into", noIntro.type === "bassSwap" && noIntro.blendBars >= 8, noIntro.type);
+    const noDrops = Brain.planTransition(Object.assign(mk("X", 126, "1A", 5), { cues: { firstDrop: 16, dropStarts: [], outroStart: 64 } }), mk("Y", 126, "7B", 5), { style: "club", settings: Settings.make({ style: "club", variety: 0 }) });
+    check("no detected drops: a drop swap lands on a phrase line instead", noDrops.type === "dropSwap" && noDrops.swapBar % 8 === 0, noDrops.type + " " + noDrops.swapBar);
+    ["brake", "spinback"].forEach((type) => {
+      let found = null;
+      for (let i = 0; i < 200 && !found; i++) { const p = Brain.planTransition(rt(2 * i), rt(2 * i + 1), { index: i, settings: Settings.make({ flair: 100 }) }); if (p.type === type) found = p; }
+      check("plan: " + type + " carries no build, roll, riser or echo throw", found && !found.riser && !found.roll && !found.echoThrow && found.blendBars === 0 && Brain.label(found).length > 0, found && Brain.label(found));
+    });
   }
 
   console.log(fails ? "\n" + fails + " FAILED" : "\nall passed");

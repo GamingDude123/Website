@@ -60,6 +60,21 @@
     <button class="soft glow-btn" id="btn-mix" disabled title="Replace the planned transition with one that starts in a few bars">Mix now</button>
   </section>
 
+  <section class="fxbar" aria-labelledby="fx-h">
+    <div class="fx-head"><h2 id="fx-h">Effects</h2><span class="fine" id="fx-hint">Tap one to hit it on the next beat. The lamps show what the mix is doing, and what it has lined up.</span></div>
+    <div class="pads" aria-label="Effects">
+      <button class="pad p1" data-fx="echo" data-lamp="echo"><i></i><b>Echo</b><small>throw</small></button>
+      <button class="pad p2" data-fx="sweep" data-lamp="filter"><i></i><b>Filter</b><small>sweep</small></button>
+      <button class="pad p3" data-fx="riser" data-lamp="riser"><i></i><b>Riser</b><small>2 bars</small></button>
+      <button class="pad p4" data-fx="impact" data-lamp="hit"><i></i><b>Impact</b><small>hit</small></button>
+      <button class="pad p5" data-fx="crash" data-lamp="crash"><i></i><b>Crash</b><small>soft</small></button>
+      <button class="pad p6" data-fx="down" data-lamp="down"><i></i><b>Downlift</b><small>2 bars</small></button>
+      <span class="lamp" data-lamp="roll"><i></i><b>Roll</b><small>loop</small></span>
+      <span class="lamp" data-lamp="brake"><i></i><b>Brake</b><small>vinyl</small></span>
+      <span class="lamp" data-lamp="spin"><i></i><b>Spinback</b><small>reverse</small></span>
+    </div>
+  </section>
+
   <section class="vibes" aria-labelledby="vibes-h">
     <h2 id="vibes-h">Vibe</h2>
     <div class="chips" id="vibes" role="group" aria-label="Vibe"></div>
@@ -85,16 +100,8 @@
   </details>
 
   <details class="card perform">
-    <summary><h2>Perform &amp; export</h2><span>effect pads, save the mix</span></summary>
-    <div class="pads" aria-label="Performance effects">
-      <button class="pad p1" data-fx="echo"><b>Echo</b><small>throw</small></button>
-      <button class="pad p2" data-fx="sweep"><b>Filter</b><small>sweep</small></button>
-      <button class="pad p3" data-fx="riser"><b>Riser</b><small>2 bars</small></button>
-      <button class="pad p4" data-fx="impact"><b>Impact</b><small>hit</small></button>
-      <button class="pad p5" data-fx="crash"><b>Crash</b><small>soft</small></button>
-      <button class="pad p6" data-fx="down"><b>Downlift</b><small>2 bars</small></button>
-    </div>
-    <p class="fine">Pads land on the next beat. Export renders the queue as one WAV file, with the same blends you'd hear live.</p>
+    <summary><h2>Export</h2><span>save the mix as one WAV file</span></summary>
+    <p class="fine">Export renders the queue as one WAV file, with the same blends, brakes and effects you&rsquo;d hear live.</p>
     <button class="soft" id="btn-export" title="Render the queue as one mixed WAV file">Export mix (WAV)</button>
   </details>
 
@@ -142,6 +149,7 @@
 <script src="js/fx.js"></script>
 <script src="js/timeline.js"></script>
 <script src="js/engine.js"></script>
+<script src="js/turntable.js"></script>
 <script src="js/player.js"></script>
 <script src="js/spotify.js"></script>
 <script src="js/soundcloud.js"></script>
