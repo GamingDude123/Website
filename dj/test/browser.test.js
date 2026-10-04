@@ -731,7 +731,10 @@ function makeStereoWav(seconds, bpm) {
         return { x: o2b, tStart: B.entry.tStart, tSwap: B.entry.tSwap, modeBefore: modeBefore, modeAfter: A.voxModeAt(B.entry.tStart + 5) };
       }
       const rb = await rolledBack(), lateRb = rb.tStart + 0.7 * (rb.tSwap - rb.tStart);
-      R.rollback = { voice: db(bp(rb, 700, lateRb, lateRb + 2), bp(noClash, 700, lateRb, lateRb + 2)), before: rb.modeBefore, after: rb.modeAfter };
+      const c3 = new OfflineAudioContext(2, sr * 30, sr), m3 = new Engine.Mixer(c3, { offline: true, fx: false, settings: Settings.make({ autoFx: "off", fx: false, auto: false }) });
+      await m3.init(); m3.firstVoice(stereo(c3), 0.1, "A");
+      const alone = { x: (await c3.startRendering()).getChannelData(0) };          // the deck on its own, as it should be once the transition is gone
+      R.rollback = { voice: db(bp(rb, 700, lateRb, lateRb + 2), bp(alone, 700, lateRb, lateRb + 2)), before: rb.modeBefore, after: rb.modeAfter };
     }
 
     // 4. the pads by hand: a loop roll, a spinback and a vinyl brake each give the track back exactly on the beat
