@@ -43,6 +43,23 @@ function makeWav(seconds, bpm) {
   return buf;
 }
 
+// a stereo file: a four-on-the-floor kick in the middle, a sung-ish centred voice, a lead hard left and a pad hard right
+function makeStereoWav(seconds, bpm) {
+  const sr = 44100, n = sr * seconds, buf = Buffer.alloc(44 + n * 4);
+  buf.write("RIFF", 0); buf.writeUInt32LE(36 + n * 4, 4); buf.write("WAVEfmt ", 8); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(2, 22);
+  buf.writeUInt32LE(sr, 24); buf.writeUInt32LE(sr * 4, 28); buf.writeUInt16LE(4, 32); buf.writeUInt16LE(16, 34); buf.write("data", 36); buf.writeUInt32LE(n * 4, 40);
+  const beat = 60 / bpm; let seed = 1;
+  for (let i = 0; i < n; i++) {
+    const t = i / sr, tb = t % beat, tb2 = (t + beat / 2) % beat, bar = Math.floor(t / (4 * beat));
+    const kick = Math.sin(2 * Math.PI * (55 + 80 * Math.exp(-tb * 30)) * tb) * Math.exp(-tb * 9) * 0.7;
+    seed = (seed * 1664525 + 1013904223) >>> 0; const hat = ((seed / 2147483648) - 1) * Math.exp(-tb2 * 60) * 0.2;
+    const voice = bar % 2 === 1 ? 0.22 * Math.sin(2 * Math.PI * (500 + 200 * Math.sin(2 * Math.PI * 0.8 * t)) * t) * (0.6 + 0.4 * Math.sin(2 * Math.PI * 4 * t)) : 0;
+    const l = kick + hat + voice + 0.12 * Math.sin(2 * Math.PI * 330 * t), r = kick + hat + voice + 0.12 * Math.sin(2 * Math.PI * 440 * t);
+    buf.writeInt16LE(Math.max(-1, Math.min(1, l)) * 30000, 44 + i * 4); buf.writeInt16LE(Math.max(-1, Math.min(1, r)) * 30000, 46 + i * 4);
+  }
+  return buf;
+}
+
 (async () => {
   const server = http.createServer((req, res) => {
     const rel = decodeURIComponent(req.url.split("?")[0]).replace(/^\/+/, "");
@@ -439,6 +456,35 @@ function makeWav(seconds, bpm) {
   await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
   check("and auto-hide works again afterwards (4 tracks are shown, not hidden)", (await page.locator("#tracks .trk").count()) === 4);
 
+  // ---- the vocal tools on a real stereo file: it is recognised, the deck buttons work, a mono track is refused
+  fs.writeFileSync(path.join(OUT, "Vox Artist - Stereo Vocal Test.wav"), makeStereoWav(40, 124));
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  await page.setInputFiles("#file-in", path.join(OUT, "Vox Artist - Stereo Vocal Test.wav"));
+  await page.waitForFunction(() => window.__dj.player.library.length === 1, null, { timeout: 60000 });
+  const prof = await page.evaluate(() => { const a = window.__dj.player.library[0].analysis; return { stereo: a.stereo, width: a.width, bars: a.lead && a.lead.length, max: a.lead ? Math.max.apply(null, Array.from(a.lead)) : 0, min: a.lead ? Math.min.apply(null, Array.from(a.lead)) : 0 }; });
+  check("a stereo file is recognised as stereo and gets a per-bar lead profile", prof.stereo === true && prof.width > 0.1 && prof.bars >= 10 && prof.max - prof.min > 0.2, JSON.stringify(prof));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => window.__dj.player.ctx && window.__dj.player.ctx.currentTime > 1.5, null, { timeout: 15000 });
+  check("the vocal buttons are on the deck and enabled for a stereo track", (await page.locator("#deck-A .vox button").count()) === 3 && (await page.locator('#deck-A .vox button[data-vox="cut"]').isEnabled()));
+  await page.click('#deck-A .vox button[data-vox="cut"]');
+  await page.waitForFunction(() => window.__dj.player.voices[0].voxMode === "cut", null, { timeout: 3000 })
+    .then(() => check("No vocals switches the deck over", true), () => check("No vocals switches the deck over", false));
+  await page.waitForTimeout(300);
+  check("and the button shows it is on", (await page.getAttribute('#deck-A .vox button[data-vox="cut"]', "aria-pressed")) === "true" && (await page.getAttribute('#deck-A .vox button[data-vox="off"]', "aria-pressed")) === "false");
+  await page.click('#deck-A .vox button[data-vox="solo"]');
+  await page.waitForFunction(() => window.__dj.player.voices[0].voxMode === "solo", null, { timeout: 3000 })
+    .then(() => check("Vocals only switches the deck over", true), () => check("Vocals only switches the deck over", false));
+  await page.click('#deck-A .vox button[data-vox="off"]');
+  await page.waitForFunction(() => window.__dj.player.voices[0].voxMode === "off", null, { timeout: 3000 })
+    .then(() => check("Full puts it back", true), () => check("Full puts it back", false));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  await page.click("#btn-demo");
+  await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
+
   // ---- vibes and settings
   const chips = await page.$$eval("#vibes .chip-btn", (b) => b.map((x) => x.textContent));
   check("vibe chips present", chips.length === 6 && chips.indexOf("Warehouse") >= 0, chips.join(", "));
@@ -478,7 +524,8 @@ function makeWav(seconds, bpm) {
     const analysis = { bpm: 120, beatLen: 0.5, barLen: 2, downbeat: 0, loudnessDb: -12, bars: 20, key: { camelot: "1A", name: "x" }, energy: 5, sections: [], cues: [] };
     const makeTrack = (ctx, silent) => {
       const buf = ctx.createBuffer(1, sr * DUR, sr), d = buf.getChannelData(0);
-      if (!silent) for (let i = 0; i < d.length; i++) { const p = i / sr; d[i] = 0.12 * Math.sin(2 * Math.PI * (F0 * p + K * p * p)); }
+      if (silent === "tone") for (let i = 0; i < d.length; i++) d[i] = 0.12 * Math.sin(2 * Math.PI * 1000 * i / sr);
+      else if (!silent) for (let i = 0; i < d.length; i++) { const p = i / sr; d[i] = 0.12 * Math.sin(2 * Math.PI * (F0 * p + K * p * p)); }
       return { title: silent ? "silence" : "chirp", buffer: buf, duration: DUR, shiftBeats: 0, analysis: analysis };
     };
     const crossings = (x, t0, t1) => { const r = []; for (let i = Math.max(1, Math.floor(t0 * sr)); i < Math.min(x.length, Math.floor(t1 * sr)); i++) if (x[i - 1] < 0 && x[i] >= 0) r.push((i - 1 + (-x[i - 1]) / (x[i] - x[i - 1])) / sr); return r; };
@@ -583,6 +630,94 @@ function makeWav(seconds, bpm) {
       }
       R.spin = { worst: worstS, closerToReverse: fwdWorst, rows: rows, rmsAfter: rms(e.x, ts + 1.4, ts + 2.5) };
     }
+    // 3b. the creative moves: a filter swap closes A and opens B, and a stutter gates the last two beats
+    const blendPlan = { type: "bassSwap", swapBar: 12, blendBars: 8, startBar: 4, inLandBar: 8, inStartBar: 0, buildBars: 0, tailBars: 4, roll: false, riser: false, impact: false, echoThrow: false, crash: false, downlifter: false,
+      bassSwapMode: "hard", intensity: 0.6, amounts: { echo: 55, reverb: 45 }, rise: 0, freshTempo: false, reasons: [], extras: [] };
+    async function blend(extra, aKind, bKind) {
+      const ctx = new OfflineAudioContext(2, sr * 30, sr), m = new Engine.Mixer(ctx, { offline: true, fx: true, settings: Settings.make({ autoFx: "off", fx: true, auto: false }) });
+      const A = m.firstVoice(makeTrack(ctx, aKind), 0.1, "A");
+      const B = m.scheduleTransition(A, makeTrack(ctx, bKind), Object.assign({}, blendPlan, extra), "B");
+      return { x: (await ctx.startRendering()).getChannelData(0), tStart: B.entry.tStart, tSwap: B.entry.tSwap, events: m.fxEvents.map((e) => e.kind + (e.auto ? "*" : "")) };
+    }
+    {
+      const plain = await blend({}, false, true), filt = await blend({ filter: true }, false, true);
+      const late = (r) => rms(r.x, r.tSwap - 2.5, r.tSwap - 0.5);
+      R.filterA = { plain: late(plain), filter: late(filt) };                                   // A (a chirp, 1-2 kHz late on) against the closing low-pass
+      const plainB = await blend({}, true, "tone"), filtB = await blend({ filter: true }, true, "tone");
+      const early = (r) => rms(r.x, r.tStart + 0.08 * (r.tSwap - r.tStart), r.tStart + 0.14 * (r.tSwap - r.tStart));
+      R.filterB = { plain: early(plainB), filter: early(filtB), late: rms(filtB.x, filtB.tSwap + 0.3, filtB.tSwap + 1.5), lateBase: rms(plainB.x, plainB.tSwap + 0.3, plainB.tSwap + 1.5), events: filt.events.join(",") };
+    }
+    {
+      const st = await blend({ type: "stutter", swapBar: 12, blendBars: 0, startBar: 12, inLandBar: 0, inStartBar: 0, buildBars: 1, impact: false }, false, true);
+      const beat = 0.5, t0 = st.tSwap - 2 * beat, hop = Math.floor(sr * 0.004), env = [];
+      for (let i = Math.floor(t0 * sr); i < Math.floor((st.tSwap + 0.05) * sr); i += hop) { let e = 0; for (let j = 0; j < hop; j++) e += st.x[i + j] * st.x[i + j]; env.push(Math.sqrt(e / hop)); }
+      const top = Math.max.apply(null, env); let gaps = 0, off = false;
+      env.slice(0, Math.floor(2 * beat * sr / hop)).forEach((v) => { if (v < 0.15 * top) { if (!off) gaps++; off = true; } else off = false; });
+      R.stutter = { gaps: gaps, before: rms(st.x, st.tSwap - 4, st.tSwap - 2.2), after: rms(st.x, st.tSwap + 1.5, st.tSwap + 3), events: st.events.join(",") };
+    }
+    {
+      const ex = await blend({ extras: [{ kind: "swell" }, { kind: "zap" }, { kind: "snare" }, { kind: "siren" }] }, false, true);
+      R.extras = { kinds: ex.events.join(","), peak: (() => { let m = 0; for (let i = 0; i < ex.x.length; i++) { const a = Math.abs(ex.x[i]); if (a > m) m = a; } return m; })() };
+    }
+
+    // 3c. the vocal tools, on a stereo mix whose parts are at known frequencies: a centred voice (700 Hz),
+    //     a hard-left lead (330 Hz), a hard-right pad (440 Hz) and a centred bass (55 Hz)
+    {
+      const goertzel = (x, f, a, b) => { const w = 2 * Math.PI * f / sr; let re = 0, im = 0; for (let i = Math.floor(a * sr); i < Math.floor(b * sr); i++) { re += x[i] * Math.cos(w * i); im -= x[i] * Math.sin(w * i); } return Math.hypot(re, im) * 2 / ((b - a) * sr); };
+      const db = (a, b) => 20 * Math.log10((a + 1e-9) / (b + 1e-9));
+      const stereo = (ctx) => {
+        const buf = ctx.createBuffer(2, sr * 40, sr), l = buf.getChannelData(0), r = buf.getChannelData(1);
+        for (let i = 0; i < l.length; i++) { const t = i / sr, v = 0.12 * Math.sin(2 * Math.PI * 700 * t), b = 0.12 * Math.sin(2 * Math.PI * 55 * t); l[i] = v + b + 0.12 * Math.sin(2 * Math.PI * 330 * t); r[i] = v + b + 0.12 * Math.sin(2 * Math.PI * 440 * t); }
+        return { title: "stereo", buffer: buf, duration: 40, shiftBeats: 0, analysis: Object.assign({}, analysis, { stereo: true }) };
+      };
+      async function voxRender(mode) {
+        const ctx = new OfflineAudioContext(2, sr * 8, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
+        await m.init();
+        const v = m.firstVoice(stereo(ctx), 0.1, "A");
+        if (mode !== "off") v.setVox(0.5, mode, 0.05);
+        const o = await ctx.startRendering();
+        return { ok: m.voxOk, l: o.getChannelData(0), r: o.getChannelData(1), lat: m.voxLat };
+      }
+      const off = await voxRender("off"), cut = await voxRender("cut"), solo = await voxRender("solo");
+      const m = (r) => ({ voice: goertzel(r.l, 700, 3, 6), lead: goertzel(r.l, 330, 3, 6), pad: goertzel(r.r, 440, 3, 6), bass: goertzel(r.l, 55, 3, 6), leadInR: goertzel(r.r, 330, 3, 6), padInL: goertzel(r.l, 440, 3, 6) });
+      const o0 = m(off), c1 = m(cut), s1 = m(solo);
+      R.vox = { ok: off.ok, latMs: off.lat * 1000,
+        cut: { voice: db(c1.voice, o0.voice), lead: db(c1.lead, o0.lead), pad: db(c1.pad, o0.pad), bass: db(c1.bass, o0.bass), phantom: db(c1.leadInR, o0.leadInR + 1e-3) },
+        solo: { voice: db(s1.voice, o0.voice), lead: db(s1.lead, o0.lead), pad: db(s1.pad, o0.pad), bass: db(s1.bass, o0.bass) } };
+      // the stage delays every deck by the same amount and the effects by the same amount, so a hit still lands on its beat
+      const ctx = new OfflineAudioContext(2, sr * 6, sr), mx = new Engine.Mixer(ctx, { offline: true, fx: false });
+      await mx.init();
+      const clk = ctx.createBuffer(2, sr * 8, sr); clk.getChannelData(0)[Math.floor(sr * 3)] = 1; clk.getChannelData(1)[Math.floor(sr * 3)] = 1;
+      const track = { title: "click", buffer: clk, duration: 8, shiftBeats: 0, analysis: analysis };
+      const vc = mx.firstVoice(track, 0.1, "A");
+      const imp = ctx.createBuffer(1, 64, sr); imp.getChannelData(0)[0] = 1;
+      const isrc = ctx.createBufferSource(); isrc.buffer = imp; isrc.connect(mx.fxGain); isrc.start(3.1 + 1);   // the same moment, a second later
+      const o2 = (await ctx.startRendering()).getChannelData(0);
+      const first = (a, b) => { let best = 0, at = 0; for (let i = Math.floor(a * sr); i < Math.floor(b * sr); i++) if (Math.abs(o2[i]) > best) { best = Math.abs(o2[i]); at = i; } return at / sr; };
+      R.voxTiming = { deck: first(3.0, 3.3) - 3.1, fx: first(4.0, 4.3) - 4.1 };
+      void vc;
+
+      // in a blend: a mashup brings B in as vocals only and its instruments join at the swap; a clash takes A's vocal out
+      const sil = (ctx2) => ({ title: "silence", buffer: ctx2.createBuffer(2, sr * 40, sr), duration: 40, shiftBeats: 0, analysis: Object.assign({}, analysis, { stereo: true }) });
+      async function blendVox(extra, aTrack, bTrack) {
+        const c2 = new OfflineAudioContext(2, sr * 30, sr), m2 = new Engine.Mixer(c2, { offline: true, fx: false, settings: Settings.make({ autoFx: "off", fx: false, auto: false }) });
+        await m2.init();
+        const A = m2.firstVoice(aTrack(c2), 0.1, "A");
+        const B = m2.scheduleTransition(A, bTrack(c2), Object.assign({}, blendPlan, extra), "B");
+        const o2b = (await c2.startRendering()).getChannelData(0);
+        return { x: o2b, tStart: B.entry.tStart, tSwap: B.entry.tSwap };
+      }
+      const bp = (r, f, a, b) => goertzel(r.x, f, a, b);
+      const mash = await blendVox({ vox: { inn: "solo" } }, sil, stereo);
+      const mid = mash.tStart + 0.35 * (mash.tSwap - mash.tStart), after = mash.tSwap + 0.5;
+      R.mashup = { voiceDuring: bp(mash, 700, mid, mid + 2), leadDuring: bp(mash, 330, mid, mid + 2), voiceAfter: bp(mash, 700, after, after + 2), leadAfter: bp(mash, 330, after, after + 2) };
+      const plainB = await blendVox({}, sil, stereo);
+      R.mashupPlain = { leadDuring: bp(plainB, 330, mid, mid + 2) };
+      const clash = await blendVox({ vox: { out: "cut" } }, stereo, sil), noClash = await blendVox({}, stereo, sil);
+      const late = clash.tStart + 0.7 * (clash.tSwap - clash.tStart);
+      R.clash = { voice: db(bp(clash, 700, late, late + 2), bp(noClash, 700, late, late + 2)), lead: db(bp(clash, 330, late, late + 2), bp(noClash, 330, late, late + 2)) };
+    }
+
     // 4. the pads by hand: a loop roll, a spinback and a vinyl brake each give the track back exactly on the beat
     async function playWith(fn) {
       const ctx = new OfflineAudioContext(2, sr * 10, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
@@ -610,6 +745,17 @@ function makeWav(seconds, bpm) {
     }
     return R;
   });
+  check("filter swap: the outgoing track is closed down by the swap (well below a plain blend)", osc.filterA.filter < 0.25 * osc.filterA.plain, JSON.stringify(osc.filterA));
+  check("filter swap: the incoming track starts behind a high-pass and opens up, and is the same afterwards", osc.filterB.filter < 0.3 * osc.filterB.plain && Math.abs(osc.filterB.late - osc.filterB.lateBase) < 0.15 * osc.filterB.lateBase && /filter/.test(osc.filterB.events), JSON.stringify(osc.filterB));
+  check("stutter cut: the last two beats are gated eight times, A is played normally before and gone after", osc.stutter.gaps === 8 && osc.stutter.after < 0.2 * osc.stutter.before && osc.stutter.before > 0.05, JSON.stringify(osc.stutter));
+  check("effect extras around a swap: swell, snare, zap and siren all play and the mix does not clip", /swell/.test(osc.extras.kinds) && /snare/.test(osc.extras.kinds) && /zap/.test(osc.extras.kinds) && /siren/.test(osc.extras.kinds) && osc.extras.peak <= 1.0, JSON.stringify(osc.extras));
+  check("vocal tools load, with a latency of 512 samples", osc.vox.ok && Math.abs(osc.vox.latMs - 512 / 44.1) < 0.01, JSON.stringify(osc.vox));
+  check("no vocals: the centred voice is taken out (15 dB or more) and the panned instruments and the bass are left", osc.vox.ok && osc.vox.cut.voice < -15 && Math.abs(osc.vox.cut.lead) < 3 && Math.abs(osc.vox.cut.pad) < 3 && Math.abs(osc.vox.cut.bass) < 3, JSON.stringify(osc.vox.cut));
+  check("no vocals: a hard-panned instrument does not appear, inverted, on the other side", osc.vox.cut.phantom < 3, osc.vox.cut.phantom && osc.vox.cut.phantom.toFixed(1) + " dB");
+  check("vocals only: the voice stays, the instruments and the bass go (12 dB or more)", osc.vox.ok && osc.vox.solo.voice > -3 && osc.vox.solo.lead < -12 && osc.vox.solo.pad < -12 && osc.vox.solo.bass < -12, JSON.stringify(osc.vox.solo));
+  check("mashup: the incoming track comes in as vocals only, and its instruments are back after the swap", osc.mashup.voiceDuring > 8 * osc.mashup.leadDuring && osc.mashup.leadAfter > 0.5 * osc.mashup.voiceAfter && osc.mashup.leadDuring < 0.2 * osc.mashupPlain.leadDuring, JSON.stringify([osc.mashup, osc.mashupPlain]));
+  check("clashing vocals: the outgoing track's vocal is taken out of the blend and its instruments are not", osc.clash.voice < -12 && Math.abs(osc.clash.lead) < 4, JSON.stringify(osc.clash));
+  check("the vocal stage delays decks and effects alike, so a hit still lands on its beat (within a millisecond)", Math.abs(osc.voxTiming.deck - osc.voxTiming.fx) < 0.001, JSON.stringify(osc.voxTiming));        // (both also carry the master compressor's look-ahead)
   check("roll pad: the roll repeats the beat, and the track is back on the beat afterwards", osc.roll.repeat > 0.85 && osc.roll.baseRepeat < 0.6 && osc.roll.aligned < 2.5 && osc.roll.rmsAfter > 0.9 * osc.roll.rmsBase, JSON.stringify(osc.roll));
   check("spinback pad: the track is wound backwards, fast and slowing, and is back on the beat afterwards", osc.spinHand.rows >= 6 && osc.spinHand.worst < 0.08 && osc.spinHand.aligned < 2.5 && osc.spinHand.rmsAfter > 0.9 * osc.spinHand.rmsBase, JSON.stringify(osc.spinHand));
   check("brake pad: the deck fades as it stops and is back on the beat afterwards, without a pause", osc.brakeHand.rmsAtStop < 0.05 * osc.brakeHand.rmsBefore && osc.brakeHand.aligned < 2.5 && osc.brakeHand.rmsAfter > 0.9 * osc.brakeHand.rmsBase, JSON.stringify(osc.brakeHand));
@@ -640,6 +786,28 @@ function makeWav(seconds, bpm) {
   });
   check("freshTempo: the incoming deck starts at its own tempo, no glide", fresh.true.r0 === 1 && fresh.true.nodes === 1, JSON.stringify(fresh.true));
   check("within reach: the incoming deck starts at the outgoing tempo and settles over 16 bars", fresh.false.r0 !== 1 && fresh.false.nodes > 1, JSON.stringify(fresh.false));
+
+  // automatic sound effects: counts grow with the level, none land inside a transition, and a rendered set stays clean
+  const autoFx = await page.evaluate(async () => {
+    const lib = window.__dj.player.library.slice(0, 4), sr = 44100, R = {};
+    for (const level of ["off", "subtle", "lively", "wild"]) {
+      const S = Settings.make({ autoFx: level, fx: true, auto: false });
+      const mx = new Engine.Mixer(new OfflineAudioContext(2, sr, sr), { offline: true, settings: S });
+      const set = mx.scheduleSet(lib, { settings: S });
+      const auto = mx.fxEvents.filter((e) => e.auto);
+      const windows = set.voices.filter((v) => v.entry).map((v) => [v.entry.tBegin - 0.5 * v.beatSec(v.entry.tSwap) * 4, v.entry.tSwap + v.beatSec(v.entry.tSwap) * 4]);
+      R[level] = { n: auto.length, inside: auto.filter((e) => windows.some((w) => e.t0 >= w[0] && e.t0 <= w[1])).length, kinds: Array.from(new Set(auto.map((e) => e.kind))).join(",") };
+    }
+    const S = Settings.make({ autoFx: "wild", fx: true, auto: false });
+    const out = await Engine.renderSet(lib.slice(0, 2), { settings: S });
+    const x = out.buffer.getChannelData(0); let peak = 0, bad = 0;
+    for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a !== a) bad++; if (a > peak) peak = a; }
+    R.render = { peak: +peak.toFixed(3), bad: bad };
+    return R;
+  });
+  check("auto fx: counts grow with the level and off is silent", autoFx.off.n === 0 && autoFx.subtle.n > 0 && autoFx.subtle.n < autoFx.lively.n && autoFx.lively.n < autoFx.wild.n, JSON.stringify(autoFx));
+  check("auto fx: none sounds inside a transition", autoFx.subtle.inside === 0 && autoFx.lively.inside === 0 && autoFx.wild.inside === 0, JSON.stringify([autoFx.subtle.inside, autoFx.lively.inside, autoFx.wild.inside]));
+  check("auto fx: a rendered set with Wild on has no NaN and does not clip", autoFx.render.bad === 0 && autoFx.render.peak <= 1.0, JSON.stringify(autoFx.render));
 
   // the new moves with real tracks: no clipping, no NaN, the incoming track is heard
   const moves = await page.evaluate(async () => {
@@ -672,6 +840,7 @@ function makeWav(seconds, bpm) {
   check("audio clock advances in real time", t1 - t0 > 1.2 && t1 - t0 < 2.0, (t1 - t0).toFixed(2));
   const posOk = await page.evaluate(() => { const s = window.__dj.player.snapshot(); return s.decks[0].pos > 1 && s.decks[0].bar > 0; });
   check("deck position tracks the clock", posOk);
+  check("the demos are mono, so the vocal buttons are off and say why", (await page.locator('#deck-A .vox button[data-vox="cut"]').isDisabled()) && /mono/.test(await page.getAttribute("#deck-A .vox", "title")));
 
   // ---- turntables: platter, hold-to-rewind, bar jumps, dragging the waveform
   const deckState = () => page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(), d = s.decks.find((x) => x.voice === p.cur); return { pos: d.pos, rate: d.rate, hand: s.hand, bar: d.bar }; });
@@ -798,7 +967,7 @@ function makeWav(seconds, bpm) {
 
   // ---- export
   await page.evaluate(() => { const p = window.__dj.player; p.queue = p.library.slice(0, 3); p.onChange(); });
-  check("nine effect pads are on show without opening anything, Roll, Brake and Spinback among them", (await page.locator(".fxbar .pad").count()) === 9 && (await page.locator(".fxbar .pad").first().isVisible()) && (await page.locator('.fxbar .pad[data-fx="roll"]').isVisible()) && (await page.locator('.fxbar .pad[data-fx="spin"]').isVisible()));
+  check("twelve effect pads are on show without opening anything, Roll, Brake and Spinback among them", (await page.locator(".fxbar .pad").count()) === 12 && (await page.locator(".fxbar .pad").first().isVisible()) && (await page.locator('.fxbar .pad[data-fx="roll"]').isVisible()) && (await page.locator('.fxbar .pad[data-fx="spin"]').isVisible()));
   await page.click("details.perform summary");
   const [download] = await Promise.all([page.waitForEvent("download", { timeout: 120000 }), page.click("#btn-export")]);
   const file = path.join(OUT, "mix.wav");

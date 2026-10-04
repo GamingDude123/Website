@@ -1,5 +1,6 @@
-/* Synthesised effect sounds: riser, sub impact, soft crash, downlifter, and a
- * reverb impulse. Pure, so the shapes can be measured in node.
+/* Synthesised effect sounds: riser, sub impact, soft crash, downlifter, reverse
+ * swell, snare roll, laser zap, siren, and a reverb impulse. Pure, so the shapes
+ * can be measured in node.
  *
  * Every effect here is the kind a club record actually uses and none of them
  * is pitched, so none can clash with the key of whatever is playing:
@@ -9,6 +10,11 @@
  *   impact     – a rounded sub thump with a soft, dark tail
  *   crash      – a bright, wide noise wash that decays, not a clang
  *   downlifter – the riser run backwards, for after a drop
+ *   swell      – a crash played backwards: a wash that builds and stops dead on
+ *                the hit that follows
+ *   snareRoll  – one bar of snare hits getting faster (8ths, 16ths, 32nds) and louder
+ *   zap        – a laser: a bright tone falling fast through the spectrum
+ *   siren      – a wailing tone, for the cheeky end of the effects
  * Each returns an array of channels (one for mono, two for stereo).
  */
 
@@ -139,6 +145,74 @@ var FX = (function () {
     return [x, Float32Array.from(x)];
   }
 
+  // A crash played backwards. It is the last `seconds` of the crash's first stretch,
+  // reversed, so it builds all the way and ends on the loudest point; longer than
+  // the crash itself and it starts from silence.
+  function swell(sr, seconds) {
+    const c = crash(sr), n = Math.max(1, Math.floor(sr * seconds)), m = Math.min(n, c[0].length);
+    const out = [new Float32Array(n), new Float32Array(n)];
+    for (let ch = 0; ch < 2; ch++) {
+      for (let i = 0; i < m; i++) out[ch][n - 1 - i] = c[ch][i];
+      const a = Math.floor(sr * 0.04);                      // start from nothing, end with a short dip so the hit lands in a gap
+      for (let i = 0; i < a; i++) out[ch][n - m + i] *= i / a;
+      const d = Math.floor(sr * 0.02);
+      for (let i = 0; i < d; i++) out[ch][n - 1 - i] *= i / d;
+    }
+    return normalise(out, 0.8);
+  }
+
+  // One bar (`seconds` long) of snare hits: eighth notes for two beats, sixteenths for one,
+  // thirty-seconds for the last, each louder than the one before.
+  function snareRoll(sr, seconds) {
+    const n = Math.floor(sr * seconds), beat = seconds / 4, times = [];
+    for (let b = 0; b < 2; b += 0.5) times.push(b * beat);
+    for (let b = 2; b < 3; b += 0.25) times.push(b * beat);
+    for (let b = 3; b < 4; b += 0.125) times.push(b * beat);
+    const mk = function (seed) {
+      const r = rng(seed), out = new Float32Array(n);
+      times.forEach(function (t, k) {
+        const amp = 0.3 + 0.7 * (k / (times.length - 1)), start = Math.floor(t * sr), len = Math.min(n - start, Math.floor(sr * 0.14));
+        let hp = 0, lp = 0;
+        for (let i = 0; i < len; i++) {
+          const x = i / sr, w = r() * 2 - 1;
+          hp += 0.25 * (w - hp);                            // the snare's rattle: noise without the lows ...
+          lp += 0.6 * ((w - hp) - lp);                      // ... and without the harshest top
+          const body = Math.sin(2 * Math.PI * (185 - 40 * Math.min(1, x / 0.03)) * x) * Math.exp(-x / 0.02);
+          out[start + i] += amp * (lp * Math.exp(-x / 0.045) * 0.9 + body * 0.5) * Math.min(1, i / (sr * 0.001));
+        }
+      });
+      return out;
+    };
+    return normalise([mk(808), mk(909)], 0.8);
+  }
+
+  // A laser zap: a tone that starts high and falls fast, with a little bite.
+  function zap(sr) {
+    const n = Math.floor(sr * 0.42), x = new Float32Array(n);
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr;
+      phase += 2 * Math.PI * (160 + 3400 * Math.exp(-t / 0.075)) / sr;
+      x[i] = (Math.sin(phase) + 0.35 * Math.sin(2 * phase + 0.7)) * Math.exp(-t / 0.16) * Math.min(1, i / (sr * 0.002)) * Math.min(1, (n - 1 - i) / (sr * 0.02));
+    }
+    normalise([x], 0.6);
+    return [x, Float32Array.from(x)];
+  }
+
+  // A siren: a wailing tone swinging between 650 and 1250 Hz twice a second.
+  function siren(sr, seconds) {
+    const n = Math.floor(sr * seconds), x = new Float32Array(n);
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, f = 950 + 300 * Math.sin(2 * Math.PI * 0.9 * t - Math.PI / 2);
+      phase += 2 * Math.PI * f / sr;
+      const tri = Math.asin(Math.sin(phase)) * 2 / Math.PI;             // a triangle: rounder than a saw, edgier than a sine
+      x[i] = (0.75 * tri + 0.25 * Math.sin(phase)) * Math.min(1, t / 0.15) * Math.min(1, (seconds - t) / 0.3);
+    }
+    normalise([x], 0.5);
+    return [x, Float32Array.from(x)];
+  }
+
   // Exponentially decaying stereo noise: a plain, dense room.
   function reverbImpulse(sr, seconds) {
     const n = Math.floor(sr * seconds);
@@ -155,7 +229,7 @@ var FX = (function () {
     return ch;
   }
 
-  return { riser: riser, downlifter: downlifter, crash: crash, impact: impact, reverbImpulse: reverbImpulse };
+  return { riser: riser, downlifter: downlifter, crash: crash, impact: impact, swell: swell, snareRoll: snareRoll, zap: zap, siren: siren, reverbImpulse: reverbImpulse };
 })();
 
 if (typeof module !== "undefined" && module.exports) module.exports = FX;

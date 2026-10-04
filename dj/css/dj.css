@@ -282,3 +282,10 @@ button.more { margin-top: .7rem; display: block; width: 100%; }
 #sp-result .sp-row button.soft, #sc-result .sp-row button.soft { margin-left: auto; }
 button.more[hidden], .tracks-sum[hidden], #btn-hide[hidden], ol.loading-list[hidden] { display: none !important; }
 .fxbar .p7 { --c: #ffb38f; } .fxbar .p8 { --c: #ff9ad5; } .fxbar .p9 { --c: #c3a6ff; }
+.fxbar .p10 { --c: #8fe6ff; } .fxbar .p11 { --c: #ffd98f; } .fxbar .p12 { --c: #c3a6ff; }
+
+/* ---- vocal tools: full / no vocals / vocals only, per deck ---- */
+.vox { display: inline-flex; gap: 3px; padding: 3px; border-radius: 99px; background: rgba(255,255,255,.07); width: fit-content; max-width: 100%; flex-wrap: wrap; }
+.vox button { border: 0; background: transparent; color: var(--dim); padding: .22em .75em; font-size: .76rem; border-radius: 99px; }
+.vox button[aria-pressed=true] { background: var(--glass-2); color: var(--ink); box-shadow: 0 0 16px -6px var(--c); }
+.vox button:disabled { opacity: .35; }

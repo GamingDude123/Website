@@ -297,6 +297,86 @@ function check(name, cond, extra) {
     });
   }
 
+  // ---- automatic sound effects: what the planner puts into a track
+  {
+    const info = (title) => ({ title0: title, bars: 96, cues: { firstDrop: 16, dropStarts: [32, 64], outroStart: 80 },
+      sections: [{ type: "intro", start: 0, end: 16 }, { type: "groove", start: 16, end: 30 }, { type: "break", start: 30, end: 32 }, { type: "drop", start: 32, end: 62 }, { type: "break", start: 62, end: 64 }, { type: "drop", start: 64, end: 80 }, { type: "outro", start: 80, end: 96 }] });
+    const n = (lvl, t) => Brain.planFx(info(t), lvl).length;
+    check("auto fx: off plans nothing, and an unknown level plans nothing", Brain.planFx(info("A"), "off").length === 0 && Brain.planFx(info("A"), "bananas").length === 0);
+    const sub = Brain.planFx(info("A"), "subtle");
+    check("auto fx: subtle is a riser into each drop and a hit on it", [32, 64].every((d) => sub.some((e) => e.kind === "riser" && e.bar + e.bars === d) && sub.some((e) => e.kind === "impact" && e.bar === d)), sub.map((e) => e.kind + "@" + e.bar).join(" "));
+    let a = 0, b = 0, c = 0; for (let i = 0; i < 40; i++) { a += n("subtle", "T" + i); b += n("lively", "T" + i); c += n("wild", "T" + i); }
+    check("auto fx: lively does more than subtle, wild more than lively", a < b && b < c, [a, b, c].map((x) => (x / 40).toFixed(1)).join(" < "));
+    check("auto fx: the same track always gets the same effects", JSON.stringify(Brain.planFx(info("A"), "wild")) === JSON.stringify(Brain.planFx(info("A"), "wild")) && JSON.stringify(Brain.planFx(info("A"), "wild")) !== JSON.stringify(Brain.planFx(info("B"), "wild")));
+    let clear = true, lasers = 0;
+    for (let i = 0; i < 60; i++) Brain.planFx(info("T" + i), "wild").forEach((e) => { if (e.bar < 4 || e.bar > 78) clear = false; if (e.kind === "zap") lasers++; });
+    check("auto fx: nothing in a track's first four bars or in its way out (the transition's)", clear);
+    check("auto fx: wild has lasers", lasers > 5, lasers);
+    check("auto fx: none in a break or the intro (except the build into a drop)", Brain.planFx(info("Q"), "wild").filter((e) => e.kind === "zap" || e.kind === "crash").every((e) => { const bar = Math.floor(e.bar), sec = info("Q").sections.filter((s) => bar >= s.start && bar < s.end)[0]; return sec && ["groove", "drop"].indexOf(sec.type) >= 0; }));
+    check("auto fx: an effect that would sound on top of another is left out", (() => { const e = Brain.planFx(info("Z"), "wild").filter((x) => x.kind === "zap" || x.kind === "siren" || x.kind === "crash"); return e.every((x, i) => i === 0 || x.bar - e[i - 1].bar >= 0.25); })());
+    check("auto fx: a settings preset carries the level", Settings.applyPreset("mainstage").autoFx === "wild" && Settings.applyPreset("smooth").autoFx === "off" && Settings.make().autoFx === "subtle");
+    check("auto fx: a junk level is replaced", Settings.sanitize({ autoFx: "loud" }).autoFx === "subtle");
+  }
+
+  // ---- vocal tools: the stereo profile and when a blend takes a vocal out
+  {
+    const Analysis = require("../js/analysis.js");
+    const sr = 22050, n = sr * 16, barLen = 2, bars = 8, L = new Float32Array(n), R = new Float32Array(n), M = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const t = i / sr, bar = Math.floor(t / barLen);
+      const voice = Math.sin(2 * Math.PI * (400 + 200 * Math.sin(2 * Math.PI * 0.5 * t)) * t) * (bar % 2 === 1 ? 0.5 : 0);     // a centred voice on the odd bars only
+      const padL = Math.sin(2 * Math.PI * 350 * t) * 0.4, padR = Math.sin(2 * Math.PI * 520 * t + 1) * 0.4;
+      L[i] = voice + padL; R[i] = voice + padR; M[i] = voice + 0.5 * (padL + padR);
+    }
+    const wide = Analysis.stereoProfile([L, R], sr, 0, barLen, bars), mono = Analysis.stereoProfile([M, M], sr, 0, barLen, bars), one = Analysis.stereoProfile([M], sr, 0, barLen, bars);
+    check("stereo profile: a stereo file is stereo, a copy of mono in two channels is not, and one channel is not", wide.stereo && !mono.stereo && !one.stereo, [wide.width, mono.width].map((x) => x.toFixed(2)).join(" / "));
+    const odd = [1, 3, 5, 7].map((b) => wide.lead[b]), even = [0, 2, 4, 6].map((b) => wide.lead[b]);
+    check("stereo profile: bars with a centred voice score clearly higher than bars of stereo pads alone", Math.min.apply(null, odd) > 0.5 && Math.max.apply(null, even) < 0.45, odd.map((x) => x.toFixed(2)).join(" ") + " vs " + even.map((x) => x.toFixed(2)).join(" "));
+    const mkv = (title, lead, stereo) => ({ title0: title, bpm: 126, key: "8A", energy: 6, bars: 80, cues: { firstDrop: 16, dropStarts: [24, 48], outroStart: 64 }, lead: new Float32Array(80).fill(lead), stereo: stereo });
+    const S = (o) => Settings.make(Object.assign({ style: "smooth", variety: 0, auto: false }, o || {}));
+    const clash = Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, true), { settings: S() });
+    check("vocal tools: both tracks with a voice in the overlap -> the outgoing one is taken out", clash.type === "bassSwap" && clash.vox && clash.vox.out === "cut" && clash.reasons.some((r) => /vocal or lead/.test(r)), clash.type + " " + JSON.stringify(clash.vox));
+    check("vocal tools: an instrumental intro needs nothing taken out", !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.1, true), { settings: S() }).vox);
+    const mash = Brain.planTransition(mkv("O", 0.1, true), mkv("I", 0.8, true), { settings: S({ tricks: true }) });
+    check("vocal tools: an instrumental outro needs no vocal taken out, and under a vocal intro it can be a mashup", !(mash.vox && mash.vox.out) && (!mash.vox || mash.vox.inn === "solo"), JSON.stringify(mash.vox));
+    let mashups = 0, filters = 0, plain = 0;
+    for (let i = 0; i < 60; i++) {
+      const p = Brain.planTransition(mkv("O" + i, 0.1, true), mkv("I" + i, 0.8, true), { settings: S({ tricks: true }), index: i });
+      if (p.vox && p.vox.inn === "solo") mashups++; else if (p.filter) filters++; else plain++;
+    }
+    check("creative blends: a vocal intro over an instrumental ending is usually a mashup, and the label says so", mashups > 25 && Brain.label(Object.assign({}, mash, { vox: { inn: "solo" } })).indexOf("Vocal mashup") === 0, mashups + " mashups, " + filters + " filter swaps, " + plain + " plain of 60");
+    const off = Brain.planTransition(mkv("O", 0.1, true), mkv("I", 0.8, true), { settings: S({ tricks: false }) });
+    check("creative blends: switched off in the settings there are no mashups or filter swaps", !off.vox && !off.filter);
+    let fs = 0; for (let i = 0; i < 80; i++) if (Brain.planTransition(mkv("P" + i, 0.1, true), mkv("Q" + i, 0.1, true), { settings: S({ style: "mixed", variety: 30, tricks: true }), index: i }).filter) fs++;
+    check("creative blends: a filter swap is one of the blends now and then, not all of them", fs > 8 && fs < 50, fs + " of 80");
+    check("creative blends: the label names it", Brain.label({ type: "bassSwap", blendBars: 16, filter: true }) === "Filter swap · 16 bars" && Brain.label({ type: "stutter", blendBars: 0 }) === "Stutter cut");
+    check("vocal tools: switched off in the settings, nothing is taken out", !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, true), { settings: S({ voxAuto: false }) }).vox);
+    check("vocal tools: a mono track is never touched", !Brain.planTransition(mkv("O", 0.8, false), mkv("I", 0.8, true), { settings: S() }).vox && !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, false), { settings: S() }).vox);
+    check("vocal tools: tracks analysed before this existed (no lead) are left alone", !Brain.planTransition(Object.assign(mkv("O", 0.8, true), { lead: undefined }), mkv("I", 0.8, true), { settings: S() }).vox);
+  }
+
+  // ---- the newer effect sounds
+  {
+    const sr = 44100, rmsOf = (x, a, b) => { let e = 0, n = 0; for (let i = Math.floor(a * sr); i < Math.floor(b * sr) && i < x.length; i++) { e += x[i] * x[i]; n++; } return Math.sqrt(e / Math.max(1, n)); };
+    const zc = (x, a, b) => { let c = 0; for (let i = Math.floor(a * sr) + 1; i < Math.floor(b * sr); i++) if (x[i - 1] < 0 && x[i] >= 0) c++; return c / (b - a); };
+    const sw = FX.swell(sr, 1.9);
+    check("swell: builds and is at its loudest at the end", rmsOf(sw[0], 1.5, 1.85) > 8 * rmsOf(sw[0], 0, 0.3) && sw.length === 2 && Math.abs(sw[0].length / sr - 1.9) < 0.01, rmsOf(sw[0], 0, 0.3).toFixed(3) + " -> " + rmsOf(sw[0], 1.5, 1.85).toFixed(3));
+    check("swell: starts from silence and stops without a click", Math.abs(sw[0][0]) < 1e-3 && Math.abs(sw[0][sw[0].length - 1]) < 0.02, sw[0][sw[0].length - 1]);
+    check("swell: never clips", Math.max.apply(null, sw[0].map(Math.abs)) <= 0.81);
+    const sn = FX.snareRoll(sr, 1.9);
+    const env = []; for (let i = 0; i < sn[0].length; i += 176) { let m = 0; for (let j = i; j < i + 176 && j < sn[0].length; j++) m = Math.max(m, Math.abs(sn[0][j])); env.push(m); }
+    const top = Math.max.apply(null, env); let hits = 0;
+    for (let i = 3; i < env.length - 3; i++) if (env[i] > 0.2 * top && env[i] > env[i - 1] && env[i] >= env[i + 1] && env[i] > env[i - 3]) hits++;
+    check("snare roll: about sixteen hits in the bar, getting louder", hits >= 14 && hits <= 18 && rmsOf(sn[0], 1.4, 1.9) > 3 * rmsOf(sn[0], 0, 0.9), hits + " hits");
+    check("snare roll: wide stereo, not mono", sn[0].some((v, i) => Math.abs(v - sn[1][i]) > 0.05));
+    const z = FX.zap(sr);
+    check("zap: falls from a few kHz to a few hundred Hz", zc(z[0], 0.002, 0.03) > 6 * zc(z[0], 0.2, 0.3), Math.round(zc(z[0], 0.002, 0.03)) + " -> " + Math.round(zc(z[0], 0.2, 0.3)) + " Hz");
+    check("zap: short and quiet at the tail", z[0].length / sr < 0.5 && Math.abs(z[0][z[0].length - 1]) < 0.01);
+    const si = FX.siren(sr, 2);
+    const hz = [zc(si[0], 0.2, 0.3), zc(si[0], 0.7, 0.8), zc(si[0], 1.15, 1.25)];
+    check("siren: wails up and down between about 650 and 1250 Hz", Math.max.apply(null, hz) - Math.min.apply(null, hz) > 250 && Math.min.apply(null, hz) > 550 && Math.max.apply(null, hz) < 1350, hz.map(Math.round).join(", "));
+  }
+
   console.log(fails ? "\n" + fails + " FAILED" : "\nall passed");
   process.exit(fails ? 1 : 0);
 })();

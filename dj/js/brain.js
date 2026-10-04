@@ -218,6 +218,7 @@ var Brain = (function () {
         w.push(["brake", style === "smooth" ? 0.5 : 2.2 * (0.5 + flairK) * (rise0 >= 2 ? 1.5 : 1)]);
         w.push(["spinback", style === "smooth" ? 0 : 1.6 * (0.4 + flairK) * (out.energy >= 8 ? 1.4 : 1)]);
       }
+      if (st.tricks && style !== "smooth") w.push(["stutter", 1.7 * (0.5 + flairK)]);
       const total = w.reduce(function (t, x) { return t + x[1]; }, 0);
       let r = rand() * total, type = w[0][0];
       for (let i = 0; i < w.length; i++) { if (r < w[i][1]) { type = w[i][0]; break; } r -= w[i][1]; }
@@ -230,7 +231,7 @@ var Brain = (function () {
       }
       return { type: type, blendBars: 0, swapBar: swap, inLand: 0, tail: 0 };
     }
-    const EXIT_NAME = { echoOut: "echo out", brake: "vinyl brake", spinback: "spinback" };
+    const EXIT_NAME = { echoOut: "echo out", brake: "vinyl brake", spinback: "spinback", stutter: "stutter cut" };
     const fresh = gap > echoGap;                                  // beyond this the incoming track does not follow the outgoing tempo
 
     const blend = blendOption(), drop = dropOption();
@@ -278,6 +279,8 @@ var Brain = (function () {
       reasons.push("the deck winds down like a stopped record over its last two beats, then " + inn.title0 + " lands on the one");
     } else if (pick.type === "spinback") {
       reasons.push("the outgoing track is wound backwards, fast, as " + inn.title0 + " lands on the one");
+    } else if (pick.type === "stutter") {
+      reasons.push("the last two beats are chopped by a gate that speeds up, then " + inn.title0 + " lands on the one");
     }
 
     tuned.notes.forEach(function (n) {
@@ -285,6 +288,47 @@ var Brain = (function () {
       if (/bass swap/.test(n) && pick.type !== "bassSwap") return;
       reasons.push("auto: " + n);
     });
+    // Two voices at once is a mess: when the outgoing track has a centred vocal or lead in the
+    // overlap and so does the intro riding over it, the outgoing one is taken out until the swap.
+    let vox = null;
+    if (pick.type === "bassSwap" && st.voxAuto && out.stereo !== false && inn.stereo !== false && out.lead && inn.lead) {
+      const avg = function (arr, a, b) { let t = 0, n = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(arr.length, Math.ceil(b)); i++) { t += arr[i]; n++; } return n ? t / n : 0; };
+      const o = avg(out.lead, pick.swapBar - pick.blendBars, pick.swapBar), i = avg(inn.lead, pick.inLand - pick.blendBars, pick.inLand);
+      if (o >= 0.5 && i >= 0.5) {
+        vox = { out: "cut" };
+        reasons.push("both tracks have a vocal or lead in the middle during the blend, so " + out.title0 + "'s is taken out until the swap");
+      }
+    }
+    // The more creative blends. A mashup: the incoming vocal over an instrumental ending, its
+    // instruments joining on the swap. A filter swap: the outgoing track closes down as the
+    // incoming one opens up. (A blend that already takes a clashing vocal out is left alone.)
+    let filter = false;
+    if (pick.type === "bassSwap" && st.tricks && !vox) {
+      let mash = false;
+      if (st.voxAuto && out.stereo !== false && inn.stereo !== false && out.lead && inn.lead) {
+        const avg2 = function (arr, a, b) { let t = 0, n = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(arr.length, Math.ceil(b)); i++) { t += arr[i]; n++; } return n ? t / n : 0; };
+        const o = avg2(out.lead, pick.swapBar - pick.blendBars, pick.swapBar), i = avg2(inn.lead, pick.inLand - pick.blendBars, pick.inLand);
+        if (o < 0.35 && i >= 0.55 && rand() < 0.75) {
+          mash = true;
+          vox = { inn: "solo" };
+          reasons.push(inn.title0 + "'s vocal comes in over the instrumental end of " + out.title0 + "; its instruments join on the swap");
+        }
+      }
+      if (!mash && rand() < (style === "smooth" ? 0.12 : style === "club" ? 0.2 : Math.min(0.5, 0.15 + st.variety / 200))) {
+        filter = true;
+        reasons.push("a filter swap: " + out.title0 + " closes down as " + inn.title0 + " opens up");
+      }
+    }
+    // sound effects dropped around the swap itself, by the level of automatic effects
+    const extras = [];
+    const LVL = { subtle: 0, lively: 1, wild: 2 }[st.autoFx];
+    if (LVL >= 1 && st.fx) {
+      const xr = SET.rng(out.title0 + "|x|" + inn.title0 + "|" + (opts.index || 0));
+      if (pick.type === "bassSwap" && xr() < 0.5) extras.push({ kind: "swell" });
+      if ((pick.type === "dropSwap" || pick.type === "echoOut") && xr() < 0.5) extras.push({ kind: "snare" });
+      if (LVL === 2 && xr() < 0.45) extras.push({ kind: "zap" });
+      if (LVL === 2 && pick.type === "bassSwap" && xr() < 0.15) extras.push({ kind: "siren" });
+    }
     const buildBars = pick.type === "bassSwap" ? 0 : (pick.type === "dropSwap" ? 8 : pick.type === "echoOut" ? 2 : 1);
     const rise = inn.energy - out.energy;
     const isBlend = pick.type === "bassSwap", flair = st.flair;
@@ -311,6 +355,9 @@ var Brain = (function () {
       rise: rise,
       amounts: { echo: st.echoAmount, reverb: st.reverbAmount },
       switched: switched,
+      vox: vox,
+      filter: filter,
+      extras: extras,
       keyScore: ks,
       tempoGap: gap,
       freshTempo: fresh,                           // the incoming track starts at its own tempo, not the outgoing one's
@@ -318,8 +365,68 @@ var Brain = (function () {
     };
   }
 
+  // Sound effects the DJ drops into a track on its own, where the track's structure invites one.
+  // Pure and deterministic (the same track at the same level always gets the same effects, so a
+  // live set and an export match). Returns [{bar, kind, bars, gain}] for the whole track, sorted:
+  // `bar` is where the effect starts, `bars` how long it runs (a hit is 0). Callers keep
+  // only the part they are scheduling, and keep clear of transitions.
+  //   subtle  a riser into each of the track's own drops and a hit on the drop
+  //   lively  + a snare roll or reverse swell into the drop, soft hits on 16-bar phrase lines
+  //   wild    + lasers and the odd siren, more of everything
+  function planFx(info, level) {
+    const LV = { subtle: 0, lively: 1, wild: 2 }[level];
+    if (LV == null) return [];
+    const cues = info.cues || {}, bars = info.bars || 0, secs = info.sections || [];
+    const lastBar = Math.min(bars - 2, (cues.outroStart != null ? cues.outroStart : bars) - 2);   // the way out belongs to the transition
+    const drops = (cues.dropStarts || []).slice();
+    const out = [], busy = [];                    // [start, end) of what is already planned, to keep effects from piling up
+    const free = function (a, b) { return busy.every(function (w) { return b <= w[0] || a >= w[1]; }); };
+    // `with` = true: part of a combination planned on purpose (a snare roll under a riser, the hit that ends a build)
+    const put = function (bar, kind, len, gain, withOthers) {
+      const b = bar + Math.max(len, 0.25);
+      if (bar < 4 || bar > lastBar || (!withOthers && !free(bar - 1, b))) return false;     // not in a track's first 4 bars, not in its way out, not on top of another
+      out.push({ bar: bar, kind: kind, bars: len, gain: gain }); busy.push([bar, b]);
+      return true;
+    };
+    const inType = function (b, types) { const sec = secs.filter(function (s) { return b >= s.start && b < s.end; })[0]; return !!sec && types.indexOf(sec.type) >= 0; };
+    const R = function (bar, salt) { return SET.rng((info.title0 || "") + "|fx|" + salt + "|" + bar)(); };
+    const gain = [0.8, 1, 1.1][LV];
+    drops.forEach(function (d) {
+      const rb = d >= 12 ? 4 : 2, v = R(d, "drop");
+      // into the drop: a riser (always), plus more as it gets livelier; then the hit on the one
+      let built;
+      if (LV === 0 || v < 0.45) built = put(d - rb, "riser", rb, 0.55 * gain);
+      else if (v < 0.75) { built = put(d - rb, "riser", rb, 0.5 * gain); if (built) put(d - 1, "snare", 1, 0.5 * gain, true); }
+      else { built = put(d - 2, "swell", 2, 0.7 * gain); if (built) put(d - 1, "snare", 1, 0.45 * gain, true); }
+      if (built) put(d, "impact", 0, 0.5 * gain, true);
+    });
+    if (LV >= 1) {
+      for (let b = 16; b <= lastBar; b += 16) {
+        if (drops.indexOf(b) >= 0) continue;
+        if (inType(b, ["break", "intro", "outro"])) continue;
+        const v = R(b, "phrase");
+        if (v < (LV === 2 ? 0.7 : 0.4)) {
+          if (R(b, "kind") < 0.45) { if (put(b - 1, "swell", 1, 0.6 * gain)) put(b, "impact", 0, 0.3 * gain, true); }
+          else put(b, "crash", 0, 0.28 * gain);
+        }
+      }
+    }
+    if (LV === 2) {
+      for (let b = 8; b <= lastBar; b += 8) {
+        if (b % 16 === 0) continue;
+        if (inType(b, ["break", "intro", "outro"])) continue;
+        const v = R(b, "wild");
+        if (v < 0.3) put(b + 3 / 4, "zap", 0, 0.5);                                       // on the last beat of a bar in the middle of a phrase
+        else if (v < 0.4 && b % 32 === 8) put(b, "siren", 2, 0.4);
+      }
+    }
+    return out.sort(function (a, b) { return a.bar - b.bar; });
+  }
+
   function label(plan) {
-    return { bassSwap: "Bass swap", dropSwap: "Drop swap", echoOut: "Echo out", brake: "Vinyl brake", spinback: "Spinback" }[plan.type] +
+    const name = plan.type === "bassSwap" ? (plan.vox && plan.vox.inn ? "Vocal mashup" : plan.filter ? "Filter swap" : "Bass swap") :
+      { dropSwap: "Drop swap", echoOut: "Echo out", brake: "Vinyl brake", spinback: "Spinback", stutter: "Stutter cut" }[plan.type];
+    return name +
       (plan.blendBars ? " · " + plan.blendBars + " bars" : "");
   }
 
@@ -331,6 +438,7 @@ var Brain = (function () {
     scoreNext: scoreNext,
     orderSet: orderSet,
     planTransition: planTransition,
+    planFx: planFx,
     label: label,
     parseCamelot: parseCamelot,
   };

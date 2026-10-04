@@ -514,6 +514,61 @@ var Analysis = (function () {
     return { nBars: nBars, sections: sections, intensity: I, loudness: R, density: D, kick: K.map(function (k) { return k / kRef; }), lowPower: L };
   }
 
+  // ------------------------------------------------------------ stereo profile
+  //
+  // Two things the vocal tools need to know, both estimates:
+  //   width  – how much of the track is side (L-R) rather than mid (L+R): near zero means a
+  //            mono file, where nothing can be taken out of the centre because everything is
+  //   lead   – per bar, 0..1, how much of the bar is a centred voice or lead: energy in the
+  //            vocal range (300 Hz - 3.4 kHz) of the mid signal, against that bar's side energy
+  //            in the same range, relative to the track's loud bars. A centred vocal scores
+  //            high; a stereo pad or a bar of drums alone scores low. Centred leads and snares
+  //            count too, so this says "something is singing or leading in the middle",
+  //            not "this is a voice".
+  function biquadBand(lo, hi, sr) {
+    // a high-pass at lo and a low-pass at hi, 2nd order (RBJ), run in series
+    const mk = function (type, f) {
+      const w = 2 * Math.PI * f / sr, cw = Math.cos(w), sw = Math.sin(w), al = sw / (2 * 0.7071), a0 = 1 + al;
+      const hp = type === "hp";
+      return { b0: (hp ? (1 + cw) / 2 : (1 - cw) / 2) / a0, b1: (hp ? -(1 + cw) : (1 - cw)) / a0, b2: (hp ? (1 + cw) / 2 : (1 - cw) / 2) / a0, a1: -2 * cw / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
+    };
+    const stages = [mk("hp", lo), mk("lp", Math.min(hi, sr * 0.45))];
+    return function (x) {
+      let y = x;
+      for (let k = 0; k < stages.length; k++) {
+        const f = stages[k], o = f.b0 * y + f.b1 * f.x1 + f.b2 * f.x2 - f.a1 * f.y1 - f.a2 * f.y2;
+        f.x2 = f.x1; f.x1 = y; f.y2 = f.y1; f.y1 = o; y = o;
+      }
+      return y;
+    };
+  }
+
+  // channels: the decoded channels; downbeat/barLen in seconds; bars how many bars to report
+  function stereoProfile(channels, sampleRate, downbeat, barLen, bars) {
+    const out = { stereo: false, width: 0, lead: new Float32Array(bars) };
+    if (!channels || channels.length < 2) return out;
+    const L = channels[0], R = channels[1], n = Math.min(L.length, R.length), step = 2;     // every other sample is plenty for 300 Hz - 3.4 kHz
+    const sr = sampleRate / step, bm = biquadBand(300, 3400, sr), bs = biquadBand(300, 3400, sr);
+    const em = new Float64Array(bars), es = new Float64Array(bars);
+    let totM = 0, totS = 0;
+    for (let i = 0; i < n; i += step) {
+      const m = 0.5 * (L[i] + R[i]), sd = 0.5 * (L[i] - R[i]);
+      totM += m * m; totS += sd * sd;
+      const bar = Math.floor((i / sampleRate - downbeat) / barLen);
+      const a = bm(m), b = bs(sd);
+      if (bar >= 0 && bar < bars) { em[bar] += a * a; es[bar] += b * b; }
+    }
+    out.width = Math.sqrt(totS / (totM + 1e-12));
+    out.stereo = out.width > 0.03;
+    if (!out.stereo) return out;
+    const sorted = Array.prototype.slice.call(em).sort(function (a, b) { return a - b; }), ref = sorted[Math.floor(sorted.length * 0.9)] + 1e-12;
+    for (let b = 0; b < bars; b++) {
+      const centred = em[b] / (em[b] + es[b] + 1e-12);                 // how much of this range is in the middle
+      out.lead[b] = Math.max(0, Math.min(1, Math.sqrt(Math.min(1, em[b] / ref)) * Math.sqrt(centred)));
+    }
+    return out;
+  }
+
   // ------------------------------------------------------------------ driver
 
   async function analyze(samples, sampleRate, opts) {
@@ -598,6 +653,7 @@ var Analysis = (function () {
 
   return {
     analyze: analyze,
+    stereoProfile: stereoProfile,
     toMono: toMono,
     camelot: camelot,
     NOTE_NAMES: NOTE_NAMES,
