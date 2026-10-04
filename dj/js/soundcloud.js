@@ -87,7 +87,7 @@ var SoundCloud = (function () {
           if (window.SC && window.SC.Widget) resolve(window.SC);
           else { apiPromise = null; reject(new Error("SoundCloud's player script loaded but did not start")); }
         };
-        s.onerror = function () { apiPromise = null; reject(new Error("Could not reach SoundCloud — an ad blocker or the network may be stopping it. You can paste the track list instead.")); };
+        s.onerror = function () { apiPromise = null; reject(new Error("Could not reach SoundCloud. An ad blocker, a privacy setting or the network is stopping w.soundcloud.com from loading. Pasting the track list below always works.")); };
         document.head.appendChild(s);
       });
     }
@@ -110,16 +110,21 @@ var SoundCloud = (function () {
         frame.remove();
         if (err) reject(err); else resolve(val);
       };
-      timer = setTimeout(function () { finish(new Error("SoundCloud did not answer. Check the link is public (or a secret link) and try again, or paste the track list instead.")); }, timeoutMs || 20000);
+      timer = setTimeout(function () { finish(new Error("SoundCloud did not answer in " + Math.round((timeoutMs || 20000) / 1000) + " seconds. An ad blocker or privacy setting blocking w.soundcloud.com is the usual cause, or the link is private or removed. Pasting the track list below always works.")); }, timeoutMs || 20000);
       document.body.appendChild(frame);
       widget = SC.Widget(frame);
       widget.bind(SC.Widget.Events.READY, function () {
-        widget.getSounds(function (list) {
-          if (list && list.length) { finish(null, list); return; }
-          widget.getCurrentSound(function (one) { if (one) finish(null, [one]); else finish(new Error("No tracks found at that link")); });
-        });
+        // the player can say READY before it has the playlist's tracks: ask a few times
+        let tries = 0;
+        (function ask() {
+          widget.getSounds(function (list) {
+            if (list && list.length) { finish(null, list); return; }
+            if (++tries < 4) { setTimeout(ask, 500); return; }
+            widget.getCurrentSound(function (one) { if (one) finish(null, [one]); else finish(new Error("SoundCloud had no tracks at that link. Check that it is a public playlist or track (or a secret link), or paste the list below.")); });
+          });
+        })();
       });
-      widget.bind(SC.Widget.Events.ERROR, function () { finish(new Error("SoundCloud could not open that link")); });
+      widget.bind(SC.Widget.Events.ERROR, function () { finish(new Error("SoundCloud could not open that link. It may be private or removed. Paste the track list below instead.")); });
     });
   }
 

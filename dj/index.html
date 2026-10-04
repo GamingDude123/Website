@@ -87,10 +87,12 @@
       <div class="actions">
         <button class="soft" id="btn-order" title="Re-order the queue for key, tempo and energy">Auto-order</button>
         <button class="soft" id="btn-demo">+ Demo tracks</button>
+        <button class="soft" id="btn-clear" title="Remove every track and the saved copies">Remove all</button>
         <label class="filebtn primary">+ Your files<input type="file" id="file-in" accept="audio/*" multiple hidden></label>
       </div>
     </div>
     <div class="drop" id="drop"><b>Drop audio files here</b><span>MP3, WAV, M4A, FLAC &mdash; whatever your browser can decode</span></div>
+    <p class="fine keep">Your files are kept in this browser, so they are still here after a refresh. Nothing is uploaded. Remove deletes the saved copy.</p>
     <ol id="tracks"></ol>
   </section>
 
@@ -151,6 +153,7 @@
 <script src="js/engine.js"></script>
 <script src="js/turntable.js"></script>
 <script src="js/player.js"></script>
+<script src="js/store.js"></script>
 <script src="js/spotify.js"></script>
 <script src="js/soundcloud.js"></script>
 <script src="js/ui.js"></script>

@@ -52,19 +52,61 @@
     return out;
   }
 
-  async function addBuffer(name, artist, buffer) {
+  const ANALYSIS_REV = 1;                    // bump when analysis.js changes what it returns: saved results are then redone
+  const ORDER_KEY = "autopilot-dj-queue";
+  let storeOk = null;                        // null until a save has been tried; then whether it worked
+  let saveWarned = false;
+  let restoreDone = false;
+  let restoreResolve = null;
+  const restored = new Promise(function (r) { restoreResolve = r; });     // adding waits for the saved files to be back first
+
+  function makeTrack(key, name, artist, buffer, analysis) {
+    return {
+      id: nextId++, key: key, title: name, artist: artist, buffer: buffer, analysis: analysis,
+      peaks: peaksOf(buffer, 900), fine: finePeaks(buffer), duration: buffer.duration, keyOverride: null, shiftBeats: 0,
+    };
+  }
+
+  async function analyse(buffer, ph) {
+    const channels = [];
+    for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
+    return Analysis.analyze(Analysis.toMono(channels), buffer.sampleRate, {
+      onProgress: function (p) { ph.progress = p; changed(); },
+    });
+  }
+
+  // Keep a track in this browser (see store.js). Failure is reported once and is not fatal.
+  function storeFailed(err, what) {
+    storeOk = false;
+    if (saveWarned) return;
+    saveWarned = true;
+    player.note("Could not keep " + what + " for next time (" + (err && err.message ? err.message : "browser storage is unavailable") + "). It will be gone after a refresh.");
+  }
+  function saveTrack(t, source) {
+    if (typeof Store === "undefined") return Promise.resolve();
+    return Store.put({
+      key: t.key, added: Date.now(), title: t.title, artist: t.artist, name: source.name || t.title, file: source.file || null, demo: source.demo || null,
+      rev: ANALYSIS_REV, analysis: t.analysis, keyOverride: t.keyOverride, shiftBeats: t.shiftBeats,
+    }).then(function () { if (storeOk === null) { storeOk = true; changed(); } Store.keep(); }, function (err) { storeFailed(err, t.title); });
+  }
+  function saveEdit(t) {
+    if (typeof Store !== "undefined") Store.patch(t.key, { keyOverride: t.keyOverride, shiftBeats: t.shiftBeats }).catch(function () { /* the track was never saved */ });
+  }
+  function saveOrder() {
+    if (!restoreDone) return;
+    const sig = player.queue.map(function (t) { return t.key; });
+    try { localStorage.setItem(ORDER_KEY, JSON.stringify({ queue: sig })); } catch (e) { /* private mode */ }
+  }
+
+  async function addBuffer(name, artist, buffer, source) {
+    await restored;
     const ph = { name: name, progress: 0 };
     loading.push(ph); changed();
     try {
-      const channels = [];
-      for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
-      const analysis = await Analysis.analyze(Analysis.toMono(channels), buffer.sampleRate, {
-        onProgress: function (p) { ph.progress = p; changed(); },
-      });
-      player.add({
-        id: nextId++, title: name, artist: artist, buffer: buffer, analysis: analysis,
-        peaks: peaksOf(buffer, 900), fine: finePeaks(buffer), duration: buffer.duration, keyOverride: null, shiftBeats: 0,
-      });
+      const analysis = await analyse(buffer, ph);
+      const t = makeTrack(typeof Store !== "undefined" ? Store.newKey() : "k" + nextId, name, artist, buffer, analysis);
+      player.add(t);
+      saveTrack(t, source || {});
     } catch (err) {
       player.note("Could not analyse " + name + ": " + err.message);
     } finally {
@@ -73,33 +115,82 @@
   }
 
   async function addFiles(files) {
+    await restored;
     for (const f of files) {
       const base = f.name.replace(/\.[^.]+$/, "");
       const parts = base.split(/\s+-\s+/);
       const artist = parts.length > 1 ? parts[0] : "", title = parts.length > 1 ? parts.slice(1).join(" - ") : base;
       try {
         const buf = await getDecodeCtx().decodeAudioData(await f.arrayBuffer());
-        await addBuffer(title, artist, buf);
+        await addBuffer(title, artist, buf, { file: f, name: f.name });
       } catch (err) {
         player.note("Could not read " + f.name + " — this browser can't decode it");
       }
     }
   }
 
+  function renderDemo(d) {
+    const r = Synth.renderTrack(d);
+    const buf = getDecodeCtx().createBuffer(1, r.samples.length, r.sampleRate);
+    buf.copyToChannel(r.samples, 0);
+    return buf;
+  }
+
   async function addDemos() {
+    await restored;
     $("btn-demo").disabled = true;
     for (const d of Synth.DEMOS) {
       if (player.library.some(function (t) { return t.title === d.title; })) continue;
       const ph = { name: d.title + " (rendering)", progress: 0 };
       loading.push(ph); changed();
       await tick();
-      const r = Synth.renderTrack(d);
+      const buf = renderDemo(d);
       loading.splice(loading.indexOf(ph), 1);
-      const buf = getDecodeCtx().createBuffer(1, r.samples.length, r.sampleRate);
-      buf.copyToChannel(r.samples, 0);
-      await addBuffer(d.title, d.artist, buf);
+      await addBuffer(d.title, d.artist, buf, { demo: d.title });
     }
     $("btn-demo").disabled = false;
+  }
+
+  // Bring back what was here before the refresh: decode each saved file again,
+  // reuse its saved analysis, restore the by-hand fixes and the queue order.
+  async function restore() {
+    let rows = [];
+    try { rows = typeof Store === "undefined" ? [] : await Store.all(); } catch (err) { rows = []; }
+    const byKey = {};
+    for (const rec of rows) {
+      const ph = { name: rec.title + " (restoring)", progress: 0 };
+      loading.push(ph); changed();
+      try {
+        let buffer;
+        if (rec.demo) {
+          const d = Synth.DEMOS.filter(function (x) { return x.title === rec.demo; })[0];
+          if (!d) throw new Error("that demo no longer exists");
+          await tick();
+          buffer = renderDemo(d);
+        } else {
+          buffer = await getDecodeCtx().decodeAudioData(await rec.file.arrayBuffer());
+        }
+        const fresh = rec.rev === ANALYSIS_REV && rec.analysis;
+        const analysis = fresh ? rec.analysis : await analyse(buffer, ph);
+        const t = makeTrack(rec.key, rec.title, rec.artist, buffer, analysis);
+        t.keyOverride = rec.keyOverride || null; t.shiftBeats = rec.shiftBeats || 0;
+        player.library.push(t); byKey[rec.key] = t;
+        if (!fresh) Store.patch(rec.key, { analysis: analysis, rev: ANALYSIS_REV }).catch(function () { /* ok */ });
+      } catch (err) {
+        player.note("Could not bring back " + rec.title + ": " + (err && err.message ? err.message : err));
+      } finally {
+        loading.splice(loading.indexOf(ph), 1); changed();
+      }
+    }
+    if (rows.length && storeOk === null) storeOk = true;
+    // the saved queue order first, then everything else, so every file is back and queued
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(ORDER_KEY)); } catch (err) { saved = null; }
+    const first = ((saved && saved.queue) || []).map(function (k) { return byKey[k]; }).filter(Boolean);
+    player.queue = first.concat(player.library.filter(function (t) { return first.indexOf(t) < 0; }));
+    restoreDone = true;
+    changed();
+    restoreResolve();
   }
 
   // -------------------------------------------------------------- track list
@@ -153,13 +244,15 @@
     let bytes = 0;
     player.library.forEach(function (t) { bytes += t.buffer.length * t.buffer.numberOfChannels * 4; });
     const mb = Math.round(bytes / 1048576), n = player.library.length;
-    $("lib-stat").textContent = n ? n + (n === 1 ? " track" : " tracks") + " · " + mb + " MB in memory" + (mb > 1500 ? " — heavy; remove a few if the page slows" : "") : "";
+    saveOrder();
+    $("lib-stat").textContent = n ? n + (n === 1 ? " track" : " tracks") + " · " + mb + " MB in memory" + (storeOk ? " · saved in this browser" : storeOk === false ? " · not saved (browser storage is off or full)" : "") + (mb > 1500 ? " — heavy; remove a few if the page slows" : "") : "";
     $("lib-stat").classList.toggle("warn", mb > 1500);
 
     const running = player.running;
     $("btn-go").innerHTML = running ? "&#9632; Stop the set" : "&#9654; Start the set";
     $("btn-go").classList.toggle("stop", running);
     $("btn-go").disabled = !running && !player.queue.length;
+    $("btn-clear").disabled = !player.library.length || running;
     $("btn-pause").disabled = !running;
     $("btn-pause").textContent = player.paused ? "Resume" : "Pause";
     const live = running && !player.paused && !player.pausing && !player.session;
@@ -176,19 +269,19 @@
     const q = player.queue, i = q.indexOf(t);
     const act = b.dataset.act;
     if (act === "edit") { if (openRows.has(t.id)) openRows.delete(t.id); else openRows.add(t.id); }
-    else if (act === "del") player.remove(t);
+    else if (act === "del") { player.remove(t); if (typeof Store !== "undefined") Store.remove(t.key).catch(function () { /* ok */ }); }
     else if (act === "queue") q.push(t);
     else if (act === "next") { q.splice(i, 1); q.unshift(t); }
     else if (act === "up" && i > 0) { q.splice(i, 1); q.splice(i - 1, 0, t); }
     else if (act === "down" && i < q.length - 1) { q.splice(i, 1); q.splice(i + 1, 0, t); }
-    else if (act === "shift") t.shiftBeats = (t.shiftBeats + 1) % 4;
+    else if (act === "shift") { t.shiftBeats = (t.shiftBeats + 1) % 4; saveEdit(t); }
     changed();
   });
   $("tracks").addEventListener("change", function (e) {
     const s = e.target.closest("select[data-act=key]");
     if (!s) return;
     const t = player.library.find(function (x) { return x.id === +s.dataset.id; });
-    if (t) { t.keyOverride = s.value || null; changed(); }
+    if (t) { t.keyOverride = s.value || null; saveEdit(t); changed(); }
   });
 
   // ----------------------------------------------------------------- decks
@@ -763,6 +856,17 @@
     const open = $("about").hidden; $("about").hidden = !open; $("btn-about").setAttribute("aria-expanded", String(open));
   });
   $("btn-demo").addEventListener("click", addDemos);
+  let clearTimer = null;
+  function disarmClear() { clearTimeout(clearTimer); clearTimer = null; $("btn-clear").textContent = "Remove all"; }
+  $("btn-clear").addEventListener("click", function () {
+    if (player.running) { player.note("Stop the set before removing the tracks"); return; }
+    if (!clearTimer) { $("btn-clear").textContent = "Sure? Remove all"; clearTimer = setTimeout(disarmClear, 4000); return; }   // two presses, so it cannot be done by accident
+    disarmClear();
+    player.library.slice().forEach(function (t) { player.remove(t); });
+    if (typeof Store !== "undefined") Store.clear().catch(function () { /* ok */ });
+    try { localStorage.removeItem(ORDER_KEY); } catch (e) { /* ok */ }
+    changed();
+  });
   $("file-in").addEventListener("change", function (e) { addFiles(Array.from(e.target.files)); e.target.value = ""; });
   ["dragenter", "dragover"].forEach(function (ev) { $("drop").addEventListener(ev, function (e) { e.preventDefault(); $("drop").classList.add("over"); }); });
   ["dragleave", "drop"].forEach(function (ev) { $("drop").addEventListener(ev, function (e) { e.preventDefault(); $("drop").classList.remove("over"); }); });
@@ -849,6 +953,14 @@
     if (q2) q2.onclick = function () { queue(true); };
   }
 
+  // A message in the list's own card, where the person is looking, not only in the log.
+  function listNote(kind, text) {
+    lists[kind] = null;
+    document.querySelector(LISTS[kind].card).open = true;
+    $(LISTS[kind].el).innerHTML = '<p class="list-msg" role="alert">' + esc(text) + "</p>";
+    player.note(text);
+  }
+
   function showList(kind, name, tracks) {
     lists[kind] = { name: name, tracks: tracks, matches: [] };
     document.querySelector(LISTS[kind].card).open = true;
@@ -878,7 +990,7 @@
     const f = e.target.files[0]; e.target.value = "";
     if (!f) return;
     const tracks = Spotify.tracksFromCSV(await f.text());
-    if (!tracks.length) { player.note("That CSV has no track names — export it with Exportify"); return; }
+    if (!tracks.length) { listNote("spotify", "That CSV has no track names. Export the playlist with Exportify and use that file."); return; }
     showSpotify(f.name.replace(/\.csv$/i, ""), tracks);
   });
   $("sp-connect").addEventListener("click", function () {
@@ -906,24 +1018,30 @@
   }
   $("sc-read").addEventListener("click", async function () {
     const link = $("sc-link").value.trim();
-    if (!link) { player.note("Paste a SoundCloud link first"); return; }
+    if (!link) { listNote("soundcloud", "Paste a SoundCloud link first."); return; }
     scBusy(true);
+    $("sc-result").innerHTML = '<p class="list-msg" role="status">Asking SoundCloud…</p>';
+    lists.soundcloud = null;
     try {
       const r = await SoundCloud.readLink(link);
-      if (!r.tracks.length) { player.note("SoundCloud had no tracks at that link"); }
+      if (!r.tracks.length) listNote("soundcloud", "SoundCloud had no tracks at that link. Check that it is a public playlist or track, or paste the list below.");
       else showList("soundcloud", { playlist: "SoundCloud playlist", likes: "SoundCloud likes", profile: "SoundCloud profile", track: "SoundCloud track" }[r.kind], r.tracks);
-    } catch (err) { player.note(err.message); }
+    } catch (err) {
+      listNote("soundcloud", err.message);
+      document.querySelector("details.soundcloud details.paste").open = true;      // the way that always works
+    }
     scBusy(false);
   });
   $("sc-link").addEventListener("keydown", function (e) { if (e.key === "Enter") $("sc-read").click(); });
   $("sc-paste-go").addEventListener("click", function () {
     const tracks = SoundCloud.tracksFromText($("sc-paste").value);
-    if (!tracks.length) { player.note("Paste one track per line, like “Artist - Title”"); return; }
+    if (!tracks.length) { listNote("soundcloud", "Paste one track per line, like “Artist - Title”."); return; }
     showList("soundcloud", "Pasted list", tracks);
   });
 
   // test hook
-  window.__dj = { player: player, addBuffer: addBuffer, addDemos: addDemos };
+  window.__dj = { player: player, addBuffer: addBuffer, addDemos: addDemos, restored: restored, store: typeof Store === "undefined" ? null : Store };
+  restore();
 
   renderLists();
   requestAnimationFrame(frame);
