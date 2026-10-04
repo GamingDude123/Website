@@ -549,22 +549,26 @@ var Analysis = (function () {
     if (!channels || channels.length < 2) return out;
     const L = channels[0], R = channels[1], n = Math.min(L.length, R.length), step = 2;     // every other sample is plenty for 300 Hz - 3.4 kHz
     const sr = sampleRate / step, bm = biquadBand(300, 3400, sr), bs = biquadBand(300, 3400, sr);
-    const em = new Float64Array(bars), es = new Float64Array(bars);
+    const em = new Float64Array(bars), es = new Float64Array(bars), fm = new Float64Array(bars), fs = new Float64Array(bars);
     let totM = 0, totS = 0;
     for (let i = 0; i < n; i += step) {
       const m = 0.5 * (L[i] + R[i]), sd = 0.5 * (L[i] - R[i]);
       totM += m * m; totS += sd * sd;
       const bar = Math.floor((i / sampleRate - downbeat) / barLen);
       const a = bm(m), b = bs(sd);
-      if (bar >= 0 && bar < bars) { em[bar] += a * a; es[bar] += b * b; }
+      if (bar >= 0 && bar < bars) { em[bar] += a * a; es[bar] += b * b; fm[bar] += m * m; fs[bar] += sd * sd; }
     }
     out.width = Math.sqrt(totS / (totM + 1e-12));
     out.stereo = out.width > 0.03;
     if (!out.stereo) return out;
     const sorted = Array.prototype.slice.call(em).sort(function (a, b) { return a - b; }), ref = sorted[Math.floor(sorted.length * 0.9)] + 1e-12;
     for (let b = 0; b < bars; b++) {
-      const centred = em[b] / (em[b] + es[b] + 1e-12);                 // how much of this range is in the middle
-      out.lead[b] = Math.max(0, Math.min(1, Math.sqrt(Math.min(1, em[b] / ref)) * Math.sqrt(centred)));
+      // how much more of this range is in the middle than at the sides: 1 for a centred voice, 0 for
+      // wide uncorrelated sound (a pad, reverb, a hard-panned instrument), which is equally mid and side
+      const centred = Math.max(0, Math.min(1, (em[b] - es[b]) / (em[b] + es[b] + 1e-12) / 0.7));    // (70% more middle than side is as centred as a voice gets)
+      // and whether this range is a real part of the bar (a mono sub-bass leaking through the filter is not)
+      const share = (em[b] + es[b]) / (fm[b] + fs[b] + 1e-12);
+      out.lead[b] = Math.max(0, Math.min(1, Math.sqrt(Math.min(1, em[b] / ref)) * Math.sqrt(centred) * Math.sqrt(Math.min(1, share / 0.06))));
     }
     return out;
   }

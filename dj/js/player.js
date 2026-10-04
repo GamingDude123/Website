@@ -95,12 +95,15 @@ var Player = (function () {
   };
 
   Player.prototype.start = async function () {
-    if (this.running || !this.queue.length) return;
+    if (this.running || this.starting || !this.queue.length) return;
+    this.starting = true;                                // (the set is only running once the audio is ready)
     const Ctor = window.AudioContext || window.webkitAudioContext;
-    this.ctx = new Ctor({ latencyHint: "playback" });
-    await this.ctx.resume();
-    this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
-    await this.mixer.init();
+    try {
+      this.ctx = new Ctor({ latencyHint: "playback" });
+      await this.ctx.resume();
+      this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
+      await this.mixer.init();
+    } finally { this.starting = false; }
     const first = this.queue.shift();
     this.history.push(first);
     this.cur = this.mixer.firstVoice(first, this.ctx.currentTime + 0.2, "A");
@@ -196,7 +199,7 @@ var Player = (function () {
     const A = this.cur, ctx = this.ctx;
     const next = this.queue[0];
     if (!next) return false;
-    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length };
+    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length, vox: !!this.mixer.voxOk };
     const plan_ = function (opts) { return Brain.planTransition(Engine.infoOf(A.track), Engine.infoOf(next), opts); };
     const late = function (p) { return A.timeOfBar(p.startBar) < now + 0.3; };
     let plan;
@@ -389,13 +392,13 @@ var Player = (function () {
       return {
         voice: v, label: v.label, track: v.track, bar: bar, pos: v.tl.posAt(now), rate: v.tl.rateAt(now),
         bpm: Math.abs(v.tempoAt(now)), started: now >= v.t0, touch: !!touch.voice && touch.voice === v,
-        vox: { mode: v.voxMode, ok: v.voxAvailable(), mono: v.track.buffer.numberOfChannels < 2 || (v.track.analysis && v.track.analysis.stereo === false) },
+        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: v.track.buffer.numberOfChannels < 2 || (v.track.analysis && v.track.analysis.stereo === false) },
         eq: { low: v.low.gain.value, mid: v.mid.gain.value, high: v.high.gain.value },
         level: v.fader.gain.value,
         audible: now >= v.t0 && v.fader.gain.value > 0.02,
       };
     });
-    return { now: now, decks: decks, paused: this.paused, pausing: this.pausing, hand: !!this.session, lock: touch.voice ? "" : touch.why, fx: this.mixer ? this.mixer.fxState(now) : {} };
+    return { now: now, decks: decks, paused: this.paused, pausing: this.pausing, hand: !!this.session, lock: touch.voice ? "" : touch.why, fx: this.mixer ? this.mixer.fxState(now) : {}, fxBusy: this.mixer ? this.mixer.fxBusy(now) : false };
   };
 
   // ------------------------------------------------------------- turntables

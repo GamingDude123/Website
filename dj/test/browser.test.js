@@ -716,6 +716,22 @@ function makeStereoWav(seconds, bpm) {
       const clash = await blendVox({ vox: { out: "cut" } }, stereo, sil), noClash = await blendVox({}, stereo, sil);
       const late = clash.tStart + 0.7 * (clash.tSwap - clash.tStart);
       R.clash = { voice: db(bp(clash, 700, late, late + 2), bp(noClash, 700, late, late + 2)), lead: db(bp(clash, 330, late, late + 2), bp(noClash, 330, late, late + 2)) };
+      // the instruments of a mashup join over the last two beats: a glide, not a step
+      const beat = 60 / analysis.bpm, joinAt = (k) => mash.tSwap - k * beat;
+      R.mashupJoin = [2.6, 1.8, 1.2, 0.6].map((k) => bp(mash, 330, joinAt(k), joinAt(k) + 0.2));
+      // a transition that is called off (Mix now, a grab, a jump) takes its vocal move with it
+      async function rolledBack() {
+        const c2 = new OfflineAudioContext(2, sr * 30, sr), m2 = new Engine.Mixer(c2, { offline: true, fx: false, settings: Settings.make({ autoFx: "off", fx: false, auto: false }) });
+        await m2.init();
+        const A = m2.firstVoice(stereo(c2), 0.1, "A");
+        const B = m2.scheduleTransition(A, sil(c2), Object.assign({}, blendPlan, { vox: { out: "cut" } }), "B");
+        const modeBefore = A.voxModeAt(B.entry.tStart + 5);
+        B.destroy(); A.rollback(0.5);
+        const o2b = (await c2.startRendering()).getChannelData(0);
+        return { x: o2b, tStart: B.entry.tStart, tSwap: B.entry.tSwap, modeBefore: modeBefore, modeAfter: A.voxModeAt(B.entry.tStart + 5) };
+      }
+      const rb = await rolledBack(), lateRb = rb.tStart + 0.7 * (rb.tSwap - rb.tStart);
+      R.rollback = { voice: db(bp(rb, 700, lateRb, lateRb + 2), bp(noClash, 700, lateRb, lateRb + 2)), before: rb.modeBefore, after: rb.modeAfter };
     }
 
     // 4. the pads by hand: a loop roll, a spinback and a vinyl brake each give the track back exactly on the beat
@@ -754,6 +770,8 @@ function makeStereoWav(seconds, bpm) {
   check("no vocals: a hard-panned instrument does not appear, inverted, on the other side", osc.vox.cut.phantom < 3, osc.vox.cut.phantom && osc.vox.cut.phantom.toFixed(1) + " dB");
   check("vocals only: the voice stays, the instruments and the bass go (12 dB or more)", osc.vox.ok && osc.vox.solo.voice > -3 && osc.vox.solo.lead < -12 && osc.vox.solo.pad < -12 && osc.vox.solo.bass < -12, JSON.stringify(osc.vox.solo));
   check("mashup: the incoming track comes in as vocals only, and its instruments are back after the swap", osc.mashup.voiceDuring > 8 * osc.mashup.leadDuring && osc.mashup.leadAfter > 0.5 * osc.mashup.voiceAfter && osc.mashup.leadDuring < 0.2 * osc.mashupPlain.leadDuring, JSON.stringify([osc.mashup, osc.mashupPlain]));
+  check("mashup: the instruments join over the last two beats as a glide, not a step", osc.mashupJoin[0] < 0.1 * osc.mashupJoin[3] && osc.mashupJoin[1] > 1.15 * osc.mashupJoin[0] && osc.mashupJoin[2] > 1.15 * osc.mashupJoin[1] && osc.mashupJoin[3] > 1.15 * osc.mashupJoin[2], JSON.stringify(osc.mashupJoin));
+  check("a mix that is called off takes its vocal move with it", Math.abs(osc.rollback.voice) < 1.5 && osc.rollback.before === "cut" && osc.rollback.after === "off", JSON.stringify(osc.rollback));
   check("clashing vocals: the outgoing track's vocal is taken out of the blend and its instruments are not", osc.clash.voice < -12 && Math.abs(osc.clash.lead) < 4, JSON.stringify(osc.clash));
   check("the vocal stage delays decks and effects alike, so a hit still lands on its beat (within a millisecond)", Math.abs(osc.voxTiming.deck - osc.voxTiming.fx) < 0.001, JSON.stringify(osc.voxTiming));        // (both also carry the master compressor's look-ahead)
   check("roll pad: the roll repeats the beat, and the track is back on the beat afterwards", osc.roll.repeat > 0.85 && osc.roll.baseRepeat < 0.6 && osc.roll.aligned < 2.5 && osc.roll.rmsAfter > 0.9 * osc.roll.rmsBase, JSON.stringify(osc.roll));

@@ -291,7 +291,7 @@ var Brain = (function () {
     // Two voices at once is a mess: when the outgoing track has a centred vocal or lead in the
     // overlap and so does the intro riding over it, the outgoing one is taken out until the swap.
     let vox = null;
-    if (pick.type === "bassSwap" && st.voxAuto && out.stereo !== false && inn.stereo !== false && out.lead && inn.lead) {
+    if (pick.type === "bassSwap" && st.voxAuto && opts.vox !== false && out.stereo !== false && inn.stereo !== false && out.lead && inn.lead) {
       const avg = function (arr, a, b) { let t = 0, n = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(arr.length, Math.ceil(b)); i++) { t += arr[i]; n++; } return n ? t / n : 0; };
       const o = avg(out.lead, pick.swapBar - pick.blendBars, pick.swapBar), i = avg(inn.lead, pick.inLand - pick.blendBars, pick.inLand);
       if (o >= 0.5 && i >= 0.5) {
@@ -305,7 +305,7 @@ var Brain = (function () {
     let filter = false;
     if (pick.type === "bassSwap" && st.tricks && !vox) {
       let mash = false;
-      if (st.voxAuto && out.stereo !== false && inn.stereo !== false && out.lead && inn.lead) {
+      if (opts.vox !== false && out.stereo !== false && inn.stereo !== false && out.lead && inn.lead) {
         const avg2 = function (arr, a, b) { let t = 0, n = 0; for (let i = Math.max(0, Math.floor(a)); i < Math.min(arr.length, Math.ceil(b)); i++) { t += arr[i]; n++; } return n ? t / n : 0; };
         const o = avg2(out.lead, pick.swapBar - pick.blendBars, pick.swapBar), i = avg2(inn.lead, pick.inLand - pick.blendBars, pick.inLand);
         if (o < 0.35 && i >= 0.55 && rand() < 0.75) {
@@ -344,7 +344,7 @@ var Brain = (function () {
       tailBars: pick.tail,
       // effects: each has its own switch, and flair decides how showy it gets
       roll: st.rolls && !isBlend && !winds && style !== "smooth" && flair >= 50,
-      riser: st.risers && !winds && (isBlend ? (rise >= 2 && flair >= 25) || flair >= 80 : flair >= 25),
+      riser: st.risers && !winds && pick.type !== "stutter" && (isBlend ? (rise >= 2 && flair >= 25) || flair >= 80 : flair >= 25),
       // a blend still gets a hit where the basslines trade (softer when the energy does not rise)
       impact: st.impacts && (isBlend ? (rise >= 1 && flair >= 15) || flair >= 40 : flair >= 15),
       echoThrow: st.echoThrows && !isBlend && !winds && flair >= 30,

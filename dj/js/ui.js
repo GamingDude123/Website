@@ -56,7 +56,7 @@
   let addEpoch = 0;                          // Remove all / Stop adding bump this: whatever was still on its way from before is dropped
   const adding = { verb: "Adding", total: 0, done: 0 };       // files still to come, across overlapping batches
   let fullNoted = false;
-  const ANALYSIS_REV = 2;                    // bump when analysis.js changes what it returns: saved results are then redone
+  const ANALYSIS_REV = 3;                    // bump when analysis.js changes what it returns: saved results are then redone
   const ORDER_KEY = "autopilot-dj-queue";
   let storeOk = null;                        // null until a save has been tried; then whether it worked
   let saveWarned = false;
@@ -616,7 +616,7 @@
     st.k.tt.classList.toggle("locked", !d.touch);
     st.k.vox.querySelectorAll("button").forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.dataset.vox === d.vox.mode));
-      b.disabled = !d.vox.ok;
+      b.disabled = !d.vox.ok || snap.paused;
     });
     st.k.vox.title = d.vox.ok ? "" : d.vox.mono ? "Vocal tools need a stereo track; this one is mono" : "Vocal tools need a browser with audio worklets";
     st.k.platter.tabIndex = d.touch ? 0 : -1;
@@ -840,7 +840,7 @@
   }
   function showFx(snap) {
     const fx = snap.fx || {}, planned = {};
-    if (!Object.keys(fx).some(function (k) { return fx[k] === "plan" || fx[k] === "on"; }) && player.queue[0] && preview.plan) Object.assign(planned, plannedFx(preview.plan, player.settings));
+    if (!snap.fxBusy && player.queue[0] && preview.plan) Object.assign(planned, plannedFx(preview.plan, player.settings));
     LAMPS.forEach(function (el) {
       const k = el.dataset.lamp, st = fx[k] === "on" ? "on" : (fx[k] === "plan" || planned[k]) ? "plan" : "";
       el.classList.toggle("on", st === "on");
@@ -895,7 +895,7 @@
       knob.style.left = (curLabel === "B" ? 100 : 0) + "%"; bar.style.width = (curLabel === "B" ? 100 : 0) + "%";
       if (now - preview.at > 0.5 || preview.key !== player.queue[0].id + ":" + JSON.stringify(player.settings)) {
         preview.at = now; preview.key = player.queue[0].id + ":" + JSON.stringify(player.settings);
-        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length });
+        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length, vox: !!(player.mixer && player.mixer.voxOk) });
       }
       const pl = preview.plan;
       $("strip-title").textContent = "Next · " + Brain.label(pl) + " → " + player.queue[0].title;
@@ -924,7 +924,7 @@
   const SETTINGS_KEY = "autopilot-dj-settings";
   function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(player.settings)); } catch (e) { /* private mode */ } }
   function loadSettings() {
-    try { const raw = localStorage.getItem(SETTINGS_KEY); if (raw) player.setSettings(JSON.parse(raw)); } catch (e) { /* ignore a bad copy */ }
+    try { const raw = localStorage.getItem(SETTINGS_KEY); if (raw) player.setSettings(Settings.migrate(JSON.parse(raw))); } catch (e) { /* ignore a bad copy */ }
   }
 
   const PCT = "%";

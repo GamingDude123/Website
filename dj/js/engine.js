@@ -149,7 +149,9 @@ var Engine = (function () {
       this.trim.connect(this.voxIn); this.voxIn.connect(this.voxDry); this.voxDry.connect(this.voxDryGain);
       this.voxDryGain.connect(this.voxOut); this.voxOut.connect(this.low);
     } else this.trim.connect(this.low);
-    this.voxMode = "off";
+    this.voxMode = "off";                                    // the mode the last move ends in (see voxModeAt for the one in force at a time)
+    this.voxEvents = [];                                     // [{t, mode}], when each move begins
+    this.voxLv = { cut: [{ t: 0, v: 0 }], solo: [{ t: 0, v: 0 }], wet: [{ t: 0, v: 0 }], dry: [{ t: 0, v: 1 }] };   // what each stage parameter is set to follow
     this.low.connect(this.mid); this.mid.connect(this.high);
     this.high.connect(this.hp); this.hp.connect(this.lp); this.lp.connect(this.tap);
     this.tap.connect(this.fader); this.fader.connect(mixer.masterIn);
@@ -214,6 +216,8 @@ var Engine = (function () {
     fxn.forEach(function (f) { if (f.t >= now - 0.01) { try { f.src.stop(); } catch (e) { /* ok */ } } });
     this.mixer.fxNodes = fxn.filter(function (f) { return f.t < now - 0.01; });
     this.mixer.fxEvents = (this.mixer.fxEvents || []).filter(function (e) { return e.t0 < now - 0.01; });
+    this.fxBar = null;                                   // automatic effects are planned afresh from here
+    if (this.vox) this.setVox(now, this.voxModeAt(now), 0.05);       // a vocal move planned for the transition goes with it
     void self;
   };
 
@@ -305,22 +309,52 @@ var Engine = (function () {
     return this.vox;
   };
 
+  // What a stage parameter will be at time t, given the moves scheduled on it ([{t, v}], linear between).
+  function levelAt(nodes, t) {
+    if (t <= nodes[0].t) return nodes[0].v;
+    for (let i = 1; i < nodes.length; i++) {
+      if (t <= nodes[i].t) { const a = nodes[i - 1], b = nodes[i]; return b.t === a.t ? b.v : a.v + (b.v - a.v) * (t - a.t) / (b.t - a.t); }
+    }
+    return nodes[nodes.length - 1].v;
+  }
+
+  // The mode in force at time t: a move scheduled for later has not happened yet.
+  Voice.prototype.voxModeAt = function (t) {
+    let m = "off";
+    this.voxEvents.forEach(function (e) { if (e.t <= t) m = e.mode; });
+    return m;
+  };
+
   // "off" (the deck as it is), "cut" (the centred vocals taken out: an instrumental) or "solo"
   // (only the centred vocals: the instrument taken out), from time t, glided over `glide` s.
+  // Each move starts from where the stage will be at t (not where it is now), so moves
+  // can be laid out ahead of time, and cutting in on one that is still gliding carries on from it.
+  // Cut and solo do not blend, so going from one straight to the other passes through the full track.
   Voice.prototype.setVox = function (t, mode, glide) {
     if (!this.voxAvailable()) return false;
     const g = Math.max(0.02, glide == null ? 0.3 : glide), node = this.voxNode(), on = mode === "cut" || mode === "solo";
-    const set = function (p, v) { p.cancelScheduledValues(t); p.setValueAtTime(p.value, t); p.linearRampToValueAtTime(v, t + g); };
-    set(node.parameters.get("cut"), mode === "cut" ? 1 : 0);
-    set(node.parameters.get("solo"), mode === "solo" ? 1 : 0);
-    set(this.voxWet.gain, on ? 1 : 0);
-    set(this.voxDryGain.gain, on ? 0 : 1);
+    const was = this.voxModeAt(t), direct = (was === "cut" && mode === "solo") || (was === "solo" && mode === "cut"), h = direct ? g / 2 : g;
+    const lv = this.voxLv;
+    const move = function (name, p, pts) {
+      const nodes = lv[name], v0 = levelAt(nodes, t);
+      p.cancelScheduledValues(t);
+      p.linearRampToValueAtTime(v0, t);                  // an unfinished move carries on up to t
+      lv[name] = nodes.filter(function (n) { return n.t < t; }).concat([{ t: t, v: v0 }]);
+      pts.forEach(function (q) { p.linearRampToValueAtTime(q.v, q.t); lv[name].push({ t: q.t, v: q.v }); });
+    };
+    const one = function (to) { return [{ t: t + g, v: to }]; };
+    move("cut", node.parameters.get("cut"), mode === "cut" ? (direct ? [{ t: t + h, v: 0 }, { t: t + g, v: 1 }] : one(1)) : (direct ? [{ t: t + h, v: 0 }] : one(0)));
+    move("solo", node.parameters.get("solo"), mode === "solo" ? (direct ? [{ t: t + h, v: 0 }, { t: t + g, v: 1 }] : one(1)) : (direct ? [{ t: t + h, v: 0 }] : one(0)));
+    move("wet", this.voxWet.gain, one(on ? 1 : 0));
+    move("dry", this.voxDryGain.gain, one(on ? 0 : 1));
+    this.voxEvents = this.voxEvents.filter(function (e) { return e.t < t; }).concat([{ t: t, mode: on ? mode : "off" }]);
     this.voxMode = on ? mode : "off";
     return true;
   };
 
   Voice.prototype.destroy = function () {
     try { this.src.stop(); } catch (e) { /* not started or already stopped */ }
+    if (this.vox) { try { this.vox.port.postMessage({ type: "dispose" }); } catch (e) { /* ok */ } }
     [this.src, this.sg, this.env, this.trim, this.low, this.mid, this.high, this.hp, this.lp, this.tap, this.fader, this.echoSend, this.revSend]
       .concat(this.voxIn ? [this.voxIn, this.voxDry, this.voxDryGain, this.voxOut] : []).concat(this.vox ? [this.vox, this.voxWet] : [])
       .concat(this.extra).forEach(function (n) { try { n.disconnect(); } catch (e) { /* ok */ } });
@@ -411,6 +445,11 @@ var Engine = (function () {
     return out;
   };
 
+  // is a transition's (or a pad's) effect sounding or lined up? (the automatic ones do not count)
+  Mixer.prototype.fxBusy = function (now) {
+    return this.fxEvents.some(function (e) { return !e.auto && e.t1 >= now; });
+  };
+
   Mixer.prototype.fxBuffer = function (kind, seconds) {
     const sr = this.ctx.sampleRate;
     // keyed on the exact length: a riser has to end on the swap, so one built
@@ -437,7 +476,10 @@ var Engine = (function () {
     const g = this.ctx.createGain(); g.gain.value = gain == null ? 1 : gain;
     src.connect(g); g.connect(this.fxGain);
     src.start(t);
-    (this.fxNodes = this.fxNodes || []).push({ src: src, t: t, auto: !!auto });
+    const now = this.ctx.currentTime;
+    this.fxNodes = (this.fxNodes || []).filter(function (f) { return f.end > now - 0.5; });         // the ones that have played out are let go
+    this.fxNodes.push({ src: src, g: g, gain: g.gain.value, t: t, end: t + src.buffer.duration, auto: !!auto });
+    if (!this.offline) src.onended = function () { try { src.disconnect(); g.disconnect(); } catch (e) { /* ok */ } };
     return src;
   };
 
@@ -550,12 +592,30 @@ var Engine = (function () {
     v.fxBar = to;
   };
 
-  // take back what was scheduled from `from` on (a transition is taking that stretch, or the deck was moved)
+  // take back what was scheduled from `from` on (a transition is taking that stretch, or the deck was moved);
+  // one that is already sounding is faded out, not left to hang over what comes next
   Mixer.prototype.cancelAutoFx = function (from) {
-    const gone = function (f) { return f.auto && f.t >= from - 0.01; };
-    (this.fxNodes || []).forEach(function (f) { if (gone(f)) { try { f.src.stop(); } catch (e) { /* not started */ } } });
-    this.fxNodes = (this.fxNodes || []).filter(function (f) { return !gone(f); });
+    const ctx = this.ctx, tf = Math.max(from, ctx.currentTime);
+    const keep = [];
+    (this.fxNodes || []).forEach(function (f) {
+      if (!f.auto) { keep.push(f); return; }
+      if (f.t >= from - 0.01) {
+        try { f.src.stop(); } catch (e) { /* not started */ }
+        try { f.src.disconnect(); f.g.disconnect(); } catch (e) { /* ok */ }
+        return;
+      }
+      if (f.end > tf + 0.1) {
+        f.g.gain.cancelScheduledValues(tf);
+        f.g.gain.setValueAtTime(f.gain, tf);
+        f.g.gain.linearRampToValueAtTime(0, tf + 0.06);
+        try { f.src.stop(tf + 0.08); } catch (e) { /* ok */ }
+        f.end = tf + 0.08;
+      }
+      keep.push(f);
+    });
+    this.fxNodes = keep;
     this.fxEvents = this.fxEvents.filter(function (e) { return !(e.auto && e.t0 >= from - 0.01); });
+    this.fxEvents.forEach(function (e) { if (e.auto && e.t1 > tf + 0.1) e.t1 = tf + 0.08; });
   };
 
   Mixer.prototype.firstVoice = function (track, t0, label) {
@@ -683,7 +743,6 @@ var Engine = (function () {
     const bar = beat * 4;
     // the transition takes this stretch of A: no automatic effects from just before it begins
     this.cancelAutoFx((plan.type === "bassSwap" ? tStart : A.timeOfBar(plan.swapBar - plan.buildBars)) - 0.5 * bar);
-    A.fxBar = Infinity;
     // the plan carries the vibe: how much echo and reverb, how showy
     const amounts = plan.amounts || { echo: 55, reverb: 45 };
     const echoF = Math.min(1.8, amounts.echo / 55), revF = Math.min(1.8, amounts.reverb / 45);
@@ -848,7 +907,7 @@ var Engine = (function () {
     const voices = [A], plans = [];
     for (let k = 1; k < tracks.length; k++) {
       const plan = Brain.planTransition(infoOf(tracks[k - 1]), infoOf(tracks[k]), {
-        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k + (opts.index0 || 0),
+        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k + (opts.index0 || 0), vox: !!this.voxOk,
       });
       const B = this.scheduleTransition(A, tracks[k], plan, k % 2 ? "B" : "A");
       voices.push(B); plans.push(plan);

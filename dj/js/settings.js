@@ -121,6 +121,24 @@ var Settings = (function () {
     return "custom";
   }
 
+  // A copy saved by an earlier version has none of the newer settings (automatic effects, creative
+  // moves, taking vocals out). If it was one of the presets, the new ones follow that preset, so it
+  // still reads as that preset (and Late night stays free of automatic effects).
+  const NEWER = ["autoFx", "voxAuto", "tricks"];
+  function migrate(saved) {
+    if (!saved || typeof saved !== "object" || NEWER.some(function (k) { return saved[k] !== undefined; })) return saved;
+    const cur = sanitize(saved);
+    for (const id of Object.keys(PRESETS)) {
+      const p = make(PRESETS[id].values);
+      if (PERSONALITY.every(function (k) { return NEWER.indexOf(k) >= 0 || p[k] === cur[k]; })) {
+        const out = Object.assign({}, saved);
+        NEWER.forEach(function (k) { out[k] = p[k]; });
+        return out;
+      }
+    }
+    return saved;
+  }
+
   // The key score each kind of move needs, by strictness.
   function keyFloors(s) {
     // a drop swap overlaps the two tracks for an instant, so only a strict DJ minds the key there
@@ -185,7 +203,7 @@ var Settings = (function () {
       "tracks play ≥" + s.minPlay + " bars, keys " + s.keyStrictness + ", tempo within " + s.maxTempoGap + "%, flair " + s.flair + "%";
   }
 
-  return { DEFAULTS: DEFAULTS, PRESETS: PRESETS, ENUMS: ENUMS, RANGES: RANGES, sanitize: sanitize, make: make, applyPreset: applyPreset, presetOf: presetOf, keyFloors: keyFloors, weights: weights, rng: rng, autoTune: autoTune, describe: describe };
+  return { DEFAULTS: DEFAULTS, PRESETS: PRESETS, ENUMS: ENUMS, RANGES: RANGES, sanitize: sanitize, make: make, applyPreset: applyPreset, presetOf: presetOf, migrate: migrate, keyFloors: keyFloors, weights: weights, rng: rng, autoTune: autoTune, describe: describe };
 })();
 
 if (typeof module !== "undefined" && module.exports) module.exports = Settings;

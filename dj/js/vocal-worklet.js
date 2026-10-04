@@ -53,7 +53,8 @@
  *   attackMs, releaseMs   mask one-pole                                    (3, 25)
  *   bypass          false: always run the full FFT path (testing)          (true)
  *   Lower a / b = removes more (and more of the neighbours); higher = gentler.
- * port.postMessage({type: 'reset'}) clears all state.
+ * port.postMessage({type: 'reset'}) clears all state; {type: 'dispose'} makes process() return false so the
+ * node can be garbage-collected once it is disconnected.
  * The processor posts {type: 'vox-info', N, hop, latency, sampleRate} when constructed (and again,
  * with the real latency, if the render quantum is not 128).  Loaded as a plain <script> in a page
  * (where there is no AudioWorkletGlobalScope) the file only sets window.VOX_INFO = {N, hop, latency}.
@@ -205,6 +206,7 @@
         if (!d) return;
         if (d.type === 'tune') this.tune(d);
         else if (d.type === 'reset') this.reset();
+        else if (d.type === 'dispose') this.disposed = true;      // the owner is done with this node: let it be collected
       };
       this.port.postMessage({ type: 'vox-info', N: N, hop: HOP, latency: LATENCY, sampleRate: sampleRate });
     }
@@ -422,6 +424,7 @@
     }
 
     process(inputs, outputs, parameters) {
+      if (this.disposed) return false;
       const out = outputs[0];
       if (!out || out.length === 0) return true;
       const outL = out[0];

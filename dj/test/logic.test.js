@@ -295,6 +295,11 @@ function check(name, cond, extra) {
       for (let i = 0; i < 200 && !found; i++) { const p = Brain.planTransition(rt(2 * i), rt(2 * i + 1), { index: i, settings: Settings.make({ flair: 100 }) }); if (p.type === type) found = p; }
       check("plan: " + type + " carries no build, roll, riser or echo throw", found && !found.riser && !found.roll && !found.echoThrow && found.blendBars === 0 && Brain.label(found).length > 0, found && Brain.label(found));
     });
+    {
+      let st = null;
+      for (let i = 0; i < 400 && !st; i++) { const p = Brain.planTransition(rt(2 * i), rt(2 * i + 1), { index: i, settings: Settings.make({ flair: 100 }) }); if (p.type === "stutter") st = p; }
+      check("plan: a stutter cut has no riser (its branch never plays one)", st && st.riser === false, st && JSON.stringify({ riser: st.riser }));
+    }
   }
 
   // ---- automatic sound effects: what the planner puts into a track
@@ -315,6 +320,13 @@ function check(name, cond, extra) {
     check("auto fx: none in a break or the intro (except the build into a drop)", Brain.planFx(info("Q"), "wild").filter((e) => e.kind === "zap" || e.kind === "crash").every((e) => { const bar = Math.floor(e.bar), sec = info("Q").sections.filter((s) => bar >= s.start && bar < s.end)[0]; return sec && ["groove", "drop"].indexOf(sec.type) >= 0; }));
     check("auto fx: an effect that would sound on top of another is left out", (() => { const e = Brain.planFx(info("Z"), "wild").filter((x) => x.kind === "zap" || x.kind === "siren" || x.kind === "crash"); return e.every((x, i) => i === 0 || x.bar - e[i - 1].bar >= 0.25); })());
     check("auto fx: a settings preset carries the level", Settings.applyPreset("mainstage").autoFx === "wild" && Settings.applyPreset("smooth").autoFx === "off" && Settings.make().autoFx === "subtle");
+    {
+      // a copy saved before these settings existed keeps its preset
+      const oldSave = (id) => { const o = Settings.applyPreset(id); delete o.autoFx; delete o.voxAuto; delete o.tricks; return o; };
+      const kept = ["smooth", "warehouse", "mainstage", "open"].every((id) => Settings.presetOf(Settings.sanitize(Settings.migrate(oldSave(id)))) === id);
+      check("settings: a copy saved before the newer settings keeps its preset, and Late night stays free of automatic effects", kept && Settings.sanitize(Settings.migrate(oldSave("smooth"))).autoFx === "off");
+      check("settings: a copy that already has them is left alone", Settings.migrate({ autoFx: "wild", flair: 40 }).autoFx === "wild" && Settings.migrate(null) === null);
+    }
     check("auto fx: a junk level is replaced", Settings.sanitize({ autoFx: "loud" }).autoFx === "subtle");
   }
 
@@ -324,7 +336,7 @@ function check(name, cond, extra) {
     const sr = 22050, n = sr * 16, barLen = 2, bars = 8, L = new Float32Array(n), R = new Float32Array(n), M = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const t = i / sr, bar = Math.floor(t / barLen);
-      const voice = Math.sin(2 * Math.PI * (400 + 200 * Math.sin(2 * Math.PI * 0.5 * t)) * t) * (bar % 2 === 1 ? 0.5 : 0);     // a centred voice on the odd bars only
+      const voice = Math.sin(2 * Math.PI * (800 + 200 * Math.sin(2 * Math.PI * 0.5 * t)) * t) * (bar % 2 === 1 ? 0.5 : 0);     // a centred voice on the odd bars only
       const padL = Math.sin(2 * Math.PI * 350 * t) * 0.4, padR = Math.sin(2 * Math.PI * 520 * t + 1) * 0.4;
       L[i] = voice + padL; R[i] = voice + padR; M[i] = voice + 0.5 * (padL + padR);
     }
@@ -332,6 +344,13 @@ function check(name, cond, extra) {
     check("stereo profile: a stereo file is stereo, a copy of mono in two channels is not, and one channel is not", wide.stereo && !mono.stereo && !one.stereo, [wide.width, mono.width].map((x) => x.toFixed(2)).join(" / "));
     const odd = [1, 3, 5, 7].map((b) => wide.lead[b]), even = [0, 2, 4, 6].map((b) => wide.lead[b]);
     check("stereo profile: bars with a centred voice score clearly higher than bars of stereo pads alone", Math.min.apply(null, odd) > 0.5 && Math.max.apply(null, even) < 0.45, odd.map((x) => x.toFixed(2)).join(" ") + " vs " + even.map((x) => x.toFixed(2)).join(" "));
+    // wide uncorrelated sound at full level, and a mono sub-bass on its own, are not a vocal or a lead
+    const nz = (seed) => { let x = seed; return () => { x = (x * 1664525 + 1013904223) % 4294967296; return x / 4294967296 - 0.5; }; };
+    const rl = nz(7), rr = nz(99), WL = new Float32Array(n), WR = new Float32Array(n), BL = new Float32Array(n);
+    for (let i = 0; i < n; i++) { WL[i] = rl() * 0.8; WR[i] = rr() * 0.8; BL[i] = Math.sin(2 * Math.PI * 60 * i / sr) * 0.8; }
+    const widePad = Analysis.stereoProfile([WL, WR], sr, 0, barLen, bars), sub = Analysis.stereoProfile([BL, BL.map((x, i) => x * (i % 7 === 0 ? 0.9 : 1))], sr, 0, barLen, bars);
+    check("stereo profile: loud wide uncorrelated sound scores low (no voice in it)", Math.max.apply(null, Array.from(widePad.lead)) < 0.3, Array.from(widePad.lead).map((x) => x.toFixed(2)).join(" "));
+    check("stereo profile: a mono sub-bass alone scores low", Math.max.apply(null, Array.from(sub.lead)) < 0.3, Array.from(sub.lead).map((x) => x.toFixed(2)).join(" "));
     const mkv = (title, lead, stereo) => ({ title0: title, bpm: 126, key: "8A", energy: 6, bars: 80, cues: { firstDrop: 16, dropStarts: [24, 48], outroStart: 64 }, lead: new Float32Array(80).fill(lead), stereo: stereo });
     const S = (o) => Settings.make(Object.assign({ style: "smooth", variety: 0, auto: false }, o || {}));
     const clash = Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, true), { settings: S() });
@@ -351,6 +370,12 @@ function check(name, cond, extra) {
     check("creative blends: a filter swap is one of the blends now and then, not all of them", fs > 8 && fs < 50, fs + " of 80");
     check("creative blends: the label names it", Brain.label({ type: "bassSwap", blendBars: 16, filter: true }) === "Filter swap · 16 bars" && Brain.label({ type: "stutter", blendBars: 0 }) === "Stutter cut");
     check("vocal tools: switched off in the settings, nothing is taken out", !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, true), { settings: S({ voxAuto: false }) }).vox);
+    check("vocal tools: with no worklet in the browser, no vocal move is planned", !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, true), { settings: S(), vox: false }).vox && !Brain.planTransition(mkv("O", 0.1, true), mkv("I", 0.8, true), { settings: S({ tricks: true }), vox: false }).vox);
+    {
+      let mashes = 0;
+      for (let i = 0; i < 60; i++) { const p = Brain.planTransition(mkv("O" + i, 0.1, true), mkv("I" + i, 0.8, true), { settings: S({ tricks: true, voxAuto: false }), index: i }); if (p.vox && p.vox.inn === "solo") mashes++; }
+      check("vocal tools: mashups belong to Creative moves, not to the clash remover setting", mashes > 5, mashes);
+    }
     check("vocal tools: a mono track is never touched", !Brain.planTransition(mkv("O", 0.8, false), mkv("I", 0.8, true), { settings: S() }).vox && !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, false), { settings: S() }).vox);
     check("vocal tools: tracks analysed before this existed (no lead) are left alone", !Brain.planTransition(Object.assign(mkv("O", 0.8, true), { lead: undefined }), mkv("I", 0.8, true), { settings: S() }).vox);
   }
