@@ -48,7 +48,11 @@ function check(name, cond, extra) {
   const page = await browser.newPage({ viewport: { width: 1100, height: 1300 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  page.on("console", (m) => {
+    if (m.type() !== "error") return;
+    if (/fonts\.(googleapis|gstatic)\.com/.test(m.location().url || "")) return;   // web fonts are optional; the page falls back to system fonts
+    errors.push(m.text());
+  });
   await page.goto("http://localhost:" + PORT + "/dj/index.html");
 
   check("page loads with the track list empty", (await page.locator("#tracks .trk").count()) === 0);
@@ -124,12 +128,16 @@ function check(name, cond, extra) {
     const sRms = (t) => rms(slow, Math.round(t * sr), Math.round((t + sbar) * sr));
     const softDuring = []; for (let b = 0; b < sp.blendBars; b++) softDuring.push(sRms(sB.entry.tStart + b * sbar));
     let sPeak = 0, sNan = 0; for (let i = 0; i < SL.length; i++) { const v = Math.abs(SL[i]); if (v !== v) sNan++; if (v > sPeak) sPeak = v; }
-    // and the loudness across the swap itself, in 100 ms steps, must not lurch
-    const win = Math.round(0.1 * sr), around = [];
-    for (let t = sB.entry.tSwap - 1.2; t < sB.entry.tSwap + 1.2; t += 0.1) around.push(rms(SL, Math.round(t * sr), Math.round(t * sr) + win));
-    const steps = []; for (let i = 1; i < around.length; i++) steps.push(Math.abs(Math.log(around[i] / around[i - 1])));
-    return { peak, nan, before, during, afterB, bestLag, slipLag, plan: plan.type, L: plan.blendBars, dur: full.buf.duration,
-      soft: { mode: sp.bassSwapMode, peak: sPeak, nan: sNan, baseline: sRms(sB.entry.tStart - sbar), max: Math.max.apply(null, softDuring), maxStep: Math.max.apply(null, steps) } };
+    // and the bass must not fall into a hole while the two lines trade: compare the
+    // low band at the same point in the beat, a beat at a time, across the swap
+    const beatSec = 60 / sB.tempoAt(sB.entry.tSwap), quarter = beatSec / 4, worst = [];
+    for (let ph = 0; ph < 4; ph++) {
+      const lvl = (k) => { const t = sB.entry.tSwap + k * beatSec + ph * quarter; return rms(slow, Math.round(t * sr), Math.round((t + quarter) * sr)); };
+      const pre = (lvl(-4) + lvl(-3) + lvl(-2)) / 3;
+      for (let k = -1; k <= 1; k++) worst.push(lvl(k) / pre);
+    }
+        return { peak, nan, before, during, afterB, bestLag, slipLag, plan: plan.type, L: plan.blendBars, dur: full.buf.duration,
+      soft: { mode: sp.bassSwapMode, peak: sPeak, nan: sNan, baseline: sRms(sB.entry.tStart - sbar), max: Math.max.apply(null, softDuring), minRatio: Math.min.apply(null, worst) } };
   });
   check("offline mix: no NaN, no clipping", m.nan === 0 && m.peak < 1, "peak=" + m.peak.toFixed(3));
   check("offline mix: plan is a bass swap", m.plan === "bassSwap", m.plan + " " + m.L + " bars");
@@ -138,7 +146,7 @@ function check(name, cond, extra) {
   check("bass swap: low end comes back after the swap", m.afterB > m.before * 0.5, "after=" + m.afterB.toFixed(4));
   check("soft bass swap: planned as soft, no NaN, no clipping", m.soft.mode === "smooth" && m.soft.nan === 0 && m.soft.peak < 1, "peak=" + m.soft.peak.toFixed(3));
   check("soft bass swap: low end never doubles", m.soft.max < m.soft.baseline * 1.35, "baseline=" + m.soft.baseline.toFixed(4) + " max=" + m.soft.max.toFixed(4));
-  check("soft bass swap: loudness does not lurch across the swap (no 100 ms step over 2.5 dB)", m.soft.maxStep < Math.log(1.33), "max step " + (20 * m.soft.maxStep / Math.LN10).toFixed(2) + " dB");
+  check("soft bass swap: the bass never falls into a hole while the lines trade (within 3 dB of before)", m.soft.minRatio > 0.7, "lowest = " + (20 * Math.log10(m.soft.minRatio)).toFixed(1) + " dB vs before");
   check("beat lock: decks' onsets line up within 4 ms", Math.abs(m.bestLag) <= 4, "lag=" + m.bestLag + " ms");
 
   check("beat lock: the same test sees a 30 ms slip", Math.abs(Math.abs(m.slipLag) - 30) <= 4, "lag=" + m.slipLag + " ms");
@@ -189,7 +197,8 @@ function check(name, cond, extra) {
   await page.click("#btn-mix");
   await page.waitForFunction(() => window.__dj.player.voices.length >= 2, null, { timeout: 5000 });
   check("mix now schedules a transition", true);
-  check("the thinking log explains it", /into/.test(await page.textContent("#log")), (await page.textContent("#log li")).slice(0, 120));
+  await page.waitForFunction(() => / into /.test(document.getElementById("log").textContent), null, { timeout: 5000 });
+  check("the thinking log explains it", /into/.test(await page.textContent("#log li")), (await page.textContent("#log li")).slice(0, 140));
   await page.waitForFunction(() => /Mixing/.test(document.getElementById("strip-title").textContent), null, { timeout: 60000 });
   await page.screenshot({ path: path.join(OUT, "mixing.png") });
   check("strip reports the mix in progress", true);

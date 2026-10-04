@@ -35,6 +35,19 @@ var Engine = (function () {
     for (let i = 0; i < n; i++) { const x = i / (n - 1); arr[i] = v0 + (v1 - v0) * (0.5 - 0.5 * Math.cos(Math.PI * x)); }
     p.setValueCurveAtTime(arr, t0, Math.max(0.01, t1 - t0));
   }
+  // The same, for any shape: fn(x) gives the value at 0..1 along the way.
+  function curveFn(p, t0, t1, fn) {
+    const n = 96, arr = new Float32Array(n);
+    for (let i = 0; i < n; i++) arr[i] = fn(i / (n - 1));
+    p.setValueCurveAtTime(arr, t0, Math.max(0.01, t1 - t0));
+  }
+  // Equal-power crossfade of two basslines, as EQ gain in dB: one rises as
+  // sin, the other falls as cos, so each is 3 dB down at the midpoint and the
+  // low end stays level. (Fading them straight in dB puts both at -20 dB in the
+  // middle and the bass falls into a hole.)
+  const dbOf = function (lin) { return Math.max(KILL, 20 * Math.log10(Math.max(1e-6, lin))); };
+  const bassIn = function (x) { return dbOf(Math.sin(Math.PI / 2 * x)); };
+  const bassOut = function (x) { return dbOf(Math.cos(Math.PI / 2 * x)); };
   const EPS = 1e-3;                 // events may not start inside a curve; begin the next just after it
 
   function expRamp(p, t0, t1, v0, v1) {
@@ -313,17 +326,17 @@ var Engine = (function () {
       // incoming: lows held back until the swap, volume and mids/highs easing up
       curve(B.fader.gain, tStart, tSwap, 0.6, 1);
       // the bass trade: instant on the one, or a two-beat crossfade of the lows
-      // (in dB, so the two basslines cross at -20 dB each rather than piling up)
+      // (equal-power, so the low end stays level while the basslines trade)
       const soft = plan.bassSwapMode === "smooth", half = soft ? beat : 0.012;
       B.low.gain.setValueAtTime(KILL, tStart);
       B.low.gain.setValueAtTime(KILL, tSwap - half);
-      if (soft) curve(B.low.gain, tSwap - half, tSwap + half, KILL, 0); else B.low.gain.linearRampToValueAtTime(0, tSwap + half);
+      if (soft) curveFn(B.low.gain, tSwap - half, tSwap + half, bassIn); else B.low.gain.linearRampToValueAtTime(0, tSwap + half);
       curve(B.mid.gain, tStart, tSwap, -5, 0);
       curve(B.high.gain, tStart, tSwap, -8, 0);
       // outgoing: gives up its bass on the same beat, then gets out of the way
       curve(A.fader.gain, tStart, tSwap, 1, 0.88);
       A.low.gain.setValueAtTime(0, tSwap - half);
-      if (soft) curve(A.low.gain, tSwap - half, tSwap + half, 0, KILL); else A.low.gain.linearRampToValueAtTime(KILL, tSwap + half);
+      if (soft) curveFn(A.low.gain, tSwap - half, tSwap + half, bassOut); else A.low.gain.linearRampToValueAtTime(KILL, tSwap + half);
       curve(A.mid.gain, tStart, tSwap, 0, -5);
       curve(A.high.gain, tStart, tSwap, 0, -9);
       const tail = plan.tailBars * bar;
