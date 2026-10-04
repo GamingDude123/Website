@@ -405,7 +405,11 @@
     setText($("btn-pause"), player.paused ? "Resume" : "Pause");
     const live = running && !player.paused && !player.pausing && !player.session;
     $("btn-mix").disabled = !live;
-    document.querySelectorAll(".fxbar .pad").forEach(function (b) { b.disabled = !running || player.paused; });
+    document.querySelectorAll(".fxbar .pad").forEach(function (b) {
+      const onDecks = b.dataset.fx === "roll" || b.dataset.fx === "brake" || b.dataset.fx === "spin";      // these act on the decks, which are busy while a hand is on one or a pause is under way
+      b.disabled = !running || player.paused || (onDecks && (player.pausing || !!player.session));
+    });
+    setText($("fx-hint"), running ? "Tap a pad to hit it on the next beat. It lights while it sounds, and has an outline when the mix has it lined up." : "Start the set, then tap a pad to hit it on the next beat. It lights while it sounds, and has an outline when the mix has it lined up.");
     renderMatches("spotify"); renderMatches("soundcloud");
   }
 

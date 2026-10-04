@@ -374,7 +374,7 @@ var Engine = (function () {
   // being cut. Each deck keeps its planned timeline aside as `orig`; the clock
   // is frozen while paused, so every fade and EQ move scheduled ahead of this
   // stays valid, and spinUp() puts the decks back where that plan expects them.
-  Mixer.prototype.brake = function (voices, t, T) {
+  Mixer.prototype.brake = function (voices, t, T, soft) {
     T = T == null ? BRAKE : T;
     const held = [];
     voices.forEach(function (v) {
@@ -389,13 +389,19 @@ var Engine = (function () {
       real.ramp(ts, t + T, 0);
       held.push({ voice: v, orig: v.tl });
       v.tl = real;
+      if (soft) {                                       // a brake by hand: fade the decks themselves, not the whole output
+        v.env.gain.setValueAtTime(1, t + 0.45 * T);
+        v.env.gain.linearRampToValueAtTime(0, t + T);
+      }
     });
-    const g = this.pauseGain.gain;
-    g.cancelScheduledValues(t);
-    g.setValueAtTime(1, t);
-    g.setValueAtTime(1, t + 0.45 * T);
-    g.linearRampToValueAtTime(0, t + T);
-    return { t: t, T: T, held: held };
+    if (!soft) {
+      const g = this.pauseGain.gain;
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(1, t);
+      g.setValueAtTime(1, t + 0.45 * T);
+      g.linearRampToValueAtTime(0, t + T);
+    }
+    return { t: t, T: T, held: held, soft: !!soft };
   };
 
   // Spin the decks back up from rest over `S` seconds. A real platter restarts
@@ -410,10 +416,16 @@ var Engine = (function () {
       const nodes = [{ t: t, r: 0 }, { t: tEnd, r: rho }];
       o.nodes.forEach(function (n) { if (n.t > tEnd) nodes.push({ t: n.t, r: n.r }); });
       h.voice.replaceSource(t, Math.max(0, o.posAt(tEnd) - rho * S / 2), nodes, 0.004);
+      if (state.soft) {
+        h.voice.env.gain.setValueAtTime(0, t);
+        h.voice.env.gain.linearRampToValueAtTime(1, t + 0.4 * S);
+      }
     });
-    const g = this.pauseGain.gain;                   // (still at 0 from the brake; nothing to cancel)
-    g.setValueAtTime(0, t);
-    g.linearRampToValueAtTime(1, t + 0.4 * S);
+    if (!state.soft) {
+      const g = this.pauseGain.gain;                 // (still at 0 from the brake; nothing to cancel)
+      g.setValueAtTime(0, t);
+      g.linearRampToValueAtTime(1, t + 0.4 * S);
+    }
   };
 
   Mixer.prototype.firstVoice = function (track, t0, label) {
@@ -425,16 +437,13 @@ var Engine = (function () {
   };
 
   // Roll the last bar of A: half-beat slices, then quarter, then eighth.
-  Mixer.prototype.scheduleRoll = function (A, barIndex) {
+  // Repeats of a stretch of the deck's track: `groups` are [beat offset, beats long, slice in beats],
+  // each slice replaying the audio that begins at the start of the group.
+  Mixer.prototype.rollSlices = function (A, t0, srcPos0, rate, beat, groups) {
     const ctx = this.ctx;
-    const t0 = A.timeOfBar(barIndex);
-    const rate = A.tl.rateAt(t0);
-    const beat = A.beatSec(t0);
-    const groups = [[0, 2, 0.5], [2, 1, 0.25], [3, 1, 0.125]];       // beat offset, beats long, slice in beats
-    A.cutMain(t0);
     groups.forEach(function (g, gi) {
       const gStart = t0 + g[0] * beat;
-      const srcPos = A.barTime(barIndex) + g[0] * beat * rate;
+      const srcPos = srcPos0 + g[0] * beat * rate;
       const sliceLen = g[2] * beat;
       const count = Math.round(g[1] / g[2]);
       for (let i = 0; i < count; i++) {
@@ -454,6 +463,52 @@ var Engine = (function () {
       }
     });
   };
+
+  // Roll the last bar of A: half-beat slices, then quarter, then eighth.
+  Mixer.prototype.scheduleRoll = function (A, barIndex) {
+    const t0 = A.timeOfBar(barIndex);
+    A.cutMain(t0);
+    this.rollSlices(A, t0, A.barTime(barIndex), A.tl.rateAt(t0), A.beatSec(t0), [[0, 2, 0.5], [2, 1, 0.25], [3, 1, 0.125]]);
+  };
+
+  // A loop roll by hand: from `at`, a beat of half-beat slices then a beat of quarters, and
+  // the track comes back in on the beat it would have been on (the main source keeps
+  // running, muted, so nothing slips). Returns when it ends.
+  Mixer.prototype.rollNow = function (A, at) {
+    const beat = A.beatSec(at), tEnd = at + 2 * beat;
+    A.cutMain(at);
+    this.rollSlices(A, at, A.tl.posAt(at), A.tl.rateAt(at), beat, [[0, 1, 0.5], [1, 1, 0.25]]);
+    A.env.gain.setValueAtTime(0, tEnd - 0.004);
+    A.env.gain.linearRampToValueAtTime(1, tEnd);
+    this.noteFx("roll", at, tEnd);
+    return tEnd;
+  };
+
+  // The deck wound backwards: the track played in reverse from `at`, fast, slowing as it goes.
+  // The forward track is muted for the duration; `slip` brings it back on the beat afterwards
+  // (a manual spinback); a transition handles the fade itself.
+  Mixer.prototype.spinbackFx = function (A, at, slip) {
+    const ctx = this.ctx, spin = 1.1, r0 = 3.2, r1 = 0.12, p = A.tl.posAt(at);
+    const win = reversedWindow(ctx, A.track.buffer, p - ((r0 + r1) / 2 * spin + 0.4), p + 0.05);
+    const rs = ctx.createBufferSource(), rg = ctx.createGain();
+    rs.buffer = win.buffer;
+    rs.playbackRate.setValueAtTime(r0, at);
+    rs.playbackRate.linearRampToValueAtTime(r1, at + spin);
+    rg.gain.setValueAtTime(0.9, at);
+    rg.gain.linearRampToValueAtTime(0, at + spin);
+    rs.connect(rg); rg.connect(A.trim);
+    rs.start(at, Math.max(0, win.end - p - 1 / win.sr));
+    A.extra.push(rs, rg);
+    A.cutMain(at);                                          // the forward track gives way to the spin
+    if (slip) {
+      A.env.gain.setValueAtTime(0, at + spin - 0.004);
+      A.env.gain.linearRampToValueAtTime(1, at + spin + 0.01);
+    }
+    this.noteFx("spin", at, at + spin);
+    return spin;
+  };
+
+  Mixer.prototype.spinbackNow = function (A, at) { return at + this.spinbackFx(A, at, true); };
 
   // Carry out `plan` (from Brain.planTransition) from voice A into `track`.
   // Returns the incoming voice, with the times of interest on .entry.
@@ -552,19 +607,7 @@ var Engine = (function () {
         A.fader.gain.linearRampToValueAtTime(0, tSwap + 0.012);
       } else {
         // the last beat is wound back: the track played in reverse from the swap, fast, slowing as it goes
-        const spin = 1.1, r0 = 3.2, r1 = 0.12, p = A.tl.posAt(tSwap);
-        this.noteFx("spin", tSwap, tSwap + spin);
-        const win = reversedWindow(ctx, A.track.buffer, p - ((r0 + r1) / 2 * spin + 0.4), p + 0.05);
-        const rs = ctx.createBufferSource(), rg = ctx.createGain();
-        rs.buffer = win.buffer;
-        rs.playbackRate.setValueAtTime(r0, tSwap);
-        rs.playbackRate.linearRampToValueAtTime(r1, tSwap + spin);
-        rg.gain.setValueAtTime(0.9, tSwap);
-        rg.gain.linearRampToValueAtTime(0, tSwap + spin);
-        rs.connect(rg); rg.connect(A.trim);
-        rs.start(tSwap, Math.max(0, win.end - p - 1 / win.sr));
-        A.extra.push(rs, rg);
-        A.cutMain(tSwap);                                   // the forward track gives way to the spin
+        const spin = this.spinbackFx(A, tSwap, false);
         A.revSend.gain.linearRampToValueAtTime(0, tSwap + spin);
         A.fader.gain.setValueAtTime(1, tSwap + spin);
         A.fader.gain.linearRampToValueAtTime(0, tSwap + spin + 0.05);

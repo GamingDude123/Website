@@ -281,3 +281,4 @@ ol#tracks[hidden] { display: none; }
 button.more { margin-top: .7rem; display: block; width: 100%; }
 #sp-result .sp-row button.soft, #sc-result .sp-row button.soft { margin-left: auto; }
 button.more[hidden], .tracks-sum[hidden], #btn-hide[hidden], ol.loading-list[hidden] { display: none !important; }
+.fxbar .p7 { --c: #ffb38f; } .fxbar .p8 { --c: #ff9ad5; } .fxbar .p9 { --c: #c3a6ff; }
