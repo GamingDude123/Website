@@ -284,11 +284,21 @@ var Player = (function () {
   Player.prototype.perform = function (name) {
     if (!this.mixer || this.paused) return;
     const m = this.mixer, ctx = this.ctx, t = ctx.currentTime + 0.02;
-    const v = this.cur;
+    // the deck that is playing (the incoming one, once it has started)
+    const playing = this.voices.filter(function (x) { return t >= x.t0; }).pop() || this.cur;
+    const v = playing;
     const beat = 60 / Math.max(60, Math.abs(v.tempoAt(t))), bar = beat * 4;     // a platter held still has no tempo
     // snap to the next beat so it lands in time
     const into = ((v.barAt(t) * 4) % 1 + 1) % 1;
     const at = t + (into > 0.02 ? (1 - into) * beat : 0);
+    // roll, brake and spinback act on the decks themselves, so they wait while a hand is on one or a pause is under way
+    if (name === "roll" || name === "brake" || name === "spin") {
+      if (this.session || this.pausing || t < v.t0) return;
+      if (name === "roll") m.rollNow(v, at);
+      else if (name === "spin") m.spinbackNow(v, at);
+      else this.brakeNow();
+      return;
+    }
     const lamp = { echo: "echo", sweep: "filter", riser: "riser", impact: "hit", crash: "crash", down: "down" }[name];
     const len = { echo: beat, sweep: 2 * bar + beat, riser: 2 * bar, impact: 0.8, crash: 1.6, down: 2 * bar }[name];
     if (lamp && name !== "riser" && name !== "impact" && name !== "crash" && name !== "down") m.noteFx(lamp, at, at + len);   // the rest note themselves in playFx
@@ -312,6 +322,31 @@ var Player = (function () {
     } else if (name === "down") {
       m.playFx("downlifter", at, 2 * bar, 0.6);
     }
+  };
+
+  // A vinyl brake by hand: every deck that is playing winds down and spins back up, onto the
+  // place it would have reached, so the mix carries on exactly on the beat. It is the pause
+  // machinery without the pause: the clock runs throughout, and `pausing` keeps the decks,
+  // pause and Mix now out of the way until it is done.
+  Player.prototype.brakeNow = function () {
+    if (!this.running || this.paused || this.pausing || this.session) return;
+    const ctx = this.ctx, mixer = this.mixer, gen = this.gen, T = Engine.BRAKE, hold = 0.12, S = Engine.SPINUP;
+    const t = ctx.currentTime + 0.02, self = this;
+    this.pausing = true;
+    this.onChange();
+    const state = mixer.brake(this.voices, t, T, true);
+    mixer.noteFx("brake", t, t + T + hold + S);
+    function done() {
+      if (gen !== self.gen) return;
+      self.pausing = false;
+      self.onChange();
+      if (self.wantToggle) { self.wantToggle = false; self.togglePause(); }      // pause was pressed meanwhile
+    }
+    setTimeout(function () {
+      if (gen !== self.gen || self.ctx !== ctx) return;
+      mixer.spinUp(state, ctx.currentTime + 0.02, S);
+      setTimeout(done, S * 1000 + 80);
+    }, (T + hold) * 1000 + 30);
   };
 
   // What the UI needs to draw a frame.

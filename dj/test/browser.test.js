@@ -583,8 +583,36 @@ function makeWav(seconds, bpm) {
       }
       R.spin = { worst: worstS, closerToReverse: fwdWorst, rows: rows, rmsAfter: rms(e.x, ts + 1.4, ts + 2.5) };
     }
+    // 4. the pads by hand: a loop roll, a spinback and a vinyl brake each give the track back exactly on the beat
+    async function playWith(fn) {
+      const ctx = new OfflineAudioContext(2, sr * 10, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
+      const v = m.firstVoice(makeTrack(ctx), 0.1, "A"), info = fn(m, v);
+      return { x: (await ctx.startRendering()).getChannelData(0), info: info };
+    }
+    const alignedAfter = (x, from) => { const ca = crossings(base, from, 9), cb = crossings(x, from, 9); let worst = 0, j = 0; for (let i = 0; i < ca.length; i++) { while (j + 1 < cb.length && Math.abs(cb[j + 1] - ca[i]) < Math.abs(cb[j] - ca[i])) j++; worst = Math.max(worst, Math.abs(cb[j] - ca[i])); } return worst * 1000; };
+    const corr = (x, a, b, len) => { let sab = 0, saa = 0, sbb = 0; for (let i = 0; i < len * sr; i++) { const p = x[Math.floor(a * sr) + i], q = x[Math.floor(b * sr) + i]; sab += p * q; saa += p * p; sbb += q * q; } return sab / Math.sqrt(saa * sbb + 1e-12); };
+    {
+      const r = await playWith((m, v) => m.rollNow(v, 4.1));
+      R.roll = { aligned: alignedAfter(r.x, r.info + 0.3), repeat: corr(r.x, 4.12, 4.37, 0.2), baseRepeat: corr(base, 4.12, 4.37, 0.2), rmsAfter: rms(r.x, r.info + 0.3, r.info + 1.3), rmsBase: rms(base, r.info + 0.3, r.info + 1.3) };
+    }
+    {
+      const r = await playWith((m, v) => m.spinbackNow(v, 4.1)), spin = 1.1, r0 = 3.2, r1 = 0.12, slope = (r0 - r1) / spin;
+      let worstS = 0, rows = 0;
+      for (let tau = 0.06; tau + 0.1 < 0.95; tau += 0.1) {
+        const mid = tau + 0.05, rate = r0 - slope * mid, P = 4.0 - (r0 * mid - slope * mid * mid / 2), pred = fOf(P) * rate;
+        worstS = Math.max(worstS, Math.abs(freqIn(r.x, 4.1 + tau + 0.006, 4.1 + tau + 0.106) - pred) / pred); rows++;
+      }
+      R.spinHand = { worst: worstS, rows: rows, aligned: alignedAfter(r.x, r.info + 0.3), rmsAfter: rms(r.x, r.info + 0.3, r.info + 1.3), rmsBase: rms(base, r.info + 0.3, r.info + 1.3) };
+    }
+    {
+      const r = await playWith((m, v) => { const st = m.brake([v], 4.1, Engine.BRAKE, true); m.spinUp(st, 4.1 + Engine.BRAKE + 0.12, Engine.SPINUP); return 4.1 + Engine.BRAKE + 0.12 + Engine.SPINUP; });
+      R.brakeHand = { aligned: alignedAfter(r.x, r.info + 0.3), rmsBefore: rms(r.x, 3.6, 4.0), rmsAtStop: rms(r.x, 4.1 + Engine.BRAKE - 0.01, 4.1 + Engine.BRAKE), rmsAfter: rms(r.x, r.info + 0.3, r.info + 1.3), rmsBase: rms(base, r.info + 0.3, r.info + 1.3) };
+    }
     return R;
   });
+  check("roll pad: the roll repeats the beat, and the track is back on the beat afterwards", osc.roll.repeat > 0.85 && osc.roll.baseRepeat < 0.6 && osc.roll.aligned < 2.5 && osc.roll.rmsAfter > 0.9 * osc.roll.rmsBase, JSON.stringify(osc.roll));
+  check("spinback pad: the track is wound backwards, fast and slowing, and is back on the beat afterwards", osc.spinHand.rows >= 6 && osc.spinHand.worst < 0.08 && osc.spinHand.aligned < 2.5 && osc.spinHand.rmsAfter > 0.9 * osc.spinHand.rmsBase, JSON.stringify(osc.spinHand));
+  check("brake pad: the deck fades as it stops and is back on the beat afterwards, without a pause", osc.brakeHand.rmsAtStop < 0.05 * osc.brakeHand.rmsBefore && osc.brakeHand.aligned < 2.5 && osc.brakeHand.rmsAfter > 0.9 * osc.brakeHand.rmsBase, JSON.stringify(osc.brakeHand));
   check("pause: pitch falls as the platters slow, as modelled", osc.brakeErr < 0.05, "worst " + (osc.brakeErr * 100).toFixed(1) + "%");
   check("pause: the output fades out as it stops, and is back at full level after the spin-up", osc.rmsAtStop < 0.05 * osc.rmsBefore && osc.rmsAfter > 0.9 * osc.rmsBefore, [osc.rmsBefore, osc.rmsAtStop, osc.rmsAfter].map((x) => x.toFixed(3)).join(" / "));
   check("pause: after the spin-up the music is exactly where the plan expects it", osc.realignMs < 2.5, osc.realignMs.toFixed(2) + " ms");
@@ -696,6 +724,17 @@ function makeWav(seconds, bpm) {
   const k1 = (await deckState()).pos;
   check("the platter takes the keyboard too: right arrow jumps a bar", k1 - k0 > 1.6 && k1 - k0 < 2.7, (k1 - k0).toFixed(2));
   check("no hand is left on the deck", !(await deckState()).hand);
+  // the three deck pads, live: each lights while it acts, and the deck carries on at speed
+  for (const pad of ["roll", "spin", "brake"]) {
+    await page.click('.fxbar .pad[data-fx="' + pad + '"]');
+    await page.waitForFunction((p) => document.querySelector('.fxbar .pad[data-fx="' + p + '"]').classList.contains("on"), pad, { timeout: 4000 })
+      .then(() => check(pad + " pad: lights while it acts", true), () => check(pad + " pad: lights while it acts", false));
+    await page.waitForFunction(() => !window.__dj.player.pausing, null, { timeout: 8000 });
+    await page.waitForTimeout(2300);
+  }
+  const afterPads = await deckState();
+  check("after Roll, Spinback and Brake the deck is back at normal speed", afterPads.rate > 0.9 && afterPads.rate < 1.1 && !afterPads.hand, JSON.stringify(afterPads));
+  check("the deck pads are enabled again", (await page.locator('.fxbar .pad[data-fx="brake"]').isEnabled()) && (await page.locator('.fxbar .pad[data-fx="roll"]').isEnabled()));
 
   await page.click("#btn-mix");
   await page.waitForFunction(() => window.__dj.player.voices.length >= 2, null, { timeout: 5000 });
@@ -759,7 +798,7 @@ function makeWav(seconds, bpm) {
 
   // ---- export
   await page.evaluate(() => { const p = window.__dj.player; p.queue = p.library.slice(0, 3); p.onChange(); });
-  check("six effect pads are on show without opening anything", (await page.locator(".fxbar .pad").count()) === 6 && await page.locator(".fxbar .pad").first().isVisible());
+  check("nine effect pads are on show without opening anything, Roll, Brake and Spinback among them", (await page.locator(".fxbar .pad").count()) === 9 && (await page.locator(".fxbar .pad").first().isVisible()) && (await page.locator('.fxbar .pad[data-fx="roll"]').isVisible()) && (await page.locator('.fxbar .pad[data-fx="spin"]').isVisible()));
   await page.click("details.perform summary");
   const [download] = await Promise.all([page.waitForEvent("download", { timeout: 120000 }), page.click("#btn-export")]);
   const file = path.join(OUT, "mix.wav");

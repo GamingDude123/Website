@@ -82,10 +82,17 @@ and the bass swap is equal-power so the low end never dips or doubles. Turn any
 of it off under *Effects*. Even a plain blend gets a hit where the basslines
 trade (softer when the energy does not rise) once flair is about 40% or more.
 
-The **effects strip** under the decks is always on show. Each pad lights while
-its effect sounds and is outlined while the transition that is lined up (or the
-one previewed) will use it; roll, brake and spinback have lamps too. Tapping a
-pad hits that effect on the next beat, and the booth pulses on a hit.
+The **effects strip** under the decks is always on show: nine pads. Each lights
+while its effect sounds and is outlined while the transition that is lined up (or
+the one previewed) will use it, and the booth pulses on a hit. Tapping a pad acts on
+the next beat. Echo, Filter, Riser, Impact, Crash and Downlift are master-bus
+effects. **Roll** repeats the beat that is playing, in halves then quarters, and
+hands the track back on the beat. **Spinback** winds the playing deck backwards,
+fast and slowing, then the track returns exactly where it would have been.
+**Brake** is a vinyl stop and restart of the decks without pausing the clock, so
+the mix carries on on the beat (a mix in progress included). Roll, Brake and
+Spinback act on the decks, so they wait while a hand is on one or a pause is under
+way. Every pad needs a running set, so they are grey until you start one.
 
 ## Turntables and pause
 
