@@ -19,6 +19,8 @@ var Engine = (function () {
   const KILL = -40;               // dB — an EQ "kill"
   const TARGET_DB = -12;          // loudness every track is levelled to
   const LOOKAHEAD = 24;           // seconds before a transition that it is scheduled
+  const BRAKE = 0.9;              // seconds a pause takes to bring the platters to rest
+  const SPINUP = 0.55;            // ... and a resume to bring them back to speed
 
   const db = function (x) { return Math.pow(10, x / 20); };
 
@@ -49,6 +51,10 @@ var Engine = (function () {
   const bassIn = function (x) { return dbOf(Math.sin(Math.PI / 2 * x)); };
   const bassOut = function (x) { return dbOf(Math.cos(Math.PI / 2 * x)); };
   const EPS = 1e-3;                 // events may not start inside a curve; begin the next just after it
+  // How loud the incoming deck is, 0..1, as a blend goes from its first beat to
+  // the swap. It starts silent and stays quiet while the crossfader is still on
+  // the outgoing side, so what you hear follows what the knob shows.
+  const fadeIn = function (x) { x = Math.max(0, Math.min(1, x)); return Math.pow(Math.sin(Math.PI / 2 * x), 1.5); };
 
   function expRamp(p, t0, t1, v0, v1) {
     p.setValueAtTime(v0, t0);
@@ -78,6 +84,20 @@ var Engine = (function () {
     return Math.max(0.3, Math.min(2.5, db(TARGET_DB - track.analysis.loudnessDb)));
   }
 
+  // A copy of seconds [from, to] of a buffer, back to front, with where it sits in
+  // the original: playing it forwards from `end - pos` is the track going
+  // backwards from `pos`.
+  function reversedWindow(ctx, buffer, from, to) {
+    const sr = buffer.sampleRate;
+    const a = Math.max(0, Math.floor(from * sr)), b = Math.min(buffer.length, Math.ceil(to * sr)), n = Math.max(1, b - a);
+    const out = ctx.createBuffer(buffer.numberOfChannels, n, sr);
+    for (let c = 0; c < buffer.numberOfChannels; c++) {
+      const src = buffer.getChannelData(c), dst = out.getChannelData(c);
+      for (let i = 0; i < n; i++) dst[i] = src[b - 1 - i];
+    }
+    return { buffer: out, start: a / sr, end: b / sr, sr: sr };
+  }
+
   // ------------------------------------------------------------------ voice
 
   function Voice(mixer, track, t0, offset, rate, label) {
@@ -104,7 +124,10 @@ var Engine = (function () {
     this.echoSend = ctx.createGain(); this.echoSend.gain.value = 0;
     this.revSend = ctx.createGain(); this.revSend.gain.value = 0;
 
-    src.connect(this.env); this.env.connect(this.trim);
+    // every source reaches the deck through its own gate, so a jump or a scrub
+    // can swap one for another without a click
+    this.sg = ctx.createGain();
+    src.connect(this.sg); this.sg.connect(this.env); this.env.connect(this.trim);
     this.trim.connect(this.low); this.low.connect(this.mid); this.mid.connect(this.high);
     this.high.connect(this.hp); this.hp.connect(this.lp); this.lp.connect(this.tap);
     this.tap.connect(this.fader); this.fader.connect(mixer.masterIn);
@@ -167,12 +190,84 @@ var Engine = (function () {
     const fxn = this.mixer.fxNodes || [];
     fxn.forEach(function (f) { if (f.t >= now - 0.01) { try { f.src.stop(); } catch (e) { /* ok */ } } });
     this.mixer.fxNodes = fxn.filter(function (f) { return f.t < now - 0.01; });
+    this.mixer.fxEvents = (this.mixer.fxEvents || []).filter(function (e) { return e.t0 < now - 0.01; });
     void self;
+  };
+
+  // A source of this deck's track, started at t from `pos` seconds in, whose
+  // speed follows `nodes` ([{t, r}, ...] from t on, linear between them), faded
+  // in over `fade` — or along `gates` ([{t, g}, ...]) if given. `buffer` is the
+  // track or a reversed copy of part of it.
+  Voice.prototype.makeSource = function (buffer, t, pos, nodes, fade, gates) {
+    const ctx = this.mixer.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const p = src.playbackRate;
+    p.setValueAtTime(nodes[0].r, nodes[0].t);
+    for (let i = 1; i < nodes.length; i++) p.linearRampToValueAtTime(nodes[i].r, nodes[i].t);
+    const gate = ctx.createGain();
+    gate.gain.value = gates ? gates[0].g : 0;            // closed from the very first sample (an event at the start time can land a frame late)
+    if (gates) {
+      gate.gain.setValueAtTime(gates[0].g, gates[0].t);
+      for (let i = 1; i < gates.length; i++) gate.gain.linearRampToValueAtTime(gates[i].g, gates[i].t);
+    } else {
+      gate.gain.setValueAtTime(0, t);
+      gate.gain.linearRampToValueAtTime(1, t + fade);
+    }
+    src.connect(gate); gate.connect(this.env);
+    src.start(t, Math.max(0, pos));
+    return { src: src, gate: gate };
+  };
+
+  // Let a source go: fade it out from t (from `level`, 1 unless it was already
+  // part-way down), stop it, and tidy the graph later.
+  Voice.prototype.retire = function (src, gate, t, fade, level) {
+    gate.gain.cancelScheduledValues(t);
+    gate.gain.setValueAtTime(level == null ? 1 : level, t);
+    gate.gain.linearRampToValueAtTime(0, t + fade);
+    try { src.stop(t + fade + 0.02); } catch (e) { /* never started */ }
+    const mixer = this.mixer;
+    if (!mixer.offline && typeof setTimeout === "function") {
+      setTimeout(function () { try { src.disconnect(); gate.disconnect(); } catch (e) { /* ok */ } },
+        Math.max(0, (t + fade + 0.2 - mixer.ctx.currentTime) * 1000) + 100);
+    }
+  };
+
+  // Stop a source that has already faded itself out (its gate was ramped to
+  // zero by whoever owns it) and clear it from the graph — without touching the gate.
+  Voice.prototype.dispose = function (src, gate, t) {
+    try { src.stop(t + 0.03); } catch (e) { /* never started */ }
+    const mixer = this.mixer;
+    if (!mixer.offline && typeof setTimeout === "function") {
+      setTimeout(function () { try { src.disconnect(); gate.disconnect(); } catch (e) { /* ok */ } },
+        Math.max(0, (t + 0.3 - mixer.ctx.currentTime) * 1000) + 100);
+    }
+  };
+
+  // Put this deck on a fresh source at `pos`, from time t, and rebuild its
+  // timeline to match. This is how a deck jumps, and how it comes back from a
+  // pause: an AudioBufferSourceNode cannot seek, so the old one is faded out.
+  Voice.prototype.replaceSource = function (t, pos, nodes, fade) {
+    const f = fade == null ? 0.006 : fade;
+    this.retire(this.src, this.sg, t, f);
+    const n = this.makeSource(this.track.buffer, t, pos, nodes, f);
+    this.src = n.src; this.sg = n.gate;
+    const tl = new Timeline(nodes[0].t, pos, nodes[0].r);
+    for (let i = 1; i < nodes.length; i++) tl.nodes.push({ t: nodes[i].t, r: nodes[i].r });
+    this.tl = tl;
+    if (isFinite(this.endTime)) { try { n.src.stop(this.endTime); } catch (e) { /* ok */ } }
+  };
+
+  // Beat-jump: carry on from `pos` at the speed the deck is already running.
+  Voice.prototype.seek = function (t, pos, fade) {
+    const nodes = [{ t: t, r: this.tl.rateAt(t) }];
+    this.tl.nodes.forEach(function (n) { if (n.t > t) nodes.push({ t: n.t, r: n.r }); });      // a tempo glide under way carries on
+    this.replaceSource(t, pos, nodes, fade == null ? 0.012 : fade);
   };
 
   Voice.prototype.destroy = function () {
     try { this.src.stop(); } catch (e) { /* not started or already stopped */ }
-    [this.src, this.env, this.trim, this.low, this.mid, this.high, this.hp, this.lp, this.tap, this.fader, this.echoSend, this.revSend]
+    [this.src, this.sg, this.env, this.trim, this.low, this.mid, this.high, this.hp, this.lp, this.tap, this.fader, this.echoSend, this.revSend]
       .concat(this.extra).forEach(function (n) { try { n.disconnect(); } catch (e) { /* ok */ } });
   };
 
@@ -195,7 +290,10 @@ var Engine = (function () {
     this.volume = ctx.createGain(); this.volume.gain.value = opts.volume == null ? 0.9 : opts.volume;
     this.analyser = ctx.createAnalyser(); this.analyser.fftSize = 1024;
     this.masterIn.connect(this.perfHP); this.perfHP.connect(this.comp); this.comp.connect(this.limiter);
-    this.limiter.connect(this.volume); this.volume.connect(dest); this.volume.connect(this.analyser);
+    // the DJ pause fades the whole output through this, apart from the user's volume
+    this.pauseGain = ctx.createGain();
+    this.limiter.connect(this.pauseGain); this.pauseGain.connect(this.volume);
+    this.volume.connect(dest); this.volume.connect(this.analyser);
 
     // tempo-synced echo
     this.echoIn = ctx.createGain();
@@ -223,7 +321,25 @@ var Engine = (function () {
     this.fxGain = ctx.createGain(); this.fxGain.gain.value = 0.55;
     this.fxGain.connect(this.masterIn);
     this.buffers = {};
+    this.fxEvents = [];                 // what the mix will do and when, for the display: {kind, t0, t1}
   }
+
+  // Remember an effect that is scheduled (or being played by hand) so the page
+  // can show it coming and show it happening.
+  Mixer.prototype.noteFx = function (kind, t0, t1) {
+    this.fxEvents.push({ kind: kind, t0: t0, t1: Math.max(t1, t0 + 0.15) });
+    if (this.fxEvents.length > 80) this.fxEvents.splice(0, 20);
+  };
+
+  // kind -> "on" while it sounds, "plan" while it is still to come
+  Mixer.prototype.fxState = function (now) {
+    const out = {};
+    this.fxEvents.forEach(function (e) {
+      if (now >= e.t0 && now <= e.t1) out[e.kind] = "on";
+      else if (e.t0 > now && !out[e.kind]) out[e.kind] = "plan";
+    });
+    return out;
+  };
 
   Mixer.prototype.fxBuffer = function (kind, seconds) {
     const sr = this.ctx.sampleRate;
@@ -241,7 +357,9 @@ var Engine = (function () {
     return this.buffers[key];
   };
 
+  const LAMP = { riser: "riser", downlifter: "down", crash: "crash", impact: "hit" };
   Mixer.prototype.playFx = function (kind, t, seconds, gain) {
+    this.noteFx(LAMP[kind], t, t + (seconds || (kind === "crash" ? 1.6 : 0.8)));
     const src = this.ctx.createBufferSource();
     src.buffer = this.fxBuffer(kind, seconds);
     const g = this.ctx.createGain(); g.gain.value = gain == null ? 1 : gain;
@@ -249,6 +367,53 @@ var Engine = (function () {
     src.start(t);
     (this.fxNodes = this.fxNodes || []).push({ src: src, t: t });
     return src;
+  };
+
+  // DJ-style stop. The decks slow to a halt over `T` seconds — the pitch falls
+  // with them and the output fades out at the end — instead of the sound just
+  // being cut. Each deck keeps its planned timeline aside as `orig`; the clock
+  // is frozen while paused, so every fade and EQ move scheduled ahead of this
+  // stays valid, and spinUp() puts the decks back where that plan expects them.
+  Mixer.prototype.brake = function (voices, t, T) {
+    T = T == null ? BRAKE : T;
+    const held = [];
+    voices.forEach(function (v) {
+      const ts = Math.max(t, v.t0);                      // a deck that starts inside the brake is slowed from its first sample
+      if (ts >= t + T || t >= v.endTime) return;          // not playing until after the stop: nothing to slow
+      const r = v.tl.rateAt(ts), p = v.src.playbackRate;
+      p.cancelScheduledValues(ts);
+      if (t < v.t0) p.setValueAtTime(r, ts);              // (that cleared its own opening value)
+      else p.linearRampToValueAtTime(r, ts);              // a tempo glide under way is cut off at the speed it reached
+      p.linearRampToValueAtTime(0, t + T);
+      const real = new Timeline(ts, v.tl.posAt(ts), r);   // what the deck really does now, for the display
+      real.ramp(ts, t + T, 0);
+      held.push({ voice: v, orig: v.tl });
+      v.tl = real;
+    });
+    const g = this.pauseGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(1, t);
+    g.setValueAtTime(1, t + 0.45 * T);
+    g.linearRampToValueAtTime(0, t + T);
+    return { t: t, T: T, held: held };
+  };
+
+  // Spin the decks back up from rest over `S` seconds. A real platter restarts
+  // where it stopped, but then the music would be late for everything already
+  // scheduled, so each deck instead starts a little ahead — exactly far enough
+  // that it arrives at full speed on the position the plan expects.
+  Mixer.prototype.spinUp = function (state, t, S) {
+    S = S == null ? SPINUP : S;
+    const tEnd = t + S;
+    state.held.forEach(function (h) {
+      const o = h.orig, rho = o.rateAt(tEnd);
+      const nodes = [{ t: t, r: 0 }, { t: tEnd, r: rho }];
+      o.nodes.forEach(function (n) { if (n.t > tEnd) nodes.push({ t: n.t, r: n.r }); });
+      h.voice.replaceSource(t, Math.max(0, o.posAt(tEnd) - rho * S / 2), nodes, 0.004);
+    });
+    const g = this.pauseGain.gain;                   // (still at 0 from the brake; nothing to cancel)
+    g.setValueAtTime(0, t);
+    g.linearRampToValueAtTime(1, t + 0.4 * S);
   };
 
   Mixer.prototype.firstVoice = function (track, t0, label) {
@@ -298,7 +463,8 @@ var Engine = (function () {
     const L = plan.blendBars;
     const tStart = A.timeOfBar(plan.startBar);
     const T0 = A.tempoAt(tStart);
-    let rB0 = (type => type === "echoOut" ? 1 : Math.max(0.88, Math.min(1.12, T0 / gB.bpm)))(plan.type);
+    // a clean exit has no overlap to keep in time, so the incoming track just starts at its own tempo
+    let rB0 = plan.freshTempo || plan.type === "echoOut" || plan.type === "brake" || plan.type === "spinback" ? 1 : Math.max(0.88, Math.min(1.12, T0 / gB.bpm));
     const B = new Voice(this, track, tStart, gB.downbeat + plan.inStartBar * gB.barLen, rB0, label);
     B.entryBar = plan.inStartBar;
 
@@ -319,7 +485,7 @@ var Engine = (function () {
       tSwap = A.timeOfBar(plan.swapBar);
     } else {
       tSwap = A.timeOfBar(plan.swapBar);
-      if (plan.type === "dropSwap") {
+      if (plan.type === "dropSwap" && !plan.freshTempo) {
         // settle onto the new track's own tempo over its first 16 bars
         const Tb = gB.bpm, D = 480 * 16 / (T0 + Tb);
         B.rampRate(tSwap, tSwap + D, 1);
@@ -339,15 +505,16 @@ var Engine = (function () {
 
     if (plan.type === "bassSwap") {
       // incoming: lows held back until the swap, volume and mids/highs easing up
-      curve(B.fader.gain, tStart, tSwap, 0.6, 1);
+      B.fader.gain.value = 0;
+      curveFn(B.fader.gain, tStart, tSwap, fadeIn);
       // the bass trade: instant on the one, or a two-beat crossfade of the lows
       // (equal-power, so the low end stays level while the basslines trade)
       const soft = plan.bassSwapMode === "smooth", half = soft ? beat : 0.012;
       B.low.gain.setValueAtTime(KILL, tStart);
       B.low.gain.setValueAtTime(KILL, tSwap - half);
       if (soft) curveFn(B.low.gain, tSwap - half, tSwap + half, bassIn); else B.low.gain.linearRampToValueAtTime(0, tSwap + half);
-      curve(B.mid.gain, tStart, tSwap, -5, 0);
-      curve(B.high.gain, tStart, tSwap, -8, 0);
+      curve(B.mid.gain, tStart, tSwap, -12, 0);
+      curve(B.high.gain, tStart, tSwap, -14, 0);
       // outgoing: gives up its bass on the same beat, then gets out of the way
       curve(A.fader.gain, tStart, tSwap, 1, 0.88);
       A.low.gain.setValueAtTime(0, tSwap - half);
@@ -360,32 +527,74 @@ var Engine = (function () {
       A.echoSend.gain.setValueAtTime(0, tSwap);
       A.echoSend.gain.linearRampToValueAtTime(0.3 * echoF, tSwap + 0.5 * bar);
       A.echoSend.gain.setValueAtTime(0.3 * echoF, tSwap + Math.max(tail, bar));
+      this.noteFx("filter", tSwap, tSwap + Math.max(tail, bar));
+      this.noteFx("echo", tSwap, tSwap + Math.max(tail, bar));
       if (this.fxOn && plan.riser) {
         const rb = Math.min(4, Math.max(2, L / 4)) * bar;
         this.playFx("riser", tSwap - rb, rb, riserGain);
       }
-      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, 0.35 + 0.5 * impactGain);
+      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, (plan.rise >= 1 ? 0.35 + 0.5 * impactGain : 0.2 + 0.35 * impactGain));
+      if (this.fxOn && plan.downlifter) this.playFx("downlifter", tSwap, 2 * bar, 0.2 + 0.25 * intensity);
       A.transitionEnd = tSwap + Math.max(tail, bar) + 1;
       if (this.offline) A.stopAt(A.transitionEnd + 2);
+    } else if (plan.type === "brake" || plan.type === "spinback") {
+      // the outgoing deck is stopped by hand, and the next track lands on the one
+      A.revSend.gain.setValueAtTime(0, tSwap - 2 * beat);
+      A.revSend.gain.linearRampToValueAtTime(0.4 * revF, tSwap + 0.15);
+      if (plan.type === "brake") {
+        // the platter slows to a crawl over the last two beats, pitch falling with it
+        const tb = tSwap - 2 * beat;
+        this.noteFx("brake", tb, tSwap);
+        A.holdRate(tb);
+        A.rampRate(tb, tSwap, 0.03);
+        A.revSend.gain.setValueAtTime(0, tSwap + 0.2);
+        A.fader.gain.setValueAtTime(1, tSwap - 0.004);
+        A.fader.gain.linearRampToValueAtTime(0, tSwap + 0.012);
+      } else {
+        // the last beat is wound back: the track played in reverse from the swap, fast, slowing as it goes
+        const spin = 1.1, r0 = 3.2, r1 = 0.12, p = A.tl.posAt(tSwap);
+        this.noteFx("spin", tSwap, tSwap + spin);
+        const win = reversedWindow(ctx, A.track.buffer, p - ((r0 + r1) / 2 * spin + 0.4), p + 0.05);
+        const rs = ctx.createBufferSource(), rg = ctx.createGain();
+        rs.buffer = win.buffer;
+        rs.playbackRate.setValueAtTime(r0, tSwap);
+        rs.playbackRate.linearRampToValueAtTime(r1, tSwap + spin);
+        rg.gain.setValueAtTime(0.9, tSwap);
+        rg.gain.linearRampToValueAtTime(0, tSwap + spin);
+        rs.connect(rg); rg.connect(A.trim);
+        rs.start(tSwap, Math.max(0, win.end - p - 1 / win.sr));
+        A.extra.push(rs, rg);
+        A.cutMain(tSwap);                                   // the forward track gives way to the spin
+        A.revSend.gain.linearRampToValueAtTime(0, tSwap + spin);
+        A.fader.gain.setValueAtTime(1, tSwap + spin);
+        A.fader.gain.linearRampToValueAtTime(0, tSwap + spin + 0.05);
+      }
+      B.fader.gain.setValueAtTime(0, tSwap - 0.001);
+      B.fader.gain.linearRampToValueAtTime(1, tSwap + 0.004);
+      if (this.fxOn && plan.impact) this.playFx("impact", tSwap, 0, 0.2 + 0.5 * impactGain);
+      A.transitionEnd = tSwap + 3;
+      if (this.offline) A.stopAt(tSwap + 3);
     } else {
       const build = plan.buildBars;
       const tBuild = A.timeOfBar(plan.swapBar - build);
       const hpTarget = plan.type === "dropSwap" ? 2200 : 700;
       const hpEnd = plan.roll && this.fxOn ? tSwap - bar : tSwap - 0.02;
       expRamp(A.hp.frequency, tBuild, hpEnd, 10, hpTarget);
+      this.noteFx("filter", tBuild, tSwap);
       A.hp.frequency.setValueAtTime(hpTarget, tSwap + 0.02);
       // echo throw on the last beat, cut dry on the downbeat so the tail rings
       if (plan.echoThrow !== false && this.fxOn) {
         A.echoSend.gain.setValueAtTime(0, tSwap - beat);
         A.echoSend.gain.linearRampToValueAtTime((plan.type === "echoOut" ? 0.75 : 0.55) * echoF, tSwap - 0.01);
         A.echoSend.gain.setValueAtTime(0, tSwap + 0.03);
+        this.noteFx("echo", tSwap - beat, tSwap + 0.6);
       }
       A.revSend.gain.setValueAtTime(0, tSwap - 2 * beat);
       A.revSend.gain.linearRampToValueAtTime(0.45 * revF, tSwap);
       A.revSend.gain.setValueAtTime(0, tSwap + 0.03);
       A.fader.gain.setValueAtTime(1, tSwap - 0.004);
       A.fader.gain.linearRampToValueAtTime(0, tSwap + 0.012);
-      if (plan.roll && this.fxOn) this.scheduleRoll(A, plan.swapBar - 1);
+      if (plan.roll && this.fxOn) { this.scheduleRoll(A, plan.swapBar - 1); this.noteFx("roll", A.timeOfBar(plan.swapBar - 1), tSwap); }
       B.fader.gain.setValueAtTime(0, tSwap - 0.001);
       B.fader.gain.linearRampToValueAtTime(1, tSwap + 0.004);
       if (this.fxOn && plan.riser) {
@@ -439,9 +648,9 @@ var Engine = (function () {
   }
 
   return {
-    Mixer: Mixer, Voice: Voice, renderSet: renderSet,
-    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain,
-    LOOKAHEAD: LOOKAHEAD, KILL: KILL,
+    Mixer: Mixer, Voice: Voice, renderSet: renderSet, reversedWindow: reversedWindow,
+    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn,
+    LOOKAHEAD: LOOKAHEAD, KILL: KILL, BRAKE: BRAKE, SPINUP: SPINUP,
   };
 })();
 

@@ -112,6 +112,9 @@ function check(name, cond, extra) {
       if (lag === 0) atZero = s;
       if (s > best) { best = s; bestLag = lag; }
     }
+    // the incoming deck starts silent: the first bar of the blend is far quieter than the last
+    const bsRms = (t0) => rms(bSolo, Math.round(t0 * sr), Math.round((t0 + bar) * sr));
+    const bFirst = bsRms(tStart), bLast = bsRms(tSwap - bar);
     // negative control: slip one deck by ~30 ms and the same measurement must see it
     const slip = 30, eb2 = new Float32Array(eb.length);
     for (let i = slip; i < eb.length; i++) eb2[i] = eb[i - slip];     // 44-sample hop ≈ 1 ms per frame
@@ -136,7 +139,7 @@ function check(name, cond, extra) {
       const pre = (lvl(-4) + lvl(-3) + lvl(-2)) / 3;
       for (let k = -1; k <= 1; k++) worst.push(lvl(k) / pre);
     }
-        return { peak, nan, before, during, afterB, bestLag, slipLag, plan: plan.type, L: plan.blendBars, dur: full.buf.duration,
+        return { peak, nan, before, during, afterB, bestLag, slipLag, bFirst, bLast, plan: plan.type, L: plan.blendBars, dur: full.buf.duration,
       soft: { mode: sp.bassSwapMode, peak: sPeak, nan: sNan, baseline: sRms(sB.entry.tStart - sbar), max: Math.max.apply(null, softDuring), minRatio: Math.min.apply(null, worst) } };
   });
   check("offline mix: no NaN, no clipping", m.nan === 0 && m.peak < 1, "peak=" + m.peak.toFixed(3));
@@ -147,6 +150,7 @@ function check(name, cond, extra) {
   check("soft bass swap: planned as soft, no NaN, no clipping", m.soft.mode === "smooth" && m.soft.nan === 0 && m.soft.peak < 1, "peak=" + m.soft.peak.toFixed(3));
   check("soft bass swap: low end never doubles", m.soft.max < m.soft.baseline * 1.35, "baseline=" + m.soft.baseline.toFixed(4) + " max=" + m.soft.max.toFixed(4));
   check("soft bass swap: the bass never falls into a hole while the lines trade (within 3 dB of before)", m.soft.minRatio > 0.7, "lowest = " + (20 * Math.log10(m.soft.minRatio)).toFixed(1) + " dB vs before");
+  check("blend: the incoming deck comes in from silence (first bar under a fifth of the last)", m.bFirst < 0.2 * m.bLast, "first=" + m.bFirst.toFixed(4) + " last=" + m.bLast.toFixed(4));
   check("beat lock: decks' onsets line up within 4 ms", Math.abs(m.bestLag) <= 4, "lag=" + m.bestLag + " ms");
 
   check("beat lock: the same test sees a 30 ms slip", Math.abs(Math.abs(m.slipLag) - 30) <= 4, "lag=" + m.slipLag + " ms");
@@ -249,6 +253,169 @@ function check(name, cond, extra) {
   await page.click("#btn-demo");
   await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
 
+  // ---- the engine against a frequency-coded track: its pitch at time t says exactly where it is.
+  //      Checks the DJ pause, the scrub, and the new ways out against an independent simulation.
+  const osc = await page.evaluate(async () => {
+    const sr = 44100, DUR = 40, F0 = 300, K = 40;                    // f(p) = F0 + 2K p
+    const fOf = (p) => F0 + 2 * K * p;
+    const analysis = { bpm: 120, beatLen: 0.5, barLen: 2, downbeat: 0, loudnessDb: -12, bars: 20, key: { camelot: "1A", name: "x" }, energy: 5, sections: [], cues: [] };
+    const makeTrack = (ctx, silent) => {
+      const buf = ctx.createBuffer(1, sr * DUR, sr), d = buf.getChannelData(0);
+      if (!silent) for (let i = 0; i < d.length; i++) { const p = i / sr; d[i] = 0.12 * Math.sin(2 * Math.PI * (F0 * p + K * p * p)); }
+      return { title: silent ? "silence" : "chirp", buffer: buf, duration: DUR, shiftBeats: 0, analysis: analysis };
+    };
+    const crossings = (x, t0, t1) => { const r = []; for (let i = Math.max(1, Math.floor(t0 * sr)); i < Math.min(x.length, Math.floor(t1 * sr)); i++) if (x[i - 1] < 0 && x[i] >= 0) r.push((i - 1 + (-x[i - 1]) / (x[i] - x[i - 1])) / sr); return r; };
+    const freqIn = (x, a, b) => { const c = crossings(x, a, b); return c.length >= 3 ? (c.length - 1) / (c[c.length - 1] - c[0]) : 0; };
+    const rms = (x, a, b) => { let e = 0, n = 0; for (let i = Math.floor(a * sr); i < Math.floor(b * sr); i++) { e += x[i] * x[i]; n++; } return Math.sqrt(e / Math.max(1, n)); };
+    const R = {};
+
+    // 1. pause: brake then spin-up, with no gap, against an uninterrupted render
+    async function render(withPause) {
+      const ctx = new OfflineAudioContext(2, sr * 10, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
+      const v = m.firstVoice(makeTrack(ctx), 0.1, "A");
+      if (withPause) { const st = m.brake([v], 3.0, Engine.BRAKE); m.spinUp(st, 3.0 + Engine.BRAKE, Engine.SPINUP); }
+      return (await ctx.startRendering()).getChannelData(0);
+    }
+    const base = await render(false), paused = await render(true), T = Engine.BRAKE, S = Engine.SPINUP;
+    let worstBrake = 0;
+    for (let k = 0; k < 6; k++) {
+      const a = 3.0 + 0.01 + k * 0.13, b = a + 0.12, mid = (a + b) / 2, rate = 1 - (mid - 3.0) / T;
+      const P = 2.9 + (mid - 3.0) - (mid - 3.0) * (mid - 3.0) / (2 * T), pred = fOf(P) * rate;
+      worstBrake = Math.max(worstBrake, Math.abs(freqIn(paused, a, b) - pred) / Math.max(pred, 250));
+    }
+    R.brakeErr = worstBrake;
+    R.rmsBefore = rms(paused, 2.5, 2.9); R.rmsAtStop = rms(paused, 3.0 + T - 0.03, 3.0 + T); R.rmsAfter = rms(paused, 6, 7);
+    const ca = crossings(base, 3.0 + T + S + 0.3, 9), cb = crossings(paused, 3.0 + T + S + 0.3, 9);
+    let worst = 0, j = 0;
+    for (let i = 0; i < ca.length; i++) { while (j + 1 < cb.length && Math.abs(cb[j + 1] - ca[i]) < Math.abs(cb[j] - ca[i])) j++; worst = Math.max(worst, Math.abs(cb[j] - ca[i])); }
+    R.realignMs = worst * 1000;
+
+    // 2. scripted scrub (forward, still, backwards, wobbling through zero, backwards again, release)
+    {
+      const ctx = new OfflineAudioContext(2, sr * 16, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
+      const v = m.firstVoice(makeTrack(ctx), 0.1, "A"), t0 = 2.0, sess = new Turntable.Session(v, t0), cmds = [];
+      for (let t = t0; t < 3.0; t += 0.016) cmds.push([t, 2.0, 0.05]);
+      for (let t = 3.0; t < 3.5; t += 0.016) cmds.push([t, 0, 0.05]);
+      for (let t = 3.5; t < 5.0; t += 0.016) cmds.push([t, -1.5, 0.05]);
+      for (let t = 5.0; t < 8.0; t += 0.016) cmds.push([t, 2.2 * Math.sin(2 * Math.PI * 0.8 * (t - 5)) - 0.2, 0.04]);
+      for (let t = 8.0; t < 8.6; t += 0.016) cmds.push([t, -3, 0.05]);
+      cmds.forEach((c) => sess.setRate(c[0], c[1], c[2]));
+      sess.end(8.6, 0.2); sess.finish();
+      const dt = 0.0005, traj = [], events = cmds.map((c) => ({ t: c[0], v: c[1], g: c[2] })).concat([{ t: 8.6, v: 1, g: 0.2 }]);
+      let pos = t0 - 0.1, vel = 1, ci = 0, target = null, vStart = 0, tStart = 0;
+      for (let tt = t0; tt < 13; tt += dt) {
+        while (ci < events.length && events[ci].t <= tt) { target = events[ci]; vStart = vel; tStart = target.t; ci++; }
+        if (target) vel = target.t + target.g > tt ? vStart + (target.v - vStart) * (tt - tStart) / target.g : target.v;
+        pos += vel * dt; traj.push([tt, pos, vel]);
+      }
+      const at = (t) => traj[Math.min(traj.length - 1, Math.max(0, Math.round((t - t0) / dt)))];
+      const x = (await ctx.startRendering()).getChannelData(0), errs = [];
+      for (let a = t0 + 0.05; a < 12; a += 0.1) {
+        let minV = 1e9, sum = 0, n = 0;
+        for (let q = a - 0.03; q < a + 0.13; q += 0.002) minV = Math.min(minV, Math.abs(at(q)[2]));
+        for (let q = a; q < a + 0.1; q += 0.002) { const r = at(q); sum += fOf(r[1]) * Math.abs(r[2]); n++; }
+        const pred = sum / n;
+        if (minV < 0.25 || pred < 200) continue;
+        errs.push(Math.abs(freqIn(x, a + 0.006, a + 0.106) - pred) / pred);
+      }
+      errs.sort((p, q) => p - q);
+      R.scrub = { n: errs.length, median: errs[Math.floor(errs.length / 2)], p90: errs[Math.floor(errs.length * 0.9)] };
+      // a click is a step larger than the signal itself could make: a sine of amplitude 0.12 at frequency f steps at most 0.12*2*pi*f/sr per sample
+      let clicks = 0, worstClick = 0;
+      for (let a = t0 + 0.02; a < 12.5; a += 0.01) {
+        let fmax = 0; for (let q = a - 0.01; q < a + 0.02; q += 0.002) { const r = at(q); fmax = Math.max(fmax, fOf(Math.max(0, r[1])) * Math.abs(r[2])); }
+        const bound = 0.12 * 2 * Math.PI * fmax / sr * 2.0 + 0.004;     // 2x for the compressor's make-up and a little slack
+        let w = 0; for (let i = Math.floor((a + 0.006) * sr); i < Math.floor((a + 0.016) * sr); i++) w = Math.max(w, Math.abs(x[i] - x[i - 1]));
+        if (w > bound) { clicks++; worstClick = Math.max(worstClick, w / bound); }
+      }
+      R.scrubClicks = { clicks: clicks, worstRatio: worstClick };
+      R.scrubPosMs = Math.abs(v.tl.posAt(12) - at(12)[1]) * 1000;
+      R.afterRelease = Math.abs(freqIn(x, 10.0 + 0.006, 10.106) - fOf(at(10.05)[1])) / fOf(at(10.05)[1]);
+    }
+
+    // 3. the new ways out, played over a silent incoming track so only the outgoing deck is heard
+    const basePlan = { swapBar: 6, blendBars: 0, startBar: 6, inLandBar: 0, inStartBar: 0, buildBars: 1, tailBars: 0, roll: false, riser: false, impact: false, echoThrow: false, crash: false, downlifter: false,
+      bassSwapMode: "hard", intensity: 0.6, amounts: { echo: 55, reverb: 45 }, rise: 0, freshTempo: true, reasons: [] };
+    async function exit(type) {
+      const ctx = new OfflineAudioContext(2, sr * 16, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
+      const A = m.firstVoice(makeTrack(ctx), 0.1, "A");
+      const B = m.scheduleTransition(A, makeTrack(ctx, true), Object.assign({ type: type }, basePlan), "B");
+      return { x: (await ctx.startRendering()).getChannelData(0), tSwap: B.entry.tSwap };
+    }
+    {
+      const e = await exit("brake"), ts = e.tSwap, tb = ts - 1.0;           // two beats at 120 bpm
+      let worstB = 0, rows = 0;
+      for (let a = tb + 0.04; a + 0.12 < ts - 0.1; a += 0.1) {
+        const mid = a + 0.06, rate = 1 - (1 - 0.03) * (mid - tb) / 1.0;
+        const P = (tb - 0.1) + (mid - tb) - (1 - 0.03) * (mid - tb) * (mid - tb) / 2;
+        const pred = fOf(P) * rate;
+        if (pred < 150) continue;
+        worstB = Math.max(worstB, Math.abs(freqIn(e.x, a + 0.006, a + 0.126) - pred) / pred); rows++;
+      }
+      R.brake = { worst: worstB, rows: rows, rmsBefore: rms(e.x, tb - 0.4, tb - 0.05), rmsAfter: rms(e.x, ts + 0.1, ts + 1.5), rmsLate: rms(e.x, ts + 2.5, ts + 3.8) };
+    }
+    {
+      const e = await exit("spinback"), ts = e.tSwap, spin = 1.1, r0 = 3.2, r1 = 0.12, slope = (r0 - r1) / spin;
+      let worstS = 0, rows = 0, fwdWorst = 0;
+      for (let tau = 0.06; tau + 0.1 < 0.95; tau += 0.1) {
+        const mid = tau + 0.05, rate = r0 - slope * mid, P = (ts - 0.1) - (r0 * mid - slope * mid * mid / 2);
+        const pred = fOf(P) * rate, fwd = fOf((ts - 0.1) + (r0 * mid - slope * mid * mid / 2)) * rate;
+        const meas = freqIn(e.x, ts + tau + 0.006, ts + tau + 0.106);
+        worstS = Math.max(worstS, Math.abs(meas - pred) / pred);
+        fwdWorst = Math.max(fwdWorst, Math.abs(meas - fwd) / fwd); rows++;
+      }
+      R.spin = { worst: worstS, closerToReverse: fwdWorst, rows: rows, rmsAfter: rms(e.x, ts + 1.4, ts + 2.5) };
+    }
+    return R;
+  });
+  check("pause: pitch falls as the platters slow, as modelled", osc.brakeErr < 0.05, "worst " + (osc.brakeErr * 100).toFixed(1) + "%");
+  check("pause: the output fades out as it stops, and is back at full level after the spin-up", osc.rmsAtStop < 0.05 * osc.rmsBefore && osc.rmsAfter > 0.9 * osc.rmsBefore, [osc.rmsBefore, osc.rmsAtStop, osc.rmsAfter].map((x) => x.toFixed(3)).join(" / "));
+  check("pause: after the spin-up the music is exactly where the plan expects it", osc.realignMs < 2.5, osc.realignMs.toFixed(2) + " ms");
+  check("scrub: pitch follows the platter through stops, reversals and wobbles", osc.scrub.n > 60 && osc.scrub.median < 0.02 && osc.scrub.p90 < 0.06, JSON.stringify(osc.scrub));
+  check("scrub: no clicks, even at the reversals (no step bigger than the signal allows)", osc.scrubClicks.clicks === 0, JSON.stringify(osc.scrubClicks));
+  check("scrub: the deck's position bookkeeping matches an independent simulation", osc.scrubPosMs < 5, osc.scrubPosMs.toFixed(2) + " ms");
+  check("scrub: back at normal speed after the release", osc.afterRelease < 0.03, (osc.afterRelease * 100).toFixed(1) + "%");
+  check("brake exit: the outgoing deck winds down over its last two beats", osc.brake.rows >= 4 && osc.brake.worst < 0.08, JSON.stringify(osc.brake));
+  check("brake exit: only a reverb tail is left once the next track lands, and it dies away", osc.brake.rmsAfter < 0.25 * osc.brake.rmsBefore && osc.brake.rmsLate < 0.005 && osc.brake.rmsBefore > 0.05, JSON.stringify(osc.brake));
+  check("spinback exit: the last beat plays backwards, fast and slowing", osc.spin.rows >= 6 && osc.spin.worst < 0.08 && osc.spin.worst < osc.spin.closerToReverse * 0.6, JSON.stringify(osc.spin));
+  check("spinback exit: nothing is left sounding afterwards", osc.spin.rmsAfter < 0.01);
+
+  // a drop swap into a track too far off in tempo lands at its own tempo; one within reach glides over
+  const fresh = await page.evaluate(() => {
+    const lib = window.__dj.player.library, sr = 44100, S = Settings.make({ style: "club", variety: 0, auto: false, fx: false }), out = {};
+    const base = Brain.planTransition(Engine.infoOf(lib[0]), Engine.infoOf(lib[3]), { entryBar: 0, settings: S, index: 1 });
+    [true, false].forEach((flag) => {
+      const mx = new Engine.Mixer(new OfflineAudioContext(2, sr, sr), { offline: true, settings: S });
+      const A = mx.firstVoice(lib[0], 0.2, "A");
+      const plan = Object.assign({}, base, { type: "dropSwap", blendBars: 0, startBar: base.swapBar, inLandBar: 0, inStartBar: 0, buildBars: 8, freshTempo: flag });
+      const B = mx.scheduleTransition(A, lib[3], plan, "B");
+      out[flag] = { r0: B.tl.nodes[0].r, nodes: B.tl.nodes.length, bpmA: lib[0].analysis.bpm, bpmB: lib[3].analysis.bpm };
+    });
+    return out;
+  });
+  check("freshTempo: the incoming deck starts at its own tempo, no glide", fresh.true.r0 === 1 && fresh.true.nodes === 1, JSON.stringify(fresh.true));
+  check("within reach: the incoming deck starts at the outgoing tempo and settles over 16 bars", fresh.false.r0 !== 1 && fresh.false.nodes > 1, JSON.stringify(fresh.false));
+
+  // the new moves with real tracks: no clipping, no NaN, the incoming track is heard
+  const moves = await page.evaluate(async () => {
+    const lib = window.__dj.player.library, sr = 44100, out = {};
+    for (const type of ["brake", "spinback", "echoOut", "dropSwap"]) {
+      const S = Settings.make({ fx: true, flair: 70, auto: false });
+      const probe = new OfflineAudioContext(2, sr, sr), pm = new Engine.Mixer(probe, { offline: true, settings: S });
+      const plan0 = Brain.planTransition(Engine.infoOf(lib[0]), Engine.infoOf(lib[1]), { entryBar: 0, settings: S, index: 1 });
+      const plan = Object.assign({}, plan0, { type: type, blendBars: 0, startBar: plan0.swapBar, inLandBar: 0, inStartBar: 0, buildBars: type === "dropSwap" ? 8 : 1, freshTempo: true });
+      const A0 = pm.firstVoice(lib[0], 0.2, "A"), B0 = pm.scheduleTransition(A0, lib[1], plan, "B");
+      const len = Math.ceil((B0.entry.tSwap + 6) * sr), ctx = new OfflineAudioContext(2, len, sr), m = new Engine.Mixer(ctx, { offline: true, settings: S });
+      const A = m.firstVoice(lib[0], 0.2, "A"), B = m.scheduleTransition(A, lib[1], plan, "B");
+      const x = (await ctx.startRendering()).getChannelData(0);
+      let peak = 0, bad = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a !== a) bad++; if (a > peak) peak = a; }
+      const rms = (a, b) => { let e = 0, n = 0; for (let i = Math.floor(a * sr); i < Math.floor(b * sr); i++) { e += x[i] * x[i]; n++; } return Math.sqrt(e / Math.max(1, n)); };
+      out[type] = { peak: +peak.toFixed(3), bad: bad, incoming: +rms(B.entry.tSwap + 2, B.entry.tSwap + 5).toFixed(3), events: m.fxEvents.map((e) => e.kind).join(",") };
+    }
+    return out;
+  });
+  Object.keys(moves).forEach((t) => check("move " + t + ": clean render, incoming track heard", moves[t].bad === 0 && moves[t].peak <= 1.0 && moves[t].incoming > 0.03, JSON.stringify(moves[t])));
+
   // ---- live page
   await page.click("#btn-go");
   await page.waitForFunction(() => window.__dj.player.ctx && window.__dj.player.ctx.currentTime > 2, null, { timeout: 15000 });
@@ -261,30 +428,122 @@ function check(name, cond, extra) {
   const posOk = await page.evaluate(() => { const s = window.__dj.player.snapshot(); return s.decks[0].pos > 1 && s.decks[0].bar > 0; });
   check("deck position tracks the clock", posOk);
 
+  // ---- turntables: platter, hold-to-rewind, bar jumps, dragging the waveform
+  const deckState = () => page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(), d = s.decks.find((x) => x.voice === p.cur); return { pos: d.pos, rate: d.rate, hand: s.hand, bar: d.bar }; });
+  check("each deck has a platter, four transport buttons and a draggable waveform", (await page.locator("#deck-A .platter").count()) === 1 && (await page.locator("#deck-A .xport button").count()) === 4 && (await page.locator("#deck-A canvas.zoom").count()) === 1);
+  const ang0 = await page.evaluate(() => document.querySelector("#deck-A .vinyl").style.transform);
+  await page.waitForTimeout(300);
+  const ang1 = await page.evaluate(() => document.querySelector("#deck-A .vinyl").style.transform);
+  check("the platter turns with the track", ang0 !== ang1 && /rotate/.test(ang1), ang0 + " -> " + ang1);
+  const j0 = (await deckState()).pos;
+  await page.click("#deck-A button[data-act=fwd4]"); await page.click("#deck-A button[data-act=fwd4]"); await page.waitForTimeout(250);
+  const j1 = (await deckState()).pos;
+  check("forward 4 bars, twice, jumps about 15 seconds", j1 - j0 > 14 && j1 - j0 < 17, (j1 - j0).toFixed(2));
+  await page.click("#deck-A button[data-act=back4]"); await page.waitForTimeout(250);
+  const j2 = (await deckState()).pos;
+  check("back 4 bars goes back about 7.6 seconds, on the beat", j1 - j2 > 7 && j1 - j2 < 8.4, (j1 - j2).toFixed(2));
+  const pb = await page.locator("#deck-A .platter").boundingBox();
+  const cx = pb.x + pb.width / 2, cy = pb.y + pb.height / 2, Rr = pb.width * 0.4;
+  await page.mouse.move(cx + Rr, cy); await page.mouse.down();
+  const held = await deckState();
+  const p0 = held.pos;
+  for (let i = 1; i <= 40; i++) { const a = i * 0.12; await page.mouse.move(cx + Rr * Math.cos(a), cy + Rr * Math.sin(a)); await page.waitForTimeout(16); }
+  const mid = await deckState();
+  check("a hand on the platter takes the deck", held.hand && mid.hand);
+  check("dragging the platter clockwise moves the track forward by what was turned", mid.pos - p0 > 0.8 && mid.pos - p0 < 2.2, (mid.pos - p0).toFixed(2) + " s for 275 degrees");
+  await page.screenshot({ path: path.join(OUT, "scrubbing.png"), clip: { x: 0, y: 150, width: 1100, height: 540 } });
+  await page.mouse.up(); await page.waitForTimeout(700);
+  const rel = await deckState();
+  check("letting go spins it back to normal speed", !rel.hand && rel.rate > 0.9 && rel.rate < 1.1, JSON.stringify(rel));
+  await page.mouse.move(cx + Rr, cy); await page.mouse.down();
+  const q0 = (await deckState()).pos;
+  for (let i = 1; i <= 40; i++) { const a = -i * 0.12; await page.mouse.move(cx + Rr * Math.cos(a), cy + Rr * Math.sin(a)); await page.waitForTimeout(16); }
+  const q1 = (await deckState()).pos;
+  await page.mouse.up(); await page.waitForTimeout(500);
+  check("dragging counter-clockwise runs the track backwards", q1 - q0 < -0.8, (q1 - q0).toFixed(2));
+  const rb = await page.locator("#deck-A button[data-act=rew]").boundingBox();
+  const r0 = (await deckState()).pos;
+  await page.mouse.move(rb.x + rb.width / 2, rb.y + rb.height / 2); await page.mouse.down(); await page.waitForTimeout(800);
+  const rm = await deckState();
+  await page.mouse.up(); await page.waitForTimeout(500);
+  check("holding rewind winds the track back, fast", rm.pos < r0 - 1.5 && rm.rate < -2, "from " + r0.toFixed(1) + " to " + rm.pos.toFixed(1) + " at " + rm.rate.toFixed(1) + "x");
+  const zb = await page.locator("#deck-A canvas.zoom").boundingBox();
+  const s0 = (await deckState()).pos;
+  await page.mouse.move(zb.x + zb.width * 0.7, zb.y + zb.height / 2); await page.mouse.down();
+  for (let i = 1; i <= 30; i++) { await page.mouse.move(zb.x + zb.width * (0.7 - i * 0.01), zb.y + zb.height / 2); await page.waitForTimeout(16); }
+  await page.mouse.up(); await page.waitForTimeout(500);
+  check("dragging the waveform left moves the track forward", (await deckState()).pos - s0 > 4, ((await deckState()).pos - s0).toFixed(1));
+  const k0 = (await deckState()).pos;
+  await page.focus("#deck-A .platter"); await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(250);
+  const k1 = (await deckState()).pos;
+  check("the platter takes the keyboard too: right arrow jumps a bar", k1 - k0 > 1.6 && k1 - k0 < 2.7, (k1 - k0).toFixed(2));
+  check("no hand is left on the deck", !(await deckState()).hand);
+
   await page.click("#btn-mix");
   await page.waitForFunction(() => window.__dj.player.voices.length >= 2, null, { timeout: 5000 });
   check("mix now schedules a transition", true);
+  await page.waitForFunction(() => document.querySelectorAll(".fxbar .plan, .fxbar .on").length > 0, null, { timeout: 6000 })
+    .then(() => check("effects: the lamps show what the mix has lined up", true), () => check("effects: the lamps show what the mix has lined up", false));
+  await page.click('.fxbar .pad[data-fx="impact"]');
+  await page.waitForFunction(() => document.querySelector('.fxbar .pad[data-fx="impact"]').classList.contains("on"), null, { timeout: 3000 })
+    .then(() => check("effects: a pad lights while its effect sounds", true), () => check("effects: a pad lights while its effect sounds", false));
   await page.waitForFunction(() => / into /.test(document.getElementById("log").textContent), null, { timeout: 5000 });
   check("the thinking log explains it", /into/.test(await page.textContent("#log li")), (await page.textContent("#log li")).slice(0, 140));
   await page.waitForFunction(() => /Mixing/.test(document.getElementById("strip-title").textContent), null, { timeout: 60000 });
   await page.screenshot({ path: path.join(OUT, "mixing.png") });
   check("strip reports the mix in progress", true);
+  const locked = await page.evaluate(() => { const p = window.__dj.player; return { a: p.grab("A"), b: p.grab("B"), lock: p.snapshot().lock }; });
+  check("the decks are locked while the mix runs", !locked.a && !locked.b && /Locked while the mix is running/.test(locked.lock), JSON.stringify(locked));
+  await page.click("#btn-pause");
+  await page.waitForFunction(() => window.__dj.player.ctx.state === "suspended", null, { timeout: 4000 });
+  await page.click("#btn-pause");
+  await page.waitForFunction(() => window.__dj.player.ctx.state === "running" && !window.__dj.player.paused, null, { timeout: 4000 });
+  check("pausing in the middle of a mix and resuming carries on", true);
   await page.waitForFunction(() => { const p = window.__dj.player, s = p.snapshot(); return s && p.cur.entry && s.now > p.cur.entry.tSwap + 1; }, null, { timeout: 90000 });
   const landed = await page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(); const d = s.decks.filter((x) => x.voice === p.cur)[0]; return { bar: d.bar, level: d.level, bpm: d.bpm, title: p.cur.track.title }; });
   check("incoming deck is playing after the swap", landed.bar > 0 && landed.level > 0.9, JSON.stringify(landed));
   await page.screenshot({ path: path.join(OUT, "landed.png") });
 
+  // ---- pause like a DJ: the platters wind down, then the clock stops; resume spins them back up
   await page.click("#btn-pause");
-  const paused = await page.evaluate(() => window.__dj.player.ctx.state);
-  check("pause suspends the clock", paused === "suspended");
+  await page.waitForTimeout(300);
+  const braking = await page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(), d = s.decks.find((x) => x.voice === p.cur); return { paused: p.paused, label: document.getElementById("btn-pause").textContent, state: p.ctx.state, rate: d.rate }; });
+  check("pause: the button flips straight away and the deck is still turning, slower, while it brakes", braking.paused && braking.label === "Resume" && braking.state === "running" && braking.rate > 0.02 && braking.rate < 0.95, JSON.stringify(braking));
+  await page.waitForFunction(() => window.__dj.player.ctx.state === "suspended", null, { timeout: 4000 });
+  const stopped = await page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(), d = s.decks.find((x) => x.voice === p.cur); return { rate: d.rate, pos: d.pos, now: s.now }; });
+  await page.waitForTimeout(400);
+  const stopped2 = await page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(), d = s.decks.find((x) => x.voice === p.cur); return { rate: d.rate, pos: d.pos, now: s.now }; });
+  check("pause: the clock is frozen and the platter is at rest", stopped.rate === 0 && stopped2.pos === stopped.pos && stopped2.now === stopped.now, JSON.stringify([stopped, stopped2]));
+  const refused = await page.evaluate(() => { const p = window.__dj.player; return { a: p.grab("A"), b: p.grab("B"), lock: p.snapshot().lock }; });
+  check("pause: the decks refuse a hand while paused", !refused.a && !refused.b && refused.lock === "Paused", JSON.stringify(refused));
   await page.click("#btn-pause");
+  await page.waitForFunction(() => window.__dj.player.ctx.state === "running" && !window.__dj.player.paused, null, { timeout: 4000 });
+  await page.waitForTimeout(900);
+  const resumed = await page.evaluate(() => { const p = window.__dj.player, s = p.snapshot(), d = s.decks.find((x) => x.voice === p.cur); return { rate: d.rate, pos: d.pos, pausing: p.pausing }; });
+  check("resume: back at full speed after the spin-up", resumed.rate > 0.85 && resumed.rate < 1.15 && !resumed.pausing, JSON.stringify(resumed));
+  await page.click("#btn-pause"); await page.click("#btn-pause");                    // a double press during the brake is remembered, not lost
+  await page.waitForFunction(() => !window.__dj.player.paused && !window.__dj.player.pausing && window.__dj.player.ctx.state === "running", null, { timeout: 6000 });
+  check("pause: pressing it twice quickly ends up playing", true);
   await page.click("#btn-go");
   await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 })
     .then(() => check("stop returns to idle", true), () => check("stop returns to idle", false));
 
+  // ---- winding the deck past the point where the planned mix had to start must not strand the set
+  await page.evaluate(() => { const p = window.__dj.player; if (!p.queue.length) p.queue = p.library.slice(0, 3); });
+  await page.click("#btn-go");
+  await page.waitForFunction(() => window.__dj.player.ctx && window.__dj.player.ctx.currentTime > 1.5, null, { timeout: 15000 });
+  const wound = await page.evaluate(() => { const p = window.__dj.player; let n = 0; for (let i = 0; i < 40; i++) if (p.jump("A", 4)) n++; return { jumps: n, bar: p.snapshot().decks[0].bar }; });
+  check("fast-forwarding by jumps gets near the end of the track", wound.jumps >= 8 && wound.bar > 50, JSON.stringify(wound));
+  await page.waitForFunction(() => window.__dj.player.voices.length >= 2, null, { timeout: 12000 })
+    .then(() => check("after winding past the planned mix, the set still gets a transition", true), () => check("after winding past the planned mix, the set still gets a transition", false));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
+
   // ---- export
+  await page.evaluate(() => { const p = window.__dj.player; p.queue = p.library.slice(0, 3); p.onChange(); });
+  check("six effect pads are on show without opening anything", (await page.locator(".fxbar .pad").count()) === 6 && await page.locator(".fxbar .pad").first().isVisible());
   await page.click("details.perform summary");
-  check("six performance pads", (await page.locator(".pad").count()) === 6);
   const [download] = await Promise.all([page.waitForEvent("download", { timeout: 120000 }), page.click("#btn-export")]);
   const file = path.join(OUT, "mix.wav");
   await download.saveAs(file);
@@ -300,6 +559,36 @@ function check(name, cond, extra) {
   await page.click("#sp-q1");
   const qn = await page.evaluate(() => window.__dj.player.queue.map((t) => t.title));
   check("spotify csv: queued in playlist order", qn.join() === "Chrome Hearts,Neon Static", qn.join());
+
+  // ---- soundcloud: the real widget is unreachable from the sandbox, so a stand-in answers
+  await page.route("https://w.soundcloud.com/**", (route) => {
+    if (/api\.js/.test(route.request().url())) {
+      return route.fulfill({ contentType: "application/javascript", body:
+        'window.SC = { Widget: Object.assign(function () { return { bind: function (ev, cb) { if (ev === "ready") setTimeout(cb, 20); }, unbind: function () {},' +
+        ' getSounds: function (cb) { cb([{ title: "Midnight Warehouse", user: { username: "Demo" }, duration: 150000, permalink_url: "https://soundcloud.com/demo/mw" },' +
+        ' { title: "Some Artist - Not In Library", user: { username: "Label" }, duration: 200000, permalink_url: "https://soundcloud.com/some/nil", purchase_url: "https://example.com/buy", downloadable: true },' +
+        ' { title: "Bad Link", user: { username: "x" }, permalink_url: "javascript:alert(1)", purchase_url: "http://insecure.example" }]); },' +
+        ' getCurrentSound: function (cb) { cb(null); } }; }, { Events: { READY: "ready", ERROR: "error" } }) };' });
+    }
+    return route.fulfill({ contentType: "text/html", body: "<html></html>" });
+  });
+  await page.click("details.soundcloud summary");
+  await page.fill("#sc-link", "https://evil.example.com/steal");
+  await page.click("#sc-read");
+  check("soundcloud: a link that is not soundcloud.com is refused", /soundcloud\.com link/.test(await page.textContent("#log")) || (await page.evaluate(() => window.__dj.player.log.map((l) => l.text).join("|"))).includes("does not look like"));
+  await page.fill("#sc-link", "https://soundcloud.com/demo/sets/my-set");
+  await page.click("#sc-read");
+  await page.waitForSelector("#sc-q1");
+  check("soundcloud: reads the list and matches one of three", /1 of 3/.test(await page.textContent("#sc-result")), await page.textContent("#sc-result p"));
+  const scHtml = await page.innerHTML("#sc-result");
+  check("soundcloud: unmatched rows link out, only over https", /href="https:\/\/soundcloud\.com\/some\/nil"/.test(scHtml) && /href="https:\/\/example\.com\/buy"/.test(scHtml) && !/javascript:/.test(scHtml) && !/insecure\.example/.test(scHtml));
+  await page.click("#sc-q1");
+  const scq = await page.evaluate(() => window.__dj.player.queue.map((t) => t.title));
+  check("soundcloud: matched file is queued", scq.join() === "Midnight Warehouse", scq.join());
+  await page.click("details.soundcloud details.paste summary");
+  await page.fill("#sc-paste", "1. Chrome Hearts\nNeon Static\n");
+  await page.click("#sc-paste-go");
+  check("soundcloud: a pasted list works without the widget", /2 of 2/.test(await page.textContent("#sc-result")), await page.textContent("#sc-result p"));
 
   check("no page errors", errors.length === 0, errors.slice(0, 3).join(" | "));
   await page.screenshot({ path: path.join(OUT, "final.png"), fullPage: true });

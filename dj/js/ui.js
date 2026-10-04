@@ -6,14 +6,13 @@
   const $ = function (id) { return document.getElementById(id); };
   const esc = function (s) { return String(s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); };
   const tick = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
-  const mmss = function (s) { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+  const mmss = function (s) { if (!isFinite(s)) return "–:––"; s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
   const CAMELOT = [];
   for (let n = 1; n <= 12; n++) { CAMELOT.push(n + "A"); CAMELOT.push(n + "B"); }
 
   let nextId = 1;
   const loading = [];                       // placeholders for tracks being analysed
   let decodeCtx = null;
-  let lastSpotify = null;                   // the playlist currently being matched
 
   const player = new Player({ onChange: changed });
   let pending = false;
@@ -163,8 +162,10 @@
     $("btn-go").disabled = !running && !player.queue.length;
     $("btn-pause").disabled = !running;
     $("btn-pause").textContent = player.paused ? "Resume" : "Pause";
-    $("btn-mix").disabled = !running;
-    if (lastSpotify) renderMatches();
+    const live = running && !player.paused && !player.pausing && !player.session;
+    $("btn-mix").disabled = !live;
+    document.querySelectorAll(".fxbar .pad").forEach(function (b) { b.disabled = !running || player.paused; });
+    renderMatches("spotify"); renderMatches("soundcloud");
   }
 
   $("tracks").addEventListener("click", function (e) {
@@ -279,32 +280,238 @@
     return '<div class="eqr"><span>' + name + '</span><div class="t"><i data-k="eq' + name[0] + '"></i></div></div>';
   }
 
-  function deckEl(label, d) {
+  const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");     // asked for no motion: the platter stays still
+  const ICON = {
+    back4: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6l-8 6 8 6zM11 6l-7 6 7 6z"/></svg>',
+    rew: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6l-8 6 8 6zM21 6l-8 6 8 6z"/></svg>',
+    ff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6l8 6-8 6zM3 6l8 6-8 6z"/></svg>',
+    fwd4: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M5 6l8 6-8 6zM13 6l7 6-7 6z"/></svg>',
+  };
+  const XPORT = [
+    ["back4", "Back 4 bars", "Jump back 4 bars"],
+    ["rew", "Rewind", "Hold to rewind"],
+    ["ff", "Fast-forward", "Hold to fast-forward"],
+    ["fwd4", "Forward 4 bars", "Jump forward 4 bars"],
+  ];
+
+  function deckEl(label, d, snap) {
     const el = $("deck-" + label);
     let st = deckState[label];
     if (!d) {
-      if (st) { el.innerHTML = '<div class="empty"><b>' + label + "</b></div>"; deckState[label] = null; el.classList.remove("audible"); }
+      if (st) { el.innerHTML = '<div class="empty"><b>' + label + "</b></div>"; deckState[label] = null; el.classList.remove("audible", "paused", "handed"); }
       return;
     }
     const a = d.track.analysis;
     if (!st || st.track !== d.track) {
       el.innerHTML = '<div class="d-top"><span class="badge">' + label + '</span><div class="ti"><b>' + esc(d.track.title) + '</b><small>' + esc(d.track.artist || "Unknown artist") + '</small></div><span class="state" data-k="sec"></span></div>' +
-        '<div class="read"><div><b class="big" data-k="bpm"></b><small>BPM</small></div><div><b>' + (d.track.keyOverride || a.key.camelot) + '</b><small>' + esc(a.key.name) + '</small></div></div>' +
-        '<canvas class="zoom"></canvas>' +
+        '<div class="tt-row">' +
+          '<div class="tt" data-k="tt">' +
+            '<div class="platter" data-k="platter" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Deck ' + label + ' turntable — drag to scrub, left and right arrows jump a bar">' +
+              '<div class="vinyl" data-k="vinyl"><i class="strobe"></i><i class="sheen"></i><div class="lab"><b>' + label + '</b></div><span class="mark"></span></div>' +
+            '</div>' +
+            '<i class="arm" data-k="arm"></i>' +
+          '</div>' +
+          '<div class="tt-side">' +
+            '<div class="read"><div><b class="big" data-k="bpm"></b><small>BPM</small></div><div><b>' + (d.track.keyOverride || a.key.camelot) + '</b><small>' + esc(a.key.name) + '</small></div></div>' +
+            '<div class="xport" role="group" aria-label="Deck ' + label + ' transport">' +
+              XPORT.map(function (x) { return '<button data-act="' + x[0] + '" aria-label="' + x[1] + '" title="' + x[2] + '">' + ICON[x[0]] + '</button>'; }).join("") +
+            '</div>' +
+            '<small class="tt-note" data-k="note" aria-live="polite"></small>' +
+          '</div>' +
+        '</div>' +
+        '<canvas class="zoom" title="Drag the waveform to move through the track"></canvas>' +
         '<div class="eqs">' + eqRow("LOW") + eqRow("MID") + eqRow("HIGH") + '</div>';
-      st = deckState[label] = { track: d.track, k: {}, zoom: el.querySelector("canvas.zoom") };
+      st = deckState[label] = { track: d.track, k: {}, zoom: el.querySelector("canvas.zoom"), pct: -1 };
       el.querySelectorAll("[data-k]").forEach(function (n) { st.k[n.dataset.k] = n; });
     }
     st.k.bpm.textContent = d.started ? d.bpm.toFixed(1) : "—";
+    const handed = snap.hand && d.touch;
     const sec = d.started ? a.sections.find(function (s) { return d.bar >= s.start && d.bar < s.end; }) : null;
-    st.k.sec.textContent = sec ? sec.type : (d.started ? "" : "cueing");
+    st.k.sec.textContent = handed ? "in hand" : snap.paused && d.started ? "paused" : sec ? sec.type : (d.started ? "" : "cueing");
     [["L", d.eq.low], ["M", d.eq.mid], ["H", d.eq.high]].forEach(function (e) {
       const g = e[1];
       st.k["eq" + e[0]].style.setProperty("--w", Math.max(3, Math.min(100, (g + 40) / 40 * 100)) + "%");
       st.k["eq" + e[0]].classList.toggle("kill", g < -30);
     });
-    $("deck-" + label).classList.toggle("audible", d.audible);
-    drawZoom(st.zoom, d.track, d.pos, ACCENT[label], label, d.started);
+    el.classList.toggle("audible", d.audible);
+    el.classList.toggle("paused", snap.paused && d.started);
+    el.classList.toggle("handed", !!handed);
+
+    // the platter turns with the track: 200° for every second of it, so it speeds up,
+    // slows to a halt and runs backwards exactly as the sound does
+    const pos = d.started ? d.pos : d.voice.tl.offset;
+    if (!REDUCED_MOTION.matches) st.k.vinyl.style.transform = "rotate(" + Turntable.angleOf(pos).toFixed(1) + "deg)";
+    const frac = Math.max(0, Math.min(1, pos / d.track.buffer.duration));
+    st.k.arm.style.setProperty("--sweep", (frac * 16).toFixed(1) + "deg");
+    st.k.arm.classList.toggle("lifted", !d.started || (snap.paused && !snap.pausing));
+    st.k.tt.classList.toggle("locked", !d.touch);
+    st.k.platter.tabIndex = d.touch ? 0 : -1;
+    const pct = Math.round(frac * 100);
+    if (pct !== st.pct) {
+      st.pct = pct;
+      st.k.platter.setAttribute("aria-valuenow", pct);
+      st.k.platter.setAttribute("aria-valuetext", "bar " + Math.max(1, Math.floor(d.bar) + 1) + ", " + pct + " percent");
+    }
+    if (!d.touch && snap.lock) st.k.platter.title = snap.lock; else st.k.platter.removeAttribute("title");
+    drawZoom(st.zoom, d.track, pos, ACCENT[label], label, d.started);
+  }
+
+  // A line under the transport for a couple of seconds: why the deck would not move.
+  const noteTimers = {};
+  function deckNote(label, text) {
+    const st = deckState[label];
+    if (!st) return;
+    st.k.note.textContent = text;
+    clearTimeout(noteTimers[label]);
+    noteTimers[label] = setTimeout(function () { st.k.note.textContent = ""; }, 2600);
+  }
+
+  // ---------------------------------------------------------- hands on the decks
+  //
+  // Dragging the platter (or the waveform), or holding rewind / fast-forward,
+  // takes a deck from the mixer for as long as the hand is on it. Whatever the
+  // hand is doing becomes a speed, sent to the engine as it changes; keeping
+  // still holds the record, and letting go spins it back up to normal.
+
+  let hold = null;                            // the one hand that is down: {kind, label, ...}
+  let waveTouch = null;                       // a press on the waveform that has not yet shown which way it is going
+  let lastKeyAct = 0;                         // when a key last activated a transport button (so its click is not counted twice)
+
+  function lockNote(label) {
+    const s = player.snapshot();
+    deckNote(label, !s ? "Start the set to use the decks" : s.lock || (s.decks.some(function (d) { return d.label === label && d.started; }) ? "Use the deck that is playing" : "That deck is not playing yet"));
+  }
+
+  function pointAngle(e, el) {
+    const r = el.getBoundingClientRect(), dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
+    return { deg: Math.atan2(dy, dx) * 180 / Math.PI, r: Math.hypot(dx, dy) };
+  }
+
+  function startDrag(label, kind, e, el) {
+    if (hold) return;
+    if (!player.grab(label)) { lockNote(label); return; }
+    e.preventDefault();
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+    hold = { kind: kind, label: label, el: el, id: e.pointerId, x: e.clientX, ang: kind === "platter" ? pointAngle(e, el).deg : 0, at: performance.now(), v: 0, still: false, secPerPx: 0 };
+    if (kind === "strip") {
+      const track = deckState[label].track;
+      hold.secPerPx = (2 * ZOOM_BARS * Engine.gridOf(track).barLen) / Math.max(1, el.clientWidth);
+    }
+    player.scrub(0, 0.03);                                   // a hand on the record stops it
+    el.classList.add("grabbing");
+  }
+
+  function moveDrag(e) {
+    if (!hold || hold.kind === "search" || e.pointerId !== hold.id) return;
+    const now = performance.now(), dt = (now - hold.at) / 1000;
+    let seconds = 0;
+    if (hold.kind === "platter") {
+      const p = pointAngle(e, hold.el);
+      if (p.r < 10) return;                                  // too close to the spindle to read an angle
+      let d = p.deg - hold.ang;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      hold.ang = p.deg;
+      seconds = d / Turntable.DEG_PER_SEC;
+    } else {
+      seconds = -(e.clientX - hold.x) * hold.secPerPx;      // drag the waveform left and the track moves forward
+      hold.x = e.clientX;
+    }
+    hold.at = now;
+    const v = Turntable.rateFromDrag(seconds, dt);
+    hold.v = 0.5 * hold.v + 0.5 * v;                         // pointer events arrive in bursts; smooth them a little
+    hold.still = false;
+    player.scrub(hold.v, 0.035);
+  }
+
+  function endHold(e) {
+    waveTouch = null;
+    if (!hold) return;
+    if (e && e.pointerId != null && hold.id != null && e.pointerId !== hold.id) return;      // another finger lifted
+    if (hold.el) hold.el.classList.remove("grabbing");
+    hold.el && hold.el.classList.remove("held");
+    hold = null;
+    player.letGo(false);
+  }
+
+  function startSearch(label, dir, el, pid) {
+    if (hold) return;
+    if (!player.grab(label)) { lockNote(label); return; }
+    hold = { kind: "search", label: label, el: el, dir: dir, at: performance.now(), id: pid == null ? null : pid };
+    el.classList.add("held");
+    player.scrub(dir * Turntable.searchRate(0), 0.15);
+  }
+
+  // called every frame: a still hand holds the record; a held search winds on
+  function tickHold() {
+    if (!hold) return;
+    if (!player.session) { hold.el && hold.el.classList.remove("grabbing", "held"); hold = null; return; }   // the set stopped or paused under it
+    const now = performance.now();
+    if (hold.kind === "search") player.scrub(hold.dir * Turntable.searchRate((now - hold.at) / 1000), 0.12);
+    else if (!hold.still && now - hold.at > 50) { hold.still = true; hold.v = 0; player.scrub(0, 0.04); }
+  }
+
+  ["A", "B"].forEach(function (label) {
+    const el = $("deck-" + label);
+    el.dataset.label = label;
+    el.addEventListener("pointerdown", function (e) {
+      if (e.button != null && e.button > 0) return;
+      const btn = e.target.closest("button[data-act]");
+      if (btn) {
+        if (btn.dataset.act === "rew" || btn.dataset.act === "ff") startSearch(label, btn.dataset.act === "ff" ? 1 : -1, btn, e.pointerId);
+        return;
+      }
+      const plat = e.target.closest(".platter");
+      if (plat) { startDrag(label, "platter", e, plat); return; }
+      const strip = e.target.closest("canvas.zoom");
+      // the waveform sits in a scrolling page: a swipe that starts on it only takes the deck once it is clearly sideways
+      if (strip && !hold) waveTouch = { label: label, el: strip, e: e, x: e.clientX, y: e.clientY, id: e.pointerId, t: performance.now() };
+    });
+    el.addEventListener("pointermove", function (e) {
+      if (waveTouch && e.pointerId === waveTouch.id) {
+        const dx = e.clientX - waveTouch.x, dy = e.clientY - waveTouch.y;
+        if (Math.abs(dx) > 5 && Math.abs(dx) > Math.abs(dy)) { const p = waveTouch; waveTouch = null; startDrag(p.label, "strip", p.e, p.el); if (hold) hold.at = p.t; }
+        else if (Math.abs(dy) > 8) waveTouch = null;
+      }
+      moveDrag(e);
+    });
+    el.addEventListener("click", function (e) {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (e.detail !== 0) { if (act === "back4" || act === "fwd4") jump(label, act === "fwd4" ? 4 : -4); return; }   // a real click
+      if (performance.now() - lastKeyAct < 400) return;      // the key press already did it
+      // a click from a screen reader or voice control: no press and release to time, so a jump, or half a second of winding
+      if (act === "back4" || act === "fwd4") jump(label, act === "fwd4" ? 4 : -4);
+      else {
+        startSearch(label, act === "ff" ? 1 : -1, btn, null);
+        setTimeout(endHold, 500);
+      }
+    });
+    el.addEventListener("keydown", function (e) {
+      const btn = e.target.closest("button[data-act]");
+      if (btn && (e.key === "Enter" || e.key === " ")) {
+        e.preventDefault();
+        if (e.repeat) return;
+        lastKeyAct = performance.now();
+        const act = btn.dataset.act;
+        if (act === "rew" || act === "ff") startSearch(label, act === "ff" ? 1 : -1, btn, null);
+        else jump(label, act === "fwd4" ? 4 : -4);
+      } else if (e.target.closest(".platter") && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        jump(label, (e.key === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 4 : 1));
+      }
+    });
+    el.addEventListener("keyup", function (e) {
+      if (hold && hold.kind === "search" && (e.key === "Enter" || e.key === " ")) endHold();
+    });
+    el.addEventListener("blur", function (e) { if (hold && hold.kind === "search" && e.target === hold.el) endHold(); }, true);
+  });
+  window.addEventListener("pointerup", endHold);
+  window.addEventListener("pointercancel", endHold);
+
+  function jump(label, bars) {
+    if (!player.jump(label, bars)) lockNote(label);
   }
 
   // ----------------------------------------------------- mixer column + meter
@@ -332,23 +539,65 @@
     g.fillStyle = "#fff"; g.fillRect(Math.min(W - 2 * dpr, peakHold * W), 0, 2 * dpr, H);
   }
 
+  // The effects strip: a lamp is lit while that effect sounds, outlined while the
+  // transition that is lined up (or the one being previewed) will use it.
+  const LAMPS = Array.prototype.slice.call(document.querySelectorAll("[data-lamp]"));
+  let pulseTimer = 0, hitWas = false;
+  function plannedFx(plan, settings) {
+    const o = {};
+    if (!plan) return o;
+    if (settings.fx) {
+      if (plan.riser) o.riser = 1;
+      if (plan.roll) o.roll = 1;
+      if (plan.impact) o.hit = 1;
+      if (plan.echoThrow) o.echo = 1;
+      if (plan.crash) o.crash = 1;
+      if (plan.downlifter) o.down = 1;
+    }
+    if (plan.type === "dropSwap" || plan.type === "echoOut" || plan.type === "bassSwap") o.filter = 1;
+    if (plan.type === "bassSwap") o.echo = 1;
+    if (plan.type === "brake") o.brake = 1;
+    if (plan.type === "spinback") o.spin = 1;
+    return o;
+  }
+  function showFx(snap) {
+    const fx = snap.fx || {}, planned = {};
+    if (!Object.keys(fx).some(function (k) { return fx[k] === "plan" || fx[k] === "on"; }) && player.queue[0] && preview.plan) Object.assign(planned, plannedFx(preview.plan, player.settings));
+    LAMPS.forEach(function (el) {
+      const k = el.dataset.lamp, st = fx[k] === "on" ? "on" : (fx[k] === "plan" || planned[k]) ? "plan" : "";
+      el.classList.toggle("on", st === "on");
+      el.classList.toggle("plan", st === "plan");
+    });
+    const hit = fx.hit === "on" || fx.crash === "on" || fx.brake === "on" || fx.spin === "on";
+    if (hit && !hitWas) {
+      const b = document.querySelector(".booth");
+      b.classList.remove("pulse"); void b.offsetWidth; b.classList.add("pulse");
+      clearTimeout(pulseTimer); pulseTimer = setTimeout(function () { b.classList.remove("pulse"); }, 600);
+    }
+    hitWas = hit;
+  }
+
   function frame() {
     requestAnimationFrame(frame);
     drawMeter();
+    tickHold();
     const snap = player.snapshot();
     const knob = $("xf-knob"), bar = $("strip-bar");
     if (!snap) {
       deckEl("A", null); deckEl("B", null);
+      hold = null;
+      LAMPS.forEach(function (el) { el.classList.remove("on", "plan"); });
       $("strip-title").textContent = "Not playing"; $("strip-time").textContent = ""; $("strip-why").innerHTML = "";
       bar.style.width = "0"; knob.style.left = "0%";
       return;
     }
     ["A", "B"].forEach(function (label) {
       const mine = snap.decks.filter(function (d) { return d.label === label; });
-      deckEl(label, mine[mine.length - 1] || null);
+      deckEl(label, mine[mine.length - 1] || null, snap);
     });
 
     const now = snap.now;
+    showFx(snap);
     const active = snap.decks.map(function (d) { return d.voice; }).filter(function (v) { return v.entry && now < v.entry.tSwap + 4; })[0];
     const curLabel = player.cur ? player.cur.label : "A";
     if (active) {
@@ -356,8 +605,9 @@
       const first = now < e.tBegin;
       const into = active.label === "B";
       const p = Math.max(0, Math.min(1, (now - e.tBegin) / Math.max(0.1, e.tSwap - e.tBegin)));
-      // the knob travels across a blend; for a swap it waits, then snaps on the downbeat
-      const x = plan.type === "bassSwap" ? p : (now >= e.tSwap ? 1 : 0);
+      // the knob follows how loud the incoming deck really is: it travels across a blend
+      // (B is silent while it is still on the old side); for a swap it waits, then snaps
+      const x = plan.type === "bassSwap" ? Engine.fadeIn(p) : (now >= e.tSwap ? 1 : 0);
       knob.style.left = (into ? x : 1 - x) * 100 + "%";
       bar.style.width = (into ? x : 1 - x) * 100 + "%";
       $("strip-title").textContent = (first ? "Coming up · " : "Mixing · ") + Brain.label(plan) + " → " + active.track.title;
@@ -371,7 +621,7 @@
       }
       const pl = preview.plan;
       $("strip-title").textContent = "Next · " + Brain.label(pl) + " → " + player.queue[0].title;
-      $("strip-time").textContent = "Swap in " + mmss(player.cur.timeOfBar(pl.swapBar) - now);
+      $("strip-time").textContent = snap.hand ? "Waiting for you to let go" : snap.paused ? "Paused" : "Swap in " + mmss(player.cur.timeOfBar(pl.swapBar) - now);
       $("strip-why").innerHTML = pl.reasons.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("");
     } else {
       knob.style.left = (curLabel === "B" ? 100 : 0) + "%"; bar.style.width = (curLabel === "B" ? 100 : 0) + "%";
@@ -410,6 +660,7 @@
       { key: "bassSwap", type: "seg", label: "Bass swap", options: [["auto", "Auto"], ["hard", "Hard"], ["smooth", "Soft"]], hint: "Hard trades the basslines on the one. Soft crossfades them over two beats." },
       { key: "minPlay", type: "range", label: "Play each track for at least", unit: " bars", hint: "Before the next handover may begin." },
       { key: "variety", type: "range", label: "Variety", unit: PCT, hint: "How often it takes the move it normally wouldn\u2019t." },
+      { key: "brakes", type: "toggle", label: "Vinyl brakes & spinbacks", hint: "Ways out that need no matching key or tempo: the deck winds down or is spun backwards as the next track lands." },
     ] },
     { group: "Taste", items: [
       { key: "arc", type: "seg", label: "Energy over the set", options: [["build", "Build up"], ["wave", "Waves"], ["peak", "Stay high"], ["warmup", "Warm-up"]] },
@@ -556,36 +807,54 @@
 
   // ---------------------------------------------------------------- Spotify
 
-  function renderMatches() {
+  // A playlist-like list (from Spotify or SoundCloud) matched against the files in the booth.
+  const LISTS = {
+    spotify: { el: "sp-result", q: "sp", card: "details.spotify", from: "Spotify" },
+    soundcloud: { el: "sc-result", q: "sc", card: "details.soundcloud", from: "SoundCloud" },
+  };
+  const lists = { spotify: null, soundcloud: null };           // the list currently being matched, per source
+
+  const safeLink = function (u) { return typeof u === "string" && /^https:\/\//i.test(u) ? u : ""; };
+
+  function renderMatches(kind) {
+    const L = lists[kind], cfg = LISTS[kind];
+    if (!L) return;
     const locals = player.library.map(function (t) { return { track: t, title: t.title, artist: t.artist, duration: t.duration }; });
-    const m = Spotify.matchTracks(lastSpotify.tracks, locals);
-    lastSpotify.matches = m;
+    const m = Spotify.matchTracks(L.tracks, locals);
+    L.matches = m;
     const have = m.filter(function (x) { return x.local; }).length;
-    $("sp-result").innerHTML =
-      "<p><b>" + esc(lastSpotify.name) + "</b> — " + have + " of " + m.length + " tracks matched to your files.</p>" +
-      '<div class="sp-row"><button id="sp-q1"' + (have ? "" : " disabled") + '>Queue matched, in playlist order</button><button id="sp-q2"' + (have ? "" : " disabled") + '>Queue matched, let the DJ order them</button></div>' +
+    $(cfg.el).innerHTML =
+      "<p><b>" + esc(L.name) + "</b> — " + have + " of " + m.length + " tracks matched to your files.</p>" +
+      '<div class="sp-row"><button id="' + cfg.q + '-q1"' + (have ? "" : " disabled") + '>Queue matched, in list order</button><button id="' + cfg.q + '-q2"' + (have ? "" : " disabled") + '>Queue matched, let the DJ order them</button></div>' +
       m.map(function (x) {
         const sp = x.spotify;
-        return '<div class="match"><span class="' + (x.local ? "ok" : "no") + '">' + (x.local ? "✓" : "?") + "</span><span>" + esc(sp.artists.join(", ")) + " — " + esc(sp.title) + "</span><span>" +
-          (x.local ? esc(x.local.track.title) : "drop this file in above") + "</span></div>";
+        let links = "";
+        if (!x.local) {
+          if (safeLink(sp.url)) links += ' <a href="' + esc(safeLink(sp.url)) + '" target="_blank" rel="noopener noreferrer">listen</a>';
+          if (safeLink(sp.buy)) links += ' <a href="' + esc(safeLink(sp.buy)) + '" target="_blank" rel="noopener noreferrer">buy</a>';
+          else if (sp.free && safeLink(sp.url)) links += " <em>(free download offered on the page)</em>";
+        }
+        return '<div class="match"><span class="' + (x.local ? "ok" : "no") + '">' + (x.local ? "✓" : "?") + "</span><span>" + esc(sp.artists.join(", ")) + (sp.artists.length ? " — " : "") + esc(sp.title) + "</span><span>" +
+          (x.local ? esc(x.local.track.title) : "drop this file in above" + links) + "</span></div>";
       }).join("");
     const queue = function (order) {
       const cur = player.cur && player.cur.track;
-      player.queue = lastSpotify.matches.filter(function (x) { return x.local && x.local.track !== cur; }).map(function (x) { return x.local.track; });
+      player.queue = L.matches.filter(function (x) { return x.local && x.local.track !== cur; }).map(function (x) { return x.local.track; });
       if (order) player.autoOrder();
-      player.note("Queued " + player.queue.length + " tracks from " + lastSpotify.name + (order ? ", ordered by the DJ" : ", in playlist order"));
+      player.note("Queued " + player.queue.length + " tracks from " + L.name + (order ? ", ordered by the DJ" : ", in list order"));
       changed();
     };
-    const q1 = $("sp-q1"), q2 = $("sp-q2");
+    const q1 = $(cfg.q + "-q1"), q2 = $(cfg.q + "-q2");
     if (q1) q1.onclick = function () { queue(false); };
     if (q2) q2.onclick = function () { queue(true); };
   }
 
-  function showSpotify(name, tracks) {
-    lastSpotify = { name: name, tracks: tracks, matches: [] };
-    document.querySelector("details.spotify").open = true;
-    renderMatches();
+  function showList(kind, name, tracks) {
+    lists[kind] = { name: name, tracks: tracks, matches: [] };
+    document.querySelector(LISTS[kind].card).open = true;
+    renderMatches(kind);
   }
+  const showSpotify = function (name, tracks) { showList("spotify", name, tracks); };
 
   function spotifyUi() {
     const on = Spotify.connected();
@@ -627,6 +896,31 @@
 
   Spotify.handleRedirect().then(function (did) { spotifyUi(); if (Spotify.connected()) loadLists(); if (did) player.note("Connected to Spotify"); })
     .catch(function (err) { spotifyUi(); player.note(err.message); });
+
+
+  // -------------------------------------------------------------- SoundCloud
+
+  function scBusy(on) {
+    $("sc-read").disabled = on; $("sc-paste-go").disabled = on;
+    $("sc-read").textContent = on ? "Reading…" : "Read link";
+  }
+  $("sc-read").addEventListener("click", async function () {
+    const link = $("sc-link").value.trim();
+    if (!link) { player.note("Paste a SoundCloud link first"); return; }
+    scBusy(true);
+    try {
+      const r = await SoundCloud.readLink(link);
+      if (!r.tracks.length) { player.note("SoundCloud had no tracks at that link"); }
+      else showList("soundcloud", { playlist: "SoundCloud playlist", likes: "SoundCloud likes", profile: "SoundCloud profile", track: "SoundCloud track" }[r.kind], r.tracks);
+    } catch (err) { player.note(err.message); }
+    scBusy(false);
+  });
+  $("sc-link").addEventListener("keydown", function (e) { if (e.key === "Enter") $("sc-read").click(); });
+  $("sc-paste-go").addEventListener("click", function () {
+    const tracks = SoundCloud.tracksFromText($("sc-paste").value);
+    if (!tracks.length) { player.note("Paste one track per line, like “Artist - Title”"); return; }
+    showList("soundcloud", "Pasted list", tracks);
+  });
 
   // test hook
   window.__dj = { player: player, addBuffer: addBuffer, addDemos: addDemos };
