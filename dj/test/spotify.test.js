@@ -57,9 +57,10 @@ const b64url = (b) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_
     if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
     const json = (o, status) => route.fulfill({ status: status || 200, contentType: "application/json", headers: cors, body: JSON.stringify(o) });
     if (url.pathname === "/v1/me/playlists") {
-      if (url.searchParams.get("offset") === "1") return json({ items: [{ id: "p2", name: "Second" }], next: null });
+      if (url.searchParams.get("offset") === "1") return json({ items: [{ id: "p2", name: "Second" }, { id: "p403", name: "Refused" }], next: null });
       return json({ items: [{ id: "p1", name: "Warm-up" }], next: "https://api.spotify.com/v1/me/playlists?limit=50&offset=1" });
     }
+    if (url.pathname === "/v1/playlists/p403/items" || url.pathname === "/v1/playlists/p403/tracks") return json({ error: { status: 403, message: "User not registered in the Developer Dashboard" } }, 403);
     if (url.pathname === "/v1/playlists/p1/items") { seen.itemsHits++; return json({ error: { status: 404 } }, 404); }   // the newer name is not live yet
     if (url.pathname === "/v1/playlists/p1/tracks") {
       if (url.searchParams.get("offset") === "2") return json({ items: [track("Levels", "Avicii")], next: null });
@@ -90,8 +91,8 @@ const b64url = (b) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_
   check("token is not left in the URL or page", !(await page.content()).includes("TOKEN1"));
 
   // ---- playlists (token one is already expired -> refresh happens first)
-  await page.waitForFunction(() => document.querySelectorAll("#sp-lists option").length === 2);
-  check("playlists: both pages read", (await page.$$eval("#sp-lists option", (o) => o.map((x) => x.textContent))).join() === "Warm-up,Second");
+  await page.waitForFunction(() => document.querySelectorAll("#sp-lists option").length === 3);
+  check("playlists: both pages read", (await page.$$eval("#sp-lists option", (o) => o.map((x) => x.textContent))).join() === "Warm-up,Second,Refused");
   const refresh = seen.tokens[1];
   check("expired token triggers a refresh", refresh && refresh.grant_type === "refresh_token" && refresh.refresh_token === "REFRESH1" && refresh.client_id === "CLIENT_ID_X");
   check("api calls carry the refreshed token", seen.api.filter((c) => c.path === "/v1/me/playlists").every((c) => c.auth === "Bearer TOKEN2"));
@@ -104,6 +105,14 @@ const b64url = (b) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_
   const rows = await page.$$eval("#sp-result .match", (r) => r.map((x) => x.textContent));
   check("tracks: both pages, null entries skipped", rows.length === 3 && /Strobe/.test(rows[0]) && /Levels/.test(rows[2]), rows.length + " rows");
   check("the result opens itself", await page.$eval("details.spotify", (d) => d.open));
+
+  // ---- a 403 shows Spotify's reason and does not log the user out
+  await page.selectOption("#sp-lists", "p403");
+  await page.click("#sp-load");
+  await page.waitForFunction(() => /403/.test(document.getElementById("log").textContent));
+  const logText = await page.textContent("#log");
+  check("403: Spotify's own reason is shown", /User not registered in the Developer Dashboard/.test(logText) && /User Management/.test(logText), logText.slice(0, 160));
+  check("403: stays connected", await page.isVisible("#sp-load") && await page.evaluate(() => !!localStorage.getItem("sp_refresh")));
 
   // ---- disconnect clears everything
   await page.click("#sp-off");
