@@ -49,6 +49,10 @@ var Engine = (function () {
   const bassIn = function (x) { return dbOf(Math.sin(Math.PI / 2 * x)); };
   const bassOut = function (x) { return dbOf(Math.cos(Math.PI / 2 * x)); };
   const EPS = 1e-3;                 // events may not start inside a curve; begin the next just after it
+  // How loud the incoming deck is, 0..1, as a blend goes from its first beat to
+  // the swap. It starts silent and stays quiet while the crossfader is still on
+  // the outgoing side, so what you hear follows what the knob shows.
+  const fadeIn = function (x) { x = Math.max(0, Math.min(1, x)); return Math.pow(Math.sin(Math.PI / 2 * x), 1.5); };
 
   function expRamp(p, t0, t1, v0, v1) {
     p.setValueAtTime(v0, t0);
@@ -339,15 +343,16 @@ var Engine = (function () {
 
     if (plan.type === "bassSwap") {
       // incoming: lows held back until the swap, volume and mids/highs easing up
-      curve(B.fader.gain, tStart, tSwap, 0.6, 1);
+      B.fader.gain.value = 0;
+      curveFn(B.fader.gain, tStart, tSwap, fadeIn);
       // the bass trade: instant on the one, or a two-beat crossfade of the lows
       // (equal-power, so the low end stays level while the basslines trade)
       const soft = plan.bassSwapMode === "smooth", half = soft ? beat : 0.012;
       B.low.gain.setValueAtTime(KILL, tStart);
       B.low.gain.setValueAtTime(KILL, tSwap - half);
       if (soft) curveFn(B.low.gain, tSwap - half, tSwap + half, bassIn); else B.low.gain.linearRampToValueAtTime(0, tSwap + half);
-      curve(B.mid.gain, tStart, tSwap, -5, 0);
-      curve(B.high.gain, tStart, tSwap, -8, 0);
+      curve(B.mid.gain, tStart, tSwap, -12, 0);
+      curve(B.high.gain, tStart, tSwap, -14, 0);
       // outgoing: gives up its bass on the same beat, then gets out of the way
       curve(A.fader.gain, tStart, tSwap, 1, 0.88);
       A.low.gain.setValueAtTime(0, tSwap - half);
@@ -440,7 +445,7 @@ var Engine = (function () {
 
   return {
     Mixer: Mixer, Voice: Voice, renderSet: renderSet,
-    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain,
+    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn,
     LOOKAHEAD: LOOKAHEAD, KILL: KILL,
   };
 })();

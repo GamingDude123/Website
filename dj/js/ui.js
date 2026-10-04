@@ -13,7 +13,6 @@
   let nextId = 1;
   const loading = [];                       // placeholders for tracks being analysed
   let decodeCtx = null;
-  let lastSpotify = null;                   // the playlist currently being matched
 
   const player = new Player({ onChange: changed });
   let pending = false;
@@ -164,7 +163,7 @@
     $("btn-pause").disabled = !running;
     $("btn-pause").textContent = player.paused ? "Resume" : "Pause";
     $("btn-mix").disabled = !running;
-    if (lastSpotify) renderMatches();
+    renderMatches("spotify"); renderMatches("soundcloud");
   }
 
   $("tracks").addEventListener("click", function (e) {
@@ -356,8 +355,9 @@
       const first = now < e.tBegin;
       const into = active.label === "B";
       const p = Math.max(0, Math.min(1, (now - e.tBegin) / Math.max(0.1, e.tSwap - e.tBegin)));
-      // the knob travels across a blend; for a swap it waits, then snaps on the downbeat
-      const x = plan.type === "bassSwap" ? p : (now >= e.tSwap ? 1 : 0);
+      // the knob follows how loud the incoming deck really is: it travels across a blend
+      // (B is silent while it is still on the old side); for a swap it waits, then snaps
+      const x = plan.type === "bassSwap" ? Engine.fadeIn(p) : (now >= e.tSwap ? 1 : 0);
       knob.style.left = (into ? x : 1 - x) * 100 + "%";
       bar.style.width = (into ? x : 1 - x) * 100 + "%";
       $("strip-title").textContent = (first ? "Coming up · " : "Mixing · ") + Brain.label(plan) + " → " + active.track.title;
@@ -556,36 +556,54 @@
 
   // ---------------------------------------------------------------- Spotify
 
-  function renderMatches() {
+  // A playlist-like list (from Spotify or SoundCloud) matched against the files in the booth.
+  const LISTS = {
+    spotify: { el: "sp-result", q: "sp", card: "details.spotify", from: "Spotify" },
+    soundcloud: { el: "sc-result", q: "sc", card: "details.soundcloud", from: "SoundCloud" },
+  };
+  const lists = { spotify: null, soundcloud: null };           // the list currently being matched, per source
+
+  const safeLink = function (u) { return typeof u === "string" && /^https:\/\//i.test(u) ? u : ""; };
+
+  function renderMatches(kind) {
+    const L = lists[kind], cfg = LISTS[kind];
+    if (!L) return;
     const locals = player.library.map(function (t) { return { track: t, title: t.title, artist: t.artist, duration: t.duration }; });
-    const m = Spotify.matchTracks(lastSpotify.tracks, locals);
-    lastSpotify.matches = m;
+    const m = Spotify.matchTracks(L.tracks, locals);
+    L.matches = m;
     const have = m.filter(function (x) { return x.local; }).length;
-    $("sp-result").innerHTML =
-      "<p><b>" + esc(lastSpotify.name) + "</b> — " + have + " of " + m.length + " tracks matched to your files.</p>" +
-      '<div class="sp-row"><button id="sp-q1"' + (have ? "" : " disabled") + '>Queue matched, in playlist order</button><button id="sp-q2"' + (have ? "" : " disabled") + '>Queue matched, let the DJ order them</button></div>' +
+    $(cfg.el).innerHTML =
+      "<p><b>" + esc(L.name) + "</b> — " + have + " of " + m.length + " tracks matched to your files.</p>" +
+      '<div class="sp-row"><button id="' + cfg.q + '-q1"' + (have ? "" : " disabled") + '>Queue matched, in list order</button><button id="' + cfg.q + '-q2"' + (have ? "" : " disabled") + '>Queue matched, let the DJ order them</button></div>' +
       m.map(function (x) {
         const sp = x.spotify;
-        return '<div class="match"><span class="' + (x.local ? "ok" : "no") + '">' + (x.local ? "✓" : "?") + "</span><span>" + esc(sp.artists.join(", ")) + " — " + esc(sp.title) + "</span><span>" +
-          (x.local ? esc(x.local.track.title) : "drop this file in above") + "</span></div>";
+        let links = "";
+        if (!x.local) {
+          if (safeLink(sp.url)) links += ' <a href="' + esc(safeLink(sp.url)) + '" target="_blank" rel="noopener noreferrer">listen</a>';
+          if (safeLink(sp.buy)) links += ' <a href="' + esc(safeLink(sp.buy)) + '" target="_blank" rel="noopener noreferrer">buy</a>';
+          else if (sp.free && safeLink(sp.url)) links += " <em>(free download offered on the page)</em>";
+        }
+        return '<div class="match"><span class="' + (x.local ? "ok" : "no") + '">' + (x.local ? "✓" : "?") + "</span><span>" + esc(sp.artists.join(", ")) + (sp.artists.length ? " — " : "") + esc(sp.title) + "</span><span>" +
+          (x.local ? esc(x.local.track.title) : "drop this file in above" + links) + "</span></div>";
       }).join("");
     const queue = function (order) {
       const cur = player.cur && player.cur.track;
-      player.queue = lastSpotify.matches.filter(function (x) { return x.local && x.local.track !== cur; }).map(function (x) { return x.local.track; });
+      player.queue = L.matches.filter(function (x) { return x.local && x.local.track !== cur; }).map(function (x) { return x.local.track; });
       if (order) player.autoOrder();
-      player.note("Queued " + player.queue.length + " tracks from " + lastSpotify.name + (order ? ", ordered by the DJ" : ", in playlist order"));
+      player.note("Queued " + player.queue.length + " tracks from " + L.name + (order ? ", ordered by the DJ" : ", in list order"));
       changed();
     };
-    const q1 = $("sp-q1"), q2 = $("sp-q2");
+    const q1 = $(cfg.q + "-q1"), q2 = $(cfg.q + "-q2");
     if (q1) q1.onclick = function () { queue(false); };
     if (q2) q2.onclick = function () { queue(true); };
   }
 
-  function showSpotify(name, tracks) {
-    lastSpotify = { name: name, tracks: tracks, matches: [] };
-    document.querySelector("details.spotify").open = true;
-    renderMatches();
+  function showList(kind, name, tracks) {
+    lists[kind] = { name: name, tracks: tracks, matches: [] };
+    document.querySelector(LISTS[kind].card).open = true;
+    renderMatches(kind);
   }
+  const showSpotify = function (name, tracks) { showList("spotify", name, tracks); };
 
   function spotifyUi() {
     const on = Spotify.connected();
@@ -627,6 +645,31 @@
 
   Spotify.handleRedirect().then(function (did) { spotifyUi(); if (Spotify.connected()) loadLists(); if (did) player.note("Connected to Spotify"); })
     .catch(function (err) { spotifyUi(); player.note(err.message); });
+
+
+  // -------------------------------------------------------------- SoundCloud
+
+  function scBusy(on) {
+    $("sc-read").disabled = on; $("sc-paste-go").disabled = on;
+    $("sc-read").textContent = on ? "Reading…" : "Read link";
+  }
+  $("sc-read").addEventListener("click", async function () {
+    const link = $("sc-link").value.trim();
+    if (!link) { player.note("Paste a SoundCloud link first"); return; }
+    scBusy(true);
+    try {
+      const r = await SoundCloud.readLink(link);
+      if (!r.tracks.length) { player.note("SoundCloud had no tracks at that link"); }
+      else showList("soundcloud", { playlist: "SoundCloud playlist", likes: "SoundCloud likes", profile: "SoundCloud profile", track: "SoundCloud track" }[r.kind], r.tracks);
+    } catch (err) { player.note(err.message); }
+    scBusy(false);
+  });
+  $("sc-link").addEventListener("keydown", function (e) { if (e.key === "Enter") $("sc-read").click(); });
+  $("sc-paste-go").addEventListener("click", function () {
+    const tracks = SoundCloud.tracksFromText($("sc-paste").value);
+    if (!tracks.length) { player.note("Paste one track per line, like “Artist - Title”"); return; }
+    showList("soundcloud", "Pasted list", tracks);
+  });
 
   // test hook
   window.__dj = { player: player, addBuffer: addBuffer, addDemos: addDemos };

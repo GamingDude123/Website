@@ -112,6 +112,9 @@ function check(name, cond, extra) {
       if (lag === 0) atZero = s;
       if (s > best) { best = s; bestLag = lag; }
     }
+    // the incoming deck starts silent: the first bar of the blend is far quieter than the last
+    const bsRms = (t0) => rms(bSolo, Math.round(t0 * sr), Math.round((t0 + bar) * sr));
+    const bFirst = bsRms(tStart), bLast = bsRms(tSwap - bar);
     // negative control: slip one deck by ~30 ms and the same measurement must see it
     const slip = 30, eb2 = new Float32Array(eb.length);
     for (let i = slip; i < eb.length; i++) eb2[i] = eb[i - slip];     // 44-sample hop ≈ 1 ms per frame
@@ -136,7 +139,7 @@ function check(name, cond, extra) {
       const pre = (lvl(-4) + lvl(-3) + lvl(-2)) / 3;
       for (let k = -1; k <= 1; k++) worst.push(lvl(k) / pre);
     }
-        return { peak, nan, before, during, afterB, bestLag, slipLag, plan: plan.type, L: plan.blendBars, dur: full.buf.duration,
+        return { peak, nan, before, during, afterB, bestLag, slipLag, bFirst, bLast, plan: plan.type, L: plan.blendBars, dur: full.buf.duration,
       soft: { mode: sp.bassSwapMode, peak: sPeak, nan: sNan, baseline: sRms(sB.entry.tStart - sbar), max: Math.max.apply(null, softDuring), minRatio: Math.min.apply(null, worst) } };
   });
   check("offline mix: no NaN, no clipping", m.nan === 0 && m.peak < 1, "peak=" + m.peak.toFixed(3));
@@ -147,6 +150,7 @@ function check(name, cond, extra) {
   check("soft bass swap: planned as soft, no NaN, no clipping", m.soft.mode === "smooth" && m.soft.nan === 0 && m.soft.peak < 1, "peak=" + m.soft.peak.toFixed(3));
   check("soft bass swap: low end never doubles", m.soft.max < m.soft.baseline * 1.35, "baseline=" + m.soft.baseline.toFixed(4) + " max=" + m.soft.max.toFixed(4));
   check("soft bass swap: the bass never falls into a hole while the lines trade (within 3 dB of before)", m.soft.minRatio > 0.7, "lowest = " + (20 * Math.log10(m.soft.minRatio)).toFixed(1) + " dB vs before");
+  check("blend: the incoming deck comes in from silence (first bar under a fifth of the last)", m.bFirst < 0.2 * m.bLast, "first=" + m.bFirst.toFixed(4) + " last=" + m.bLast.toFixed(4));
   check("beat lock: decks' onsets line up within 4 ms", Math.abs(m.bestLag) <= 4, "lag=" + m.bestLag + " ms");
 
   check("beat lock: the same test sees a 30 ms slip", Math.abs(Math.abs(m.slipLag) - 30) <= 4, "lag=" + m.slipLag + " ms");
@@ -300,6 +304,36 @@ function check(name, cond, extra) {
   await page.click("#sp-q1");
   const qn = await page.evaluate(() => window.__dj.player.queue.map((t) => t.title));
   check("spotify csv: queued in playlist order", qn.join() === "Chrome Hearts,Neon Static", qn.join());
+
+  // ---- soundcloud: the real widget is unreachable from the sandbox, so a stand-in answers
+  await page.route("https://w.soundcloud.com/**", (route) => {
+    if (/api\.js/.test(route.request().url())) {
+      return route.fulfill({ contentType: "application/javascript", body:
+        'window.SC = { Widget: Object.assign(function () { return { bind: function (ev, cb) { if (ev === "ready") setTimeout(cb, 20); }, unbind: function () {},' +
+        ' getSounds: function (cb) { cb([{ title: "Midnight Warehouse", user: { username: "Demo" }, duration: 150000, permalink_url: "https://soundcloud.com/demo/mw" },' +
+        ' { title: "Some Artist - Not In Library", user: { username: "Label" }, duration: 200000, permalink_url: "https://soundcloud.com/some/nil", purchase_url: "https://example.com/buy", downloadable: true },' +
+        ' { title: "Bad Link", user: { username: "x" }, permalink_url: "javascript:alert(1)", purchase_url: "http://insecure.example" }]); },' +
+        ' getCurrentSound: function (cb) { cb(null); } }; }, { Events: { READY: "ready", ERROR: "error" } }) };' });
+    }
+    return route.fulfill({ contentType: "text/html", body: "<html></html>" });
+  });
+  await page.click("details.soundcloud summary");
+  await page.fill("#sc-link", "https://evil.example.com/steal");
+  await page.click("#sc-read");
+  check("soundcloud: a link that is not soundcloud.com is refused", /soundcloud\.com link/.test(await page.textContent("#log")) || (await page.evaluate(() => window.__dj.player.log.map((l) => l.text).join("|"))).includes("does not look like"));
+  await page.fill("#sc-link", "https://soundcloud.com/demo/sets/my-set");
+  await page.click("#sc-read");
+  await page.waitForSelector("#sc-q1");
+  check("soundcloud: reads the list and matches one of three", /1 of 3/.test(await page.textContent("#sc-result")), await page.textContent("#sc-result p"));
+  const scHtml = await page.innerHTML("#sc-result");
+  check("soundcloud: unmatched rows link out, only over https", /href="https:\/\/soundcloud\.com\/some\/nil"/.test(scHtml) && /href="https:\/\/example\.com\/buy"/.test(scHtml) && !/javascript:/.test(scHtml) && !/insecure\.example/.test(scHtml));
+  await page.click("#sc-q1");
+  const scq = await page.evaluate(() => window.__dj.player.queue.map((t) => t.title));
+  check("soundcloud: matched file is queued", scq.join() === "Midnight Warehouse", scq.join());
+  await page.click("details.soundcloud details.paste summary");
+  await page.fill("#sc-paste", "1. Chrome Hearts\nNeon Static\n");
+  await page.click("#sc-paste-go");
+  check("soundcloud: a pasted list works without the widget", /2 of 2/.test(await page.textContent("#sc-result")), await page.textContent("#sc-result p"));
 
   check("no page errors", errors.length === 0, errors.slice(0, 3).join(" | "));
   await page.screenshot({ path: path.join(OUT, "final.png"), fullPage: true });

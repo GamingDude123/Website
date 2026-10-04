@@ -7,6 +7,7 @@ const Brain = require("../js/brain.js");
 const Timeline = require("../js/timeline.js");
 const Spotify = require("../js/spotify.js");
 const FX = require("../js/fx.js");
+const SoundCloud = require("../js/soundcloud.js");
 
 let fails = 0;
 function check(name, cond, extra) {
@@ -221,6 +222,26 @@ function check(name, cond, extra) {
   check("match: finds the right file for each entry", m[0].local === locals[2] && m[1].local === locals[0]);
   check("match: unrelated file is not matched", Spotify.matchTracks([{ title: "Levels", artists: ["Avicii"], durationMs: 200000 }], locals)[0].local === null);
   check("match: a file is used once", new Set(Spotify.matchTracks([sp[1], sp[1]], locals).filter((x) => x.local).map((x) => x.local)).size === 1);
+
+  // ---- soundcloud links and lists
+  {
+    check("soundcloud: accepts a playlist link", SoundCloud.parseUrl("https://soundcloud.com/john-summit/sets/club") === "https://soundcloud.com/john-summit/sets/club");
+    check("soundcloud: adds https and drops www / tracking fragment", SoundCloud.parseUrl("www.soundcloud.com/a/b#t=1") === "https://soundcloud.com/a/b");
+    check("soundcloud: keeps a secret token", /secret_token=s-abc/.test(SoundCloud.parseUrl("https://soundcloud.com/a/sets/b?secret_token=s-abc")));
+    check("soundcloud: short links are fine", SoundCloud.parseUrl("https://on.soundcloud.com/AbCdE") === "https://on.soundcloud.com/AbCdE");
+    check("soundcloud: other sites are refused", SoundCloud.parseUrl("https://evil.example.com/soundcloud.com/x") === null && SoundCloud.parseUrl("https://soundcloud.com.evil.io/x/y") === null && SoundCloud.parseUrl("javascript:alert(1)") === null && SoundCloud.parseUrl("") === null);
+    check("soundcloud: kinds", SoundCloud.kindOf("https://soundcloud.com/a/sets/b") === "playlist" && SoundCloud.kindOf("https://soundcloud.com/a/likes") === "likes" && SoundCloud.kindOf("https://soundcloud.com/a") === "profile" && SoundCloud.kindOf("https://soundcloud.com/a/b") === "track");
+    const e = SoundCloud.toEntry({ title: "Fisher - Losing It (Extended Mix)", user: { username: "Catch & Release" }, duration: 240000, permalink_url: "https://soundcloud.com/x/y", purchase_url: "http://nope", downloadable: true });
+    check("soundcloud: 'Artist - Title' uploads are split, unsafe links dropped", e.artists.join() === "Fisher" && e.title === "Losing It (Extended Mix)" && e.durationMs === 240000 && e.buy === "" && e.free === true && e.url === "https://soundcloud.com/x/y", JSON.stringify(e));
+    const plain = SoundCloud.toEntry({ title: "Shiver", user: { username: "John Summit" } });
+    check("soundcloud: a plain title uses the uploader as the artist", plain.title === "Shiver" && plain.artists.join() === "John Summit");
+    check("soundcloud: junk entries are skipped", SoundCloud.entriesFromSounds([null, {}, { title: "" }, { title: "Ok" }]).length === 1 && SoundCloud.entriesFromSounds(null).length === 0);
+    const t = SoundCloud.tracksFromText("1. John Summit - Shiver\n  \n2) Fisher – Losing It\n- Just A Title\n");
+    check("soundcloud: a pasted list is parsed", t.length === 3 && t[0].artists[0] === "John Summit" && t[0].title === "Shiver" && t[1].title === "Losing It" && t[2].title === "Just A Title" && t[2].artists.length === 0, JSON.stringify(t.map((x) => x.artists.concat(x.title))));
+    const locals = [{ title: "Shiver", artist: "John Summit", duration: 190 }, { title: "Losing It", artist: "FISHER", duration: 250 }];
+    const mm = Spotify.matchTracks(SoundCloud.tracksFromText("John Summit - Shiver\nFisher - Losing It\nNobody - Nothing"), locals);
+    check("soundcloud: entries match files through the same matcher", mm[0].local === locals[0] && mm[1].local === locals[1] && mm[2].local === null);
+  }
 
   // ---- review fixes
   {

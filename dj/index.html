@@ -118,6 +118,21 @@
     <p class="fine" id="sp-redirect"></p>
     <div id="sp-result"></div>
   </details>
+
+  <details class="card soundcloud">
+    <summary><h2>SoundCloud</h2><span>use a link or a list as the setlist</span></summary>
+    <p class="fine">SoundCloud can&rsquo;t be mixed either &mdash; its audio plays inside its own player and the page never gets it. Paste a public playlist, profile or track link (or a secret link) and it reads the track names, matches them to files you own, and shows where to listen or buy the rest. No login needed.</p>
+    <div class="sp-row">
+      <input type="text" id="sc-link" placeholder="https://soundcloud.com/…" spellcheck="false" autocomplete="off" aria-label="SoundCloud link">
+      <button class="soft" id="sc-read">Read link</button>
+    </div>
+    <details class="paste">
+      <summary>or paste a list of tracks instead</summary>
+      <textarea id="sc-paste" rows="5" placeholder="One per line, like&#10;John Summit - Shiver&#10;Fisher - Losing It" spellcheck="false" aria-label="Track list"></textarea>
+      <button class="soft" id="sc-paste-go">Use this list</button>
+    </details>
+    <div id="sc-result"></div>
+  </details>
 </main>
 
 <script src="js/settings.js"></script>
@@ -129,6 +144,7 @@
 <script src="js/engine.js"></script>
 <script src="js/player.js"></script>
 <script src="js/spotify.js"></script>
+<script src="js/soundcloud.js"></script>
 <script src="js/ui.js"></script>
 </body>
 </html>
