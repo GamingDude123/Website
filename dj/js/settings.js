@@ -147,7 +147,7 @@ var Settings = (function () {
   }
 
   // the flair levels at which the planner starts using an effect (see brain.js)
-  const FLAIR_GATES = [15, 25, 30, 45, 50, 70, 80];
+  const FLAIR_GATES = [15, 25, 30, 40, 45, 50, 55, 70, 80];
   const snap4 = function (n) { return Math.max(8, Math.round(n / 4) * 4); };
 
   // Per-transition adaptation. The user's settings are the baseline and the

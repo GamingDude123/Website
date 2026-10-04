@@ -29,6 +29,28 @@ var Turntable = (function () {
   const clamp = function (x, lo, hi) { return Math.max(lo, Math.min(hi, x)); };
   const gateLevel = function (v) { return Math.min(1, Math.abs(v) / GATE_AT); };
 
+  // Each source's gate keeps the list of levels it has been told to follow, so a
+  // new command can start from where the gate really is mid-fade, not from where
+  // the speed alone says it should be.
+  function gateAt(run, t) {
+    const n = run.gnodes;
+    if (!n || !n.length) return null;
+    if (t <= n[0].t) return n[0].g;
+    for (let i = 1; i < n.length; i++) {
+      if (t <= n[i].t) { const a = n[i - 1], b = n[i]; return b.t === a.t ? b.g : a.g + (b.g - a.g) * (t - a.t) / (b.t - a.t); }
+    }
+    return n[n.length - 1].g;
+  }
+  function anchorGate(run, t, level) {
+    run.gate.gain.cancelScheduledValues(t);
+    run.gate.gain.linearRampToValueAtTime(level, t);
+    run.gnodes = [{ t: t, g: level }];
+  }
+  function rampGate(run, t, level) {
+    run.gate.gain.linearRampToValueAtTime(level, t);
+    run.gnodes.push({ t: t, g: level });
+  }
+
   // where a mark on the platter is, 0..360°, for a track position in seconds
   function angleOf(pos) { return (((pos * DEG_PER_SEC) % 360) + 360) % 360; }
 
@@ -52,7 +74,7 @@ var Turntable = (function () {
     const v1 = voice.tl.rateAt(t);
     this.tl = new Timeline(t, voice.tl.posAt(t), v1);
     voice.tl = this.tl;
-    this.run = { dir: 1, src: voice.src, gate: voice.sg, win: null };
+    this.run = { dir: 1, src: voice.src, gate: voice.sg, win: null, gnodes: [{ t: t, g: 1 }] };
     this.win = null;
     this.flip = null;
     this.endsAt = Infinity;
@@ -70,12 +92,20 @@ var Turntable = (function () {
     return (this.win = reversedWindow(this.voice.mixer.ctx, this.voice.track.buffer, from, to));
   };
 
+  // Cut the reversed copy now if the platter is about to need it. The cut takes
+  // 10-20 ms, so it is done before the time of the next command is chosen,
+  // not in the middle of scheduling it.
+  Session.prototype.prepare = function (t) {
+    const p = this.pos(t);
+    if (p > 0) this.windowFor(p);
+  };
+
   Session.prototype.startRun = function (dir, win, t, pos, nodes, gates) {
     const voice = this.voice;
     const offset = dir > 0 ? clamp(pos, 0, this.dur) : Math.max(0, win.end - pos - 1 / win.sr);
     const n = voice.makeSource(dir > 0 ? voice.track.buffer : win.buffer, t, offset, nodes, 0, gates);
     voice.src = n.src; voice.sg = n.gate;
-    return { dir: dir, src: n.src, gate: n.gate, win: win };
+    return { dir: dir, src: n.src, gate: n.gate, win: win, gnodes: gates.slice() };
   };
 
   // A turn-round that was queued for a moment still ahead is called off (the
@@ -94,7 +124,7 @@ var Turntable = (function () {
     const f = this.flip;
     if (!f || t < f.tz) return;
     this.flip = null;
-    this.voice.retire(f.old.src, f.old.gate, f.tz, 0.001, 0);
+    this.voice.dispose(f.old.src, f.old.gate, f.tz);
   };
 
   // Set the platter's speed from time t, gliding there over `glide` seconds.
@@ -118,24 +148,26 @@ var Turntable = (function () {
     const run0 = this.run;
     const phys = function (run, x) { return run.dir > 0 ? Math.max(x, 0) : Math.max(-x, 0); };
     // hold what the source is doing at t, cutting off whatever was queued after it
+    // (the gate from where it really is, which mid-fade is not where the speed says)
     run0.src.playbackRate.cancelScheduledValues(t);
     run0.src.playbackRate.linearRampToValueAtTime(phys(run0, v1), t);
-    run0.gate.gain.cancelScheduledValues(t);
-    run0.gate.gain.linearRampToValueAtTime(gateLevel(v1), t);
+    const g0 = gateAt(run0, t);
+    anchorGate(run0, t, g0 == null ? gateLevel(v1) : g0);
 
     const crosses = (run0.dir > 0 && v < 0) || (run0.dir < 0 && v > 0);
     if (!crosses) {
       if (run0.dir < 0 && (v1 < 0 || v < 0) && run0.win.start > 0 && p1 - run0.win.start < MARGIN) {
         // running backwards out of the copy: hand over to a fresh one centred further back
         const win = this.windowFor(p1);
+        const lvl = gateAt(run0, t);
         const run = this.startRun(-1, win, t, p1,
           [{ t: t, r: Math.abs(v1) }, { t: t2, r: Math.abs(v) }],
-          [{ t: t, g: 0 }, { t: t + 0.008, g: gateLevel(v1) }, { t: t2, g: gateLevel(v) }]);
-        voice.retire(run0.src, run0.gate, t, 0.008, gateLevel(v1));
+          [{ t: t, g: 0 }, { t: t + 0.008, g: lvl }, { t: t2, g: gateLevel(v) }]);
+        voice.retire(run0.src, run0.gate, t, 0.008, lvl);
         this.run = run;
       } else {
         run0.src.playbackRate.linearRampToValueAtTime(phys(run0, v), t2);
-        run0.gate.gain.linearRampToValueAtTime(gateLevel(v), t2);
+        rampGate(run0, t2, gateLevel(v));
       }
       this.tl.ramp(t, t2, v);
       return;
@@ -145,7 +177,7 @@ var Turntable = (function () {
     const a = Math.abs(v1), b = Math.abs(v);
     const tz = Math.min(t2 - 1e-4, t + (a + b > 0 ? (t2 - t) * a / (a + b) : 0));
     run0.src.playbackRate.linearRampToValueAtTime(0, tz);
-    run0.gate.gain.linearRampToValueAtTime(0, tz);
+    rampGate(run0, tz, 0);
     const pz = p1 + v1 * (tz - t) / 2;
     const dir = v > 0 ? 1 : -1;
     const run = this.startRun(dir, dir < 0 ? this.windowFor(pz) : null, tz, pz,

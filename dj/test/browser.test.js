@@ -320,6 +320,15 @@ function check(name, cond, extra) {
       }
       errs.sort((p, q) => p - q);
       R.scrub = { n: errs.length, median: errs[Math.floor(errs.length / 2)], p90: errs[Math.floor(errs.length * 0.9)] };
+      // a click is a step larger than the signal itself could make: a sine of amplitude 0.12 at frequency f steps at most 0.12*2*pi*f/sr per sample
+      let clicks = 0, worstClick = 0;
+      for (let a = t0 + 0.02; a < 12.5; a += 0.01) {
+        let fmax = 0; for (let q = a - 0.01; q < a + 0.02; q += 0.002) { const r = at(q); fmax = Math.max(fmax, fOf(Math.max(0, r[1])) * Math.abs(r[2])); }
+        const bound = 0.12 * 2 * Math.PI * fmax / sr * 2.0 + 0.004;     // 2x for the compressor's make-up and a little slack
+        let w = 0; for (let i = Math.floor((a + 0.006) * sr); i < Math.floor((a + 0.016) * sr); i++) w = Math.max(w, Math.abs(x[i] - x[i - 1]));
+        if (w > bound) { clicks++; worstClick = Math.max(worstClick, w / bound); }
+      }
+      R.scrubClicks = { clicks: clicks, worstRatio: worstClick };
       R.scrubPosMs = Math.abs(v.tl.posAt(12) - at(12)[1]) * 1000;
       R.afterRelease = Math.abs(freqIn(x, 10.0 + 0.006, 10.106) - fOf(at(10.05)[1])) / fOf(at(10.05)[1]);
     }
@@ -363,12 +372,29 @@ function check(name, cond, extra) {
   check("pause: the output fades out as it stops, and is back at full level after the spin-up", osc.rmsAtStop < 0.05 * osc.rmsBefore && osc.rmsAfter > 0.9 * osc.rmsBefore, [osc.rmsBefore, osc.rmsAtStop, osc.rmsAfter].map((x) => x.toFixed(3)).join(" / "));
   check("pause: after the spin-up the music is exactly where the plan expects it", osc.realignMs < 2.5, osc.realignMs.toFixed(2) + " ms");
   check("scrub: pitch follows the platter through stops, reversals and wobbles", osc.scrub.n > 60 && osc.scrub.median < 0.02 && osc.scrub.p90 < 0.06, JSON.stringify(osc.scrub));
+  check("scrub: no clicks, even at the reversals (no step bigger than the signal allows)", osc.scrubClicks.clicks === 0, JSON.stringify(osc.scrubClicks));
   check("scrub: the deck's position bookkeeping matches an independent simulation", osc.scrubPosMs < 5, osc.scrubPosMs.toFixed(2) + " ms");
   check("scrub: back at normal speed after the release", osc.afterRelease < 0.03, (osc.afterRelease * 100).toFixed(1) + "%");
   check("brake exit: the outgoing deck winds down over its last two beats", osc.brake.rows >= 4 && osc.brake.worst < 0.08, JSON.stringify(osc.brake));
   check("brake exit: only a reverb tail is left once the next track lands, and it dies away", osc.brake.rmsAfter < 0.25 * osc.brake.rmsBefore && osc.brake.rmsLate < 0.005 && osc.brake.rmsBefore > 0.05, JSON.stringify(osc.brake));
   check("spinback exit: the last beat plays backwards, fast and slowing", osc.spin.rows >= 6 && osc.spin.worst < 0.08 && osc.spin.worst < osc.spin.closerToReverse * 0.6, JSON.stringify(osc.spin));
   check("spinback exit: nothing is left sounding afterwards", osc.spin.rmsAfter < 0.01);
+
+  // a drop swap into a track too far off in tempo lands at its own tempo; one within reach glides over
+  const fresh = await page.evaluate(() => {
+    const lib = window.__dj.player.library, sr = 44100, S = Settings.make({ style: "club", variety: 0, auto: false, fx: false }), out = {};
+    const base = Brain.planTransition(Engine.infoOf(lib[0]), Engine.infoOf(lib[3]), { entryBar: 0, settings: S, index: 1 });
+    [true, false].forEach((flag) => {
+      const mx = new Engine.Mixer(new OfflineAudioContext(2, sr, sr), { offline: true, settings: S });
+      const A = mx.firstVoice(lib[0], 0.2, "A");
+      const plan = Object.assign({}, base, { type: "dropSwap", blendBars: 0, startBar: base.swapBar, inLandBar: 0, inStartBar: 0, buildBars: 8, freshTempo: flag });
+      const B = mx.scheduleTransition(A, lib[3], plan, "B");
+      out[flag] = { r0: B.tl.nodes[0].r, nodes: B.tl.nodes.length, bpmA: lib[0].analysis.bpm, bpmB: lib[3].analysis.bpm };
+    });
+    return out;
+  });
+  check("freshTempo: the incoming deck starts at its own tempo, no glide", fresh.true.r0 === 1 && fresh.true.nodes === 1, JSON.stringify(fresh.true));
+  check("within reach: the incoming deck starts at the outgoing tempo and settles over 16 bars", fresh.false.r0 !== 1 && fresh.false.nodes > 1, JSON.stringify(fresh.false));
 
   // the new moves with real tracks: no clipping, no NaN, the incoming track is heard
   const moves = await page.evaluate(async () => {
@@ -503,7 +529,19 @@ function check(name, cond, extra) {
   await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 })
     .then(() => check("stop returns to idle", true), () => check("stop returns to idle", false));
 
+  // ---- winding the deck past the point where the planned mix had to start must not strand the set
+  await page.evaluate(() => { const p = window.__dj.player; if (!p.queue.length) p.queue = p.library.slice(0, 3); });
+  await page.click("#btn-go");
+  await page.waitForFunction(() => window.__dj.player.ctx && window.__dj.player.ctx.currentTime > 1.5, null, { timeout: 15000 });
+  const wound = await page.evaluate(() => { const p = window.__dj.player; let n = 0; for (let i = 0; i < 40; i++) if (p.jump("A", 4)) n++; return { jumps: n, bar: p.snapshot().decks[0].bar }; });
+  check("fast-forwarding by jumps gets near the end of the track", wound.jumps >= 8 && wound.bar > 50, JSON.stringify(wound));
+  await page.waitForFunction(() => window.__dj.player.voices.length >= 2, null, { timeout: 12000 })
+    .then(() => check("after winding past the planned mix, the set still gets a transition", true), () => check("after winding past the planned mix, the set still gets a transition", false));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
+
   // ---- export
+  await page.evaluate(() => { const p = window.__dj.player; p.queue = p.library.slice(0, 3); p.onChange(); });
   check("six effect pads are on show without opening anything", (await page.locator(".fxbar .pad").count()) === 6 && await page.locator(".fxbar .pad").first().isVisible());
   await page.click("details.perform summary");
   const [download] = await Promise.all([page.waitForEvent("download", { timeout: 120000 }), page.click("#btn-export")]);

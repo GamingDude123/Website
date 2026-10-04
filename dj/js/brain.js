@@ -129,7 +129,7 @@ var Brain = (function () {
   const snapUp = function (b, n) { return Math.ceil(b / n) * n; };
 
   // out/inn are analysis results (plus .key as a Camelot string and .bpm).
-  // opts: { entryBar (out track bar at which it came in), earliestSwap (out bar),
+  // opts: { entryBar (out track bar at which it came in), earliestSwap (out bar), earliestStart (out bar),
   //         style: 'mixed'|'smooth'|'club', now: bool, minPlay: bars, index }
   function planTransition(out, inn, opts) {
     opts = opts || {};
@@ -146,7 +146,7 @@ var Brain = (function () {
     const gap = tempoGap(out.bpm, inn.bpm);
     const ks = keyScore(out.key, inn.key);
     const introBars = inn.cues.firstDrop;
-    const rideBars = Math.max(introBars, 8);          // a track with no detected intro still has its first bars to blend over
+    const rideBars = introBars === 0 ? 8 : introBars;      // no intro detected: its first eight bars are there to blend over
     const outroStart = out.cues.outroStart;
     const entryBar = opts.entryBar || 0;
     const minSwap = Math.max(opts.earliestSwap || 0, entryBar + (opts.minPlay == null ? st.minPlay : opts.minPlay));
@@ -172,7 +172,7 @@ var Brain = (function () {
           const spare = out.bars - s - 4;
           if (spare >= 8) s += Math.floor(spare / 8) * 8;
         }
-        if (s - l < 0 || s > out.bars || s < minSwap) continue;
+        if (s - l < Math.max(0, opts.earliestStart || 0) || s > out.bars || s < minSwap) continue;
         L = l; swap = s;
       }
       return L ? { type: "bassSwap", blendBars: L, swapBar: swap, inLand: rideBars, tail: Math.max(0, Math.min(4, out.bars - swap)) } : null;
@@ -223,7 +223,7 @@ var Brain = (function () {
       for (let i = 0; i < w.length; i++) { if (r < w[i][1]) { type = w[i][0]; break; } r -= w[i][1]; }
       if (type === "dropSwap") return withDrop;
       let swap;
-      if (opts.now) swap = snapUp(minSwap, 4);
+      if (opts.now) swap = Math.min(snapUp(minSwap, 4), Math.max(Math.floor(out.bars / 4) * 4, minSwap));     // not past the end of the track, unless it already is
       else {
         swap = Math.max(minSwap, outroStart < out.bars ? outroStart : out.bars - 8);
         swap = Math.min(snapUp(swap, 4), Math.floor(out.bars / 4) * 4);
@@ -263,7 +263,7 @@ var Brain = (function () {
     }
 
     if (pick.type === "bassSwap") {
-      reasons.push(pick.blendBars + "-bar blend: " + inn.title0 + "'s intro rides over the outro, bass swaps where its drop lands");
+      reasons.push(pick.blendBars + "-bar blend: " + (introBars === 0 ? "no intro was detected in " + inn.title0 + ", so its first eight bars ride over the outro and the bass swaps on its ninth" : inn.title0 + "'s intro rides over the outro, bass swaps where its drop lands"));
       reasons.push(keyNote(out.key, inn.key) + ", tempo " + gapPct + " apart");
       if (switched) reasons.push("switching it up — variety is set to " + st.variety + "%");
     } else if (pick.type === "dropSwap") {

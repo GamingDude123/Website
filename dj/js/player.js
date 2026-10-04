@@ -34,6 +34,7 @@ var Player = (function () {
     this.wantToggle = false;        // pause pressed again while one was
     this.brakeState = null;
     this.session = null;            // the scrub session, while a hand is on a deck
+    this.gen = 0;                   // which set this is; a pause left over from an earlier set must not touch a later one
   }
 
   // style / arc / endless / fx live in the settings object; these keep the
@@ -93,6 +94,7 @@ var Player = (function () {
     this.cur = this.mixer.firstVoice(first, this.ctx.currentTime + 0.2, "A");
     this.voices = [this.cur];
     this.running = true;
+    this.gen++;
     this.paused = false; this.pausing = false; this.wantToggle = false; this.session = null;
     this.note("Opening with " + first.title + " (" + first.analysis.bpm + " BPM, " + (first.keyOverride || first.analysis.key.camelot) + ")");
     const self = this;
@@ -105,6 +107,7 @@ var Player = (function () {
     this.running = false;
     if (this.ctx) { this.ctx.close(); this.ctx = null; }
     this.voices = []; this.cur = null; this.mixer = null;
+    this.gen++;
     this.session = null; this.paused = false; this.pausing = false; this.wantToggle = false; this.brakeState = null;
     this.onChange();
   };
@@ -117,10 +120,12 @@ var Player = (function () {
   Player.prototype.togglePause = async function () {
     if (!this.ctx) return;
     if (this.pausing) { this.wantToggle = !this.wantToggle; return; }
+    const gen = this.gen;
     this.pausing = true;
     try {
       if (this.paused) await this.resumeNow(); else await this.pauseNow();
     } catch (e) { /* the set was stopped while this was going on */ }
+    if (gen !== this.gen) return;                             // that set is gone; the new one is not ours to touch
     this.pausing = false;
     this.onChange();
     if (this.wantToggle && this.ctx) { this.wantToggle = false; await this.togglePause(); }
@@ -128,23 +133,29 @@ var Player = (function () {
   };
 
   Player.prototype.pauseNow = async function () {
-    const ctx = this.ctx;
+    const ctx = this.ctx, gen = this.gen;
     if (this.session) this.letGo(true);                       // a hand on the platter lets go first
     this.paused = true;
     this.onChange();
     const t = ctx.currentTime + 0.02;
     this.brakeState = this.mixer.brake(this.voices, t, Engine.BRAKE);
     await sleep((t + Engine.BRAKE - ctx.currentTime) * 1000 + 40);
-    if (this.ctx !== ctx) return;
+    if (gen !== this.gen || this.ctx !== ctx) return;
     await ctx.suspend();
   };
 
+  // The deck is playing again as soon as the clock runs, but it is still
+  // spinning up for half a second: pause, mix-now and hands stay out of the way
+  // (`pausing` stays set) until it is at speed.
   Player.prototype.resumeNow = async function () {
-    const ctx = this.ctx;
+    const ctx = this.ctx, gen = this.gen;
     if (this.brakeState) this.mixer.spinUp(this.brakeState, ctx.currentTime, Engine.SPINUP);   // the clock is frozen: this is "now"
     this.brakeState = null;
     await ctx.resume();
     this.paused = false;
+    this.onChange();
+    await sleep(Engine.SPINUP * 1000 + 60);
+    if (gen !== this.gen) return;
   };
 
   Player.prototype.setVolume = function (v) {
@@ -173,15 +184,27 @@ var Player = (function () {
     const A = this.cur, ctx = this.ctx;
     const next = this.queue[0];
     if (!next) return false;
-    const opts = { entryBar: A.entryBar, settings: this.settings, index: this.history.length };
+    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length };
+    const plan_ = function (opts) { return Brain.planTransition(Engine.infoOf(A.track), Engine.infoOf(next), opts); };
+    const late = function (p) { return A.timeOfBar(p.startBar) < now + 0.3; };
+    let plan;
     if (quick) {
       const curBar = A.barAt(now);
-      opts.now = true; opts.minPlay = 0; opts.earliestSwap = Math.ceil(curBar) + 10;
+      plan = plan_(Object.assign({}, base, { now: true, minPlay: 0, earliestSwap: Math.ceil(curBar) + 10 }));
+    } else {
+      plan = plan_(base);
+      if (late(plan)) {
+        // the playhead has been moved past where this mix had to start (a scrub or a
+        // jump): a short one from here, rather than none at all
+        const from = Math.ceil(A.barAt(now + 0.6)), left = A.track.analysis.bars;
+        // eight bars of room let it blend; if the track has less than that left, a quick exit
+        plan = plan_(Object.assign({}, base, { now: true, minPlay: 0, earliestSwap: from + 8, earliestStart: from }));
+        if (plan.swapBar > left) plan = plan_(Object.assign({}, base, { now: true, minPlay: 0, earliestSwap: from + 1, earliestStart: from }));
+      }
     }
-    const plan = Brain.planTransition(Engine.infoOf(A.track), Engine.infoOf(next), opts);
     const earliest = A.timeOfBar(plan.swapBar - Math.max(plan.buildBars, plan.blendBars, 1));
     if (!quick && earliest - now > Engine.LOOKAHEAD) return false;
-    if (A.timeOfBar(plan.startBar) < now + 0.3) return false;      // too late for this plan
+    if (late(plan)) return false;      // too late for this plan
     this.queue.shift();
     this.history.push(next);
     const B = this.mixer.scheduleTransition(A, next, plan, A.label === "A" ? "B" : "A");
@@ -190,6 +213,18 @@ var Player = (function () {
     this.voices.push(B);
     this.note(Brain.label(plan) + " into " + next.title + " — " + plan.reasons.join("; "));
     return true;
+  };
+
+  // The playing track has run out with nothing planned (the playhead was wound
+  // past the last moment a mix could start): start the next one straight away.
+  Player.prototype.hardCut = function (now) {
+    const next = this.queue.shift(), old = this.cur;
+    this.history.push(next);
+    const v = this.mixer.firstVoice(next, now + 0.1, old.label === "A" ? "B" : "A");
+    old.transitionEnd = now;
+    this.cur = v;
+    this.voices.push(v);
+    this.note("The last track ran out before a mix could start — " + next.title + " starts straight away");
   };
 
   Player.prototype.tick = function () {
@@ -208,6 +243,7 @@ var Player = (function () {
     this.ensureNext();
     if (this.queue.length && !(this.cur.exit)) this.scheduleNext(now, false);
     const track = this.cur.track;
+    if (this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(track.buffer.duration) + 0.5) { this.hardCut(now); this.onChange(); return; }
     if (!this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(track.buffer.duration) + 0.5) { this.note("End of set"); this.stop(); return; }
     this.onChange();
   };
@@ -228,7 +264,7 @@ var Player = (function () {
   // Replace whatever is queued next with a transition that starts within a
   // few bars.
   Player.prototype.mixNow = function () {
-    if (!this.running || this.paused || this.session) return;
+    if (!this.running || this.paused || this.pausing || this.session) return;
     const now = this.ctx.currentTime;
     let A = this.cur;
     if (A.entry && A.entry.tStart > now + 1.5 && this.voices.length > 1) {
@@ -304,6 +340,7 @@ var Player = (function () {
   Player.prototype.touchable = function (now) {
     if (!this.running || !this.ctx || !this.cur) return { why: "Start the set to use the decks" };
     if (this.paused) return { why: "Paused" };
+    if (this.pausing) return { why: "Spinning up" };
     if (this.session) return { voice: this.session.voice };
     const B = this.cur, vs = this.voices;
     if (B.entry && vs.length > 1 && now < B.entry.tBegin - 1.5) return { voice: vs[vs.length - 2], unschedule: true };
@@ -330,8 +367,11 @@ var Player = (function () {
 
   // Spin the held deck at `rate` x normal speed (negative = backwards).
   Player.prototype.scrub = function (rate, glide) {
-    if (!this.session) return;
-    this.session.setRate(this.ctx.currentTime + 0.01, rate, glide);
+    const s = this.session;
+    if (!s) return;
+    // going (or about to go) backwards needs the reversed copy: cut it before choosing the time
+    if (rate < 0 || s.rate(this.ctx.currentTime) < 0) s.prepare(this.ctx.currentTime + 0.01);
+    s.setRate(this.ctx.currentTime + 0.01, rate, glide);
   };
 
   // Let go: the deck glides back to playing normally from wherever it is.
@@ -346,7 +386,9 @@ var Player = (function () {
 
   // Beat-jump the playing deck by whole bars (negative = back), staying on the beat.
   Player.prototype.jump = function (label, bars) {
-    if (!this.running || this.session) return false;
+    if (!this.running) return false;
+    if (this.session && isFinite(this.session.endsAt)) { this.session.finish(); this.session = null; }   // let go a moment ago: it is back at speed
+    if (this.session) return false;
     const now = this.ctx.currentTime, hit = this.touchable(now);
     if (!hit.voice || hit.voice.label !== label) return false;
     if (hit.unschedule) { this.unschedule(now); this.note("Took the planned mix back — deck " + label + " was moved"); }

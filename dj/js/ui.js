@@ -162,7 +162,9 @@
     $("btn-go").disabled = !running && !player.queue.length;
     $("btn-pause").disabled = !running;
     $("btn-pause").textContent = player.paused ? "Resume" : "Pause";
-    $("btn-mix").disabled = !running;
+    const live = running && !player.paused && !player.pausing && !player.session;
+    $("btn-mix").disabled = !live;
+    document.querySelectorAll(".fxbar .pad").forEach(function (b) { b.disabled = !running || player.paused; });
     renderMatches("spotify"); renderMatches("soundcloud");
   }
 
@@ -278,6 +280,7 @@
     return '<div class="eqr"><span>' + name + '</span><div class="t"><i data-k="eq' + name[0] + '"></i></div></div>';
   }
 
+  const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)");     // asked for no motion: the platter stays still
   const ICON = {
     back4: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M19 6l-8 6 8 6zM11 6l-7 6 7 6z"/></svg>',
     rew: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6l-8 6 8 6zM21 6l-8 6 8 6z"/></svg>',
@@ -337,7 +340,7 @@
     // the platter turns with the track: 200° for every second of it, so it speeds up,
     // slows to a halt and runs backwards exactly as the sound does
     const pos = d.started ? d.pos : d.voice.tl.offset;
-    st.k.vinyl.style.transform = "rotate(" + Turntable.angleOf(pos).toFixed(1) + "deg)";
+    if (!REDUCED_MOTION.matches) st.k.vinyl.style.transform = "rotate(" + Turntable.angleOf(pos).toFixed(1) + "deg)";
     const frac = Math.max(0, Math.min(1, pos / d.track.buffer.duration));
     st.k.arm.style.setProperty("--sweep", (frac * 16).toFixed(1) + "deg");
     st.k.arm.classList.toggle("lifted", !d.started || (snap.paused && !snap.pausing));
@@ -371,10 +374,12 @@
   // still holds the record, and letting go spins it back up to normal.
 
   let hold = null;                            // the one hand that is down: {kind, label, ...}
+  let waveTouch = null;                       // a press on the waveform that has not yet shown which way it is going
+  let lastKeyAct = 0;                         // when a key last activated a transport button (so its click is not counted twice)
 
   function lockNote(label) {
     const s = player.snapshot();
-    deckNote(label, (s && s.lock) || "Start the set to use the decks");
+    deckNote(label, !s ? "Start the set to use the decks" : s.lock || (s.decks.some(function (d) { return d.label === label && d.started; }) ? "Use the deck that is playing" : "That deck is not playing yet"));
   }
 
   function pointAngle(e, el) {
@@ -419,18 +424,20 @@
     player.scrub(hold.v, 0.035);
   }
 
-  function endHold() {
+  function endHold(e) {
+    waveTouch = null;
     if (!hold) return;
+    if (e && e.pointerId != null && hold.id != null && e.pointerId !== hold.id) return;      // another finger lifted
     if (hold.el) hold.el.classList.remove("grabbing");
     hold.el && hold.el.classList.remove("held");
     hold = null;
     player.letGo(false);
   }
 
-  function startSearch(label, dir, el) {
+  function startSearch(label, dir, el, pid) {
     if (hold) return;
     if (!player.grab(label)) { lockNote(label); return; }
-    hold = { kind: "search", label: label, el: el, dir: dir, at: performance.now() };
+    hold = { kind: "search", label: label, el: el, dir: dir, at: performance.now(), id: pid == null ? null : pid };
     el.classList.add("held");
     player.scrub(dir * Turntable.searchRate(0), 0.15);
   }
@@ -451,27 +458,44 @@
       if (e.button != null && e.button > 0) return;
       const btn = e.target.closest("button[data-act]");
       if (btn) {
-        if (btn.dataset.act === "rew" || btn.dataset.act === "ff") startSearch(label, btn.dataset.act === "ff" ? 1 : -1, btn);
+        if (btn.dataset.act === "rew" || btn.dataset.act === "ff") startSearch(label, btn.dataset.act === "ff" ? 1 : -1, btn, e.pointerId);
         return;
       }
       const plat = e.target.closest(".platter");
       if (plat) { startDrag(label, "platter", e, plat); return; }
       const strip = e.target.closest("canvas.zoom");
-      if (strip) startDrag(label, "strip", e, strip);
+      // the waveform sits in a scrolling page: a swipe that starts on it only takes the deck once it is clearly sideways
+      if (strip && !hold) waveTouch = { label: label, el: strip, e: e, x: e.clientX, y: e.clientY, id: e.pointerId, t: performance.now() };
     });
-    el.addEventListener("pointermove", moveDrag);
+    el.addEventListener("pointermove", function (e) {
+      if (waveTouch && e.pointerId === waveTouch.id) {
+        const dx = e.clientX - waveTouch.x, dy = e.clientY - waveTouch.y;
+        if (Math.abs(dx) > 5 && Math.abs(dx) > Math.abs(dy)) { const p = waveTouch; waveTouch = null; startDrag(p.label, "strip", p.e, p.el); if (hold) hold.at = p.t; }
+        else if (Math.abs(dy) > 8) waveTouch = null;
+      }
+      moveDrag(e);
+    });
     el.addEventListener("click", function (e) {
       const btn = e.target.closest("button[data-act]");
-      if (!btn || e.detail === 0) return;                    // keyboard "clicks" are handled below
-      if (btn.dataset.act === "back4" || btn.dataset.act === "fwd4") jump(label, btn.dataset.act === "fwd4" ? 4 : -4);
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (e.detail !== 0) { if (act === "back4" || act === "fwd4") jump(label, act === "fwd4" ? 4 : -4); return; }   // a real click
+      if (performance.now() - lastKeyAct < 400) return;      // the key press already did it
+      // a click from a screen reader or voice control: no press and release to time, so a jump, or half a second of winding
+      if (act === "back4" || act === "fwd4") jump(label, act === "fwd4" ? 4 : -4);
+      else {
+        startSearch(label, act === "ff" ? 1 : -1, btn, null);
+        setTimeout(endHold, 500);
+      }
     });
     el.addEventListener("keydown", function (e) {
       const btn = e.target.closest("button[data-act]");
       if (btn && (e.key === "Enter" || e.key === " ")) {
         e.preventDefault();
         if (e.repeat) return;
+        lastKeyAct = performance.now();
         const act = btn.dataset.act;
-        if (act === "rew" || act === "ff") startSearch(label, act === "ff" ? 1 : -1, btn);
+        if (act === "rew" || act === "ff") startSearch(label, act === "ff" ? 1 : -1, btn, null);
         else jump(label, act === "fwd4" ? 4 : -4);
       } else if (e.target.closest(".platter") && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
         e.preventDefault();

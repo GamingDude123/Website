@@ -206,6 +206,7 @@ var Engine = (function () {
     p.setValueAtTime(nodes[0].r, nodes[0].t);
     for (let i = 1; i < nodes.length; i++) p.linearRampToValueAtTime(nodes[i].r, nodes[i].t);
     const gate = ctx.createGain();
+    gate.gain.value = gates ? gates[0].g : 0;            // closed from the very first sample (an event at the start time can land a frame late)
     if (gates) {
       gate.gain.setValueAtTime(gates[0].g, gates[0].t);
       for (let i = 1; i < gates.length; i++) gate.gain.linearRampToValueAtTime(gates[i].g, gates[i].t);
@@ -232,6 +233,17 @@ var Engine = (function () {
     }
   };
 
+  // Stop a source that has already faded itself out (its gate was ramped to
+  // zero by whoever owns it) and clear it from the graph — without touching the gate.
+  Voice.prototype.dispose = function (src, gate, t) {
+    try { src.stop(t + 0.03); } catch (e) { /* never started */ }
+    const mixer = this.mixer;
+    if (!mixer.offline && typeof setTimeout === "function") {
+      setTimeout(function () { try { src.disconnect(); gate.disconnect(); } catch (e) { /* ok */ } },
+        Math.max(0, (t + 0.3 - mixer.ctx.currentTime) * 1000) + 100);
+    }
+  };
+
   // Put this deck on a fresh source at `pos`, from time t, and rebuild its
   // timeline to match. This is how a deck jumps, and how it comes back from a
   // pause: an AudioBufferSourceNode cannot seek, so the old one is faded out.
@@ -248,7 +260,9 @@ var Engine = (function () {
 
   // Beat-jump: carry on from `pos` at the speed the deck is already running.
   Voice.prototype.seek = function (t, pos, fade) {
-    this.replaceSource(t, pos, [{ t: t, r: this.tl.rateAt(t) }], fade == null ? 0.012 : fade);
+    const nodes = [{ t: t, r: this.tl.rateAt(t) }];
+    this.tl.nodes.forEach(function (n) { if (n.t > t) nodes.push({ t: n.t, r: n.r }); });      // a tempo glide under way carries on
+    this.replaceSource(t, pos, nodes, fade == null ? 0.012 : fade);
   };
 
   Voice.prototype.destroy = function () {
@@ -364,13 +378,15 @@ var Engine = (function () {
     T = T == null ? BRAKE : T;
     const held = [];
     voices.forEach(function (v) {
-      if (t < v.t0 || t >= v.endTime) return;          // not playing yet: nothing to slow
-      const r = v.tl.rateAt(t), p = v.src.playbackRate;
-      p.cancelScheduledValues(t);
-      p.linearRampToValueAtTime(r, t);                  // a tempo glide under way is cut off at the speed it reached
+      const ts = Math.max(t, v.t0);                      // a deck that starts inside the brake is slowed from its first sample
+      if (ts >= t + T || t >= v.endTime) return;          // not playing until after the stop: nothing to slow
+      const r = v.tl.rateAt(ts), p = v.src.playbackRate;
+      p.cancelScheduledValues(ts);
+      if (t < v.t0) p.setValueAtTime(r, ts);              // (that cleared its own opening value)
+      else p.linearRampToValueAtTime(r, ts);              // a tempo glide under way is cut off at the speed it reached
       p.linearRampToValueAtTime(0, t + T);
-      const real = new Timeline(t, v.tl.posAt(t), r);   // what the deck really does now, for the display
-      real.ramp(t, t + T, 0);
+      const real = new Timeline(ts, v.tl.posAt(ts), r);   // what the deck really does now, for the display
+      real.ramp(ts, t + T, 0);
       held.push({ voice: v, orig: v.tl });
       v.tl = real;
     });

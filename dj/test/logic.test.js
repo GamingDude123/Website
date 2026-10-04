@@ -283,6 +283,13 @@ function check(name, cond, extra) {
     check("a track with no detected intro can still be blended into", noIntro.type === "bassSwap" && noIntro.blendBars >= 8, noIntro.type);
     const noDrops = Brain.planTransition(Object.assign(mk("X", 126, "1A", 5), { cues: { firstDrop: 16, dropStarts: [], outroStart: 64 } }), mk("Y", 126, "7B", 5), { style: "club", settings: Settings.make({ style: "club", variety: 0 }) });
     check("no detected drops: a drop swap lands on a phrase line instead", noDrops.type === "dropSwap" && noDrops.swapBar % 8 === 0, noDrops.type + " " + noDrops.swapBar);
+    // auto-tune must not bring in the new blend hit (flair 40) or blend downlifter (flair 55) when the setting leaves them out
+    const bl = (flair, auto) => Brain.planTransition(mk("O", 126, "8A", 9), mk("I", 126.5, "8A", 9), { settings: Settings.make({ style: "smooth", variety: 0, flair, auto }) });
+    check("auto-tune: flair 35 cannot be lifted into the blend hit", bl(35, true).impact === false && bl(35, false).impact === false);
+    check("auto-tune: flair 50 cannot be lifted into the blend downlifter", bl(50, true).downlifter === false && bl(50, false).downlifter === false);
+    check("a blend gets its hit from flair 40 and its downlifter from 55", bl(42, false).impact === true && bl(58, false).downlifter === true);
+    const lateStart = Brain.planTransition(mk("O", 126, "8A", 5), mk("I", 126.2, "8A", 5), { style: "smooth", now: true, minPlay: 0, earliestSwap: 70 + 8, earliestStart: 70, settings: Settings.make({ style: "smooth", variety: 0 }) });
+    check("a mix planned from late in the track can still be a blend, and never starts before the playhead", lateStart.type !== "bassSwap" || lateStart.startBar >= 70, lateStart.type + " start " + lateStart.startBar);
     ["brake", "spinback"].forEach((type) => {
       let found = null;
       for (let i = 0; i < 200 && !found; i++) { const p = Brain.planTransition(rt(2 * i), rt(2 * i + 1), { index: i, settings: Settings.make({ flair: 100 }) }); if (p.type === type) found = p; }
