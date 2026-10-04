@@ -113,6 +113,23 @@ var DSP = (function () {
     return env;
   }
 
+  /* Per-sample amplitude envelope. Fast attack, slow release, so it traces the
+   * shape of a sound rather than its individual cycles — which is what makes it
+   * possible to take that shape off a recording and put another one on. */
+  function follow(x, sr, attackMs, releaseMs) {
+    const atk = Math.exp(-1 / ((sr * attackMs) / 1000));
+    const rel = Math.exp(-1 / ((sr * releaseMs) / 1000));
+    const out = new Float32Array(x.length);
+    let env = 0;
+    for (let i = 0; i < x.length; i++) {
+      const a = x[i] < 0 ? -x[i] : x[i];
+      const coeff = a > env ? atk : rel;
+      env = coeff * env + (1 - coeff) * a;
+      out[i] = env;
+    }
+    return out;
+  }
+
   function removeDC(x) {
     let mean = 0;
     for (let i = 0; i < x.length; i++) mean += x[i];
@@ -758,6 +775,7 @@ var DSP = (function () {
     peak: peak,
     rms: rms,
     envelope: envelope,
+    follow: follow,
     percentile: percentile,
     removeDC: removeDC,
     normalize: normalize,

@@ -212,13 +212,31 @@ var Polish = (function () {
 
   // ------------------------------------------------------------------- main
 
-  /* `input` is a Float32Array of mono audio. Options: sampleRate, bpm,
-   * keyRoot (0-11), scale, plus switches so the UI can turn each stage off.
+  /* Semitone stack for a triad in the current scale. */
+  function chordIntervals(scaleName) {
+    const scale = SCALES[scaleName] || SCALES.minor;
+    // The third and the fifth of the scale, which is what makes the chord
+    // major or minor without anyone having to be told which they wanted.
+    const third = scale.length > 2 ? scale[2] : 3;
+    const fifth = scale.length > 4 ? scale[4] : 7;
+    return [third, fifth];
+  }
+
+  /* The key's root, down where a kick or a bass note lives. */
+  function rootFrequency(keyRoot, octave) {
+    const midi = 12 * (octave === undefined ? 1 : octave) + 12 + (keyRoot || 0);
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  /* The expensive half: clean the take up and work out what it is.
+   *
+   * Split out from the shaping so the instrument picker can re-shape the same
+   * recording as many times as someone wants without paying for de-noising and
+   * analysis on every press.
    */
-  function process(input, options) {
+  function prepare(input, options) {
     const opts = options || {};
     const sr = opts.sampleRate || 44100;
-    const bpm = opts.bpm || 120;
     const steps = [];
 
     let x = Float32Array.from(input);
@@ -242,11 +260,45 @@ var Polish = (function () {
     }
     if (x.length < 64) return null;
 
-    // Analyse after cleaning: the role should be decided from the sound
-    // itself, not from whatever noise was sitting on top of it.
+    // Analyse after cleaning: the guess should come from the sound itself, not
+    // from whatever noise was sitting on top of it.
     const f = DSP.features(x, sr);
-    const role = opts.role || classify(f);
+    const role = classify(f);
+    return {
+      samples: x,
+      sampleRate: sr,
+      features: f,
+      guessRole: role,
+      guess: Instrument.roleFor[role] || "perc",
+      steps: steps,
+    };
+  }
+
+  /* The other half: tune, fit, rebuild as the chosen instrument, shape, level.
+   * Cheap enough to re-run while someone drags a slider.
+   */
+  function finish(prep, options) {
+    const opts = options || {};
+    const sr = prep.sampleRate;
+    const bpm = opts.bpm || 120;
+    const steps = prep.steps.slice();
+    const f = prep.features;
+
+    let x = Float32Array.from(prep.samples);
+
+    // The instrument decides the role — a clap is a snare as far as the
+    // arranger is concerned — except for "as recorded", which keeps whatever
+    // the sound looked like so it still gets a sensible part.
+    const instrumentName = opts.instrument || prep.guess;
+    const instrument = Instrument.get(instrumentName) || Instrument.get("perc");
+    const role = instrument.role || prep.guessRole;
     const recipe = RECIPES[role] || RECIPES.perc;
+    // An instrument that was chosen gets rebuilt at its default strength; one
+    // that was merely guessed does not. Auto-import and the scratch kit should
+    // come out cleaned and shaped but still recognisably the recording — being
+    // silently rebuilt as something else is a decision for a person to make.
+    const chosen = !!opts.instrument;
+    const morph = opts.morph !== undefined ? opts.morph : (chosen ? instrument.morph : 0);
 
     let beats = null;
     if (opts.fitGrid !== false && x.length / sr > 0.25 &&
@@ -266,16 +318,38 @@ var Polish = (function () {
 
     let note = null;
     let shifted = 0;
-    if (recipe.tune && opts.tune !== false && f.pitchConfidence > 0.55 && f.pitch > 40) {
+    let tunedHz = 0;
+    if (instrument.pitched && opts.tune !== false && f.pitchConfidence > 0.55 && f.pitch > 40) {
       const snap = snapToScale(f.pitch, opts.keyRoot || 0, opts.scale || "minor");
       if (Math.abs(snap.semitones) > 0.03 && Math.abs(snap.semitones) < 7) {
         x = DSP.pitchShift(x, snap.semitones);
         shifted = snap.semitones;
       }
       note = midiToNoteName(snap.midi);
+      tunedHz = 440 * Math.pow(2, (snap.midi - 69) / 12);
       steps.push(Math.abs(shifted) < 0.03
         ? "already in tune at " + note
         : "tuned " + (shifted > 0 ? "up " : "down ") + Math.abs(shifted).toFixed(2) + " semitones to " + note);
+    }
+
+    // Rebuild it as the instrument: force the envelope, layer the synthesised
+    // version underneath. This is the part EQ cannot do.
+    if (morph > 0.005 && instrumentName !== "asis") {
+      const before = x.length / sr;
+      x = Instrument.shape(x, sr, instrumentName, {
+        morph: morph,
+        rootHz: rootFrequency(opts.keyRoot || 0, 1),
+        pitchHz: tunedHz || f.pitch,
+        chordIntervals: chordIntervals(opts.scale),
+        seed: opts.seed === undefined ? 1 : opts.seed,
+      });
+      const after = x.length / sr;
+      let line = "rebuilt it as a " + instrument.label.toLowerCase() +
+        " (" + Math.round(morph * 100) + "%)";
+      if (Math.abs(after - before) > 0.02) {
+        line += ", " + before.toFixed(2) + "s → " + after.toFixed(2) + "s";
+      }
+      steps.push(line);
     }
 
     if (opts.tone !== false) {
@@ -293,6 +367,10 @@ var Polish = (function () {
       samples: x,
       sampleRate: sr,
       role: role,
+      instrument: instrumentName,
+      instrumentLabel: instrument.label,
+      morph: morph,
+      guess: prep.guess,
       label: recipe.label,
       // A copy: a pad that edited this in place would change the recipe for
       // every other pad of the same role.
@@ -311,8 +389,21 @@ var Polish = (function () {
     };
   }
 
+  /* `input` is a Float32Array of mono audio. Options: sampleRate, bpm,
+   * keyRoot (0-11), scale, instrument, morph, plus switches so the UI can turn
+   * individual stages off. */
+  function process(input, options) {
+    const prep = prepare(input, options);
+    if (!prep) return null;
+    return finish(prep, options);
+  }
+
   return {
     process: process,
+    prepare: prepare,
+    finish: finish,
+    chordIntervals: chordIntervals,
+    rootFrequency: rootFrequency,
     classify: classify,
     beatFit: beatFit,
     snapToScale: snapToScale,

@@ -35,12 +35,46 @@ Per take, in order:
 | Listen | Duration, spectral centroid, flatness, band ratios and YIN pitch confidence pick one of eight roles | — |
 | Tune | The fundamental is moved to the nearest note of the key, pitch shifted (resample + WSOLA) so the length is unchanged | The sound is percussive, already in tune, or more than 7 semitones away |
 | Fit the grid | Time-stretched to the nearest power-of-two number of beats at the current tempo | The stretch needed is beyond 0.8–1.28×, where it stops sounding like the same sound |
+| Rebuild | The instrument you picked is imposed: its envelope is forced onto the recording and a synthesised version is layered underneath | You left the strength at 0, or picked "as recorded" |
 | Shape | Role-specific EQ, saturation and compression | — |
 | Level | Peak normalise, plus the fader position for that role in a mix | — |
 
 Then the arranger (`js/patterns.js`) gives each pad a part from the chosen feel,
 the kick ducks everything else under it, and the master bus runs glue
 compression, a limiter and a soft clipper.
+
+## Picking the instrument
+
+When a recording finishes, the picker comes up with the classifier's guess
+already selected. Choose something else and the take is rebuilt as that instead
+— a hi-hat, a kick, a clap, a sub, whatever — and it plays back straight away so
+you can hear the difference before committing. **How much** crossfades between
+your recording and the instrument, and **Discard** throws the take away.
+
+Filtering alone cannot do this. What tells your ear "that is a kick" is mostly
+the shape of the sound in time: a 2 ms attack, a pitch that falls off a cliff in
+the first 30 ms, and silence by 400 ms. No EQ gives a two-second mouth noise
+that shape. So `js/instrument.js` does two things per instrument:
+
+- **Forces the envelope.** The recording's natural loudness shape is divided out
+  and the instrument's is multiplied in, which is what turns a 1.2 s hiss into
+  an 80 ms hi-hat. Both sides are raised to the morph amount, so it fades
+  continuously from untouched to completely reshaped.
+- **Layers a synthesised instrument underneath.** A sine whose pitch collapses
+  onto the key's root plus a beater click for a kick; two body tones and a band
+  of wire noise for a snare; four noise bursts staggered a few milliseconds
+  apart for a clap; six square waves at deliberately unmusical ratios, filtered
+  hard and cut off almost at once, for a hat — the way the 808 did it; an
+  oscillator following your own phrasing for a bass; and for a chord, your note
+  stacked with pitch-shifted copies of itself into a triad in the key.
+
+What survives of your recording is its attack and its timbre, which is the part
+that makes it yours. A "tss" rebuilt as a kick keeps 3.7% of its high end,
+down from 81%.
+
+Instruments that were only *guessed* are never rebuilt behind your back — the
+strength stays at 0 until someone picks. Imports and the scratch kit are
+cleaned and shaped but left recognisably themselves.
 
 ## Notes on the tricky parts
 
@@ -94,6 +128,7 @@ than real time.
 | --- | --- |
 | `js/dsp.js` | FFT, YIN pitch detection, spectral de-noise, WSOLA stretch and pitch shift, biquads, compressor, feature extraction, WAV encoding. Pure functions — no `AudioContext`, runs under a test runner |
 | `js/polish.js` | The pipeline, the role classifier, the per-role recipes, scales and grid fitting |
+| `js/instrument.js` | The instrument catalogue, envelope imposition, and the synthesised layers |
 | `js/patterns.js` | Pattern templates per feel, and the arranger |
 | `js/engine.js` | Graph, transport, sidechain, offline bounce |
 | `js/record.js` | Microphone capture and file decoding |
@@ -105,9 +140,10 @@ than real time.
 ## Tests
 
 ```sh
-node studio/test/dsp.test.js        # signal processing, no browser needed
-node studio/test/polish.test.js     # the pipeline and its decisions
-node studio/test/browser.test.js    # the real page in a real browser
+node studio/test/dsp.test.js         # signal processing, no browser needed
+node studio/test/polish.test.js      # the pipeline and its decisions
+node studio/test/instrument.test.js  # the rebuilds, measured
+node studio/test/browser.test.js     # the real page in a real browser
 ```
 
 See `test/README.md`. The first two run under plain node, which is why
