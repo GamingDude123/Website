@@ -163,20 +163,23 @@ This is classic signal processing, not AI source separation. A short-time
 Fourier transform (`js/vocal-worklet.js`, an AudioWorklet) looks at each frequency
 band of the left and right channels, and where both have the same level and phase,
 the sound is in the middle of the mix; the vocal range of what is in the middle
-is turned down or kept. Measured on a synthetic mix in the browser test, the
-centred voice drops by more than 70 dB with *No vocals* while a hard-left lead and
-a hard-right pad change by under 1 dB and a hard-panned instrument does not
-appear on the other side; with *Vocals only* the voice stays and the panned
-instruments go by 60 dB and the bass by about 29 dB. Real music is harder than
-sine waves:
+is turned down or kept. Measured on synthetic mixes (nobody has run it on a
+real song yet): with only a centred voice and some hard-panned instruments the
+voice drops by more than 70 dB and the panned instruments are not touched; on a
+busier mix where a lead and a pad share the voice's frequencies, *No vocals* takes
+the voice down by about 19 dB and the lead and pad by 3-4 dB along with it, and
+*Vocals only* keeps the voice but only turns those down by about 5-6 dB, while the
+centred drums and bass go by 18-29 dB. So expect a much quieter vocal, not a clean
+studio instrumental, and expect it to be at its best on music where the singer has
+the middle to themselves. Real music is harder than test tones:
 
 - it works for stereo mixes with the vocal in the middle, which is most pop, rock
   and dance music; it does not work on mono files (the buttons are off and say so);
 - anything else in the middle in the same range (a snare, a centred lead synth, a
   bass guitar's upper harmonics) goes with the vocal, and a vocal with stereo
   reverb or doubling leaves some of itself behind;
-- the bass and the kick (below about 150 Hz) and the cymbals (above about 8 kHz)
-  are untouched, so a vocal-free track is not thinned out.
+- with *No vocals* the bass and the kick (below about 150 Hz) and the cymbals
+  (above about 8 kHz) are untouched, so the track is not thinned out.
 
 The worklet adds a fixed 512 samples (about 11.6 ms) of delay. Every deck goes
 through the same delay, and the effects are delayed to match, so beats still line
