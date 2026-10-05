@@ -52,7 +52,7 @@
     return out;
   }
 
-  const MAX_TRACKS = 50;                     // the library holds this many: more makes the page, and memory, struggle
+  const MAX_TRACKS = 150;                    // the library holds this many (decoded audio is kept only for the track playing and the next, so it is not memory that limits it)
   let addEpoch = 0;                          // Remove all / Stop adding bump this: whatever was still on its way from before is dropped
   const adding = { verb: "Adding", total: 0, done: 0 };       // files still to come, across overlapping batches
   let fullNoted = false;
@@ -64,11 +64,32 @@
   let restoreResolve = null;
   const restored = new Promise(function (r) { restoreResolve = r; });     // adding waits for the saved files to be back first
 
-  function makeTrack(key, name, artist, buffer, analysis) {
-    return {
+  // A track keeps its decoded audio only while it is needed (the Player decodes it again from the saved
+  // file when it comes up): five minutes of stereo is about 100 MB, and a library cannot hold a
+  // hundred of those. What stays is small: the analysis, the waveform peaks, the length.
+  // `saved` is what a saved copy already knows, so a track can be brought back without decoding it.
+  // The demos are synthesised and small, so they simply stay in memory.
+  async function decodeFile(file) { return getDecodeCtx().decodeAudioData(await file.arrayBuffer()); }
+
+  function makeTrack(key, name, artist, buffer, analysis, source, saved) {
+    const t = {
       id: nextId++, key: key, title: name, artist: artist, buffer: buffer, analysis: analysis,
-      peaks: peaksOf(buffer, 900), fine: finePeaks(buffer), duration: buffer.duration, keyOverride: null, shiftBeats: 0,
+      peaks: saved && saved.peaks ? saved.peaks : peaksOf(buffer, 900), fine: saved && saved.fine ? saved.fine : finePeaks(buffer),
+      duration: buffer ? buffer.duration : saved.duration, channels: buffer ? buffer.numberOfChannels : saved.channels,
+      keyOverride: null, shiftBeats: 0, load: null, loading: null,
     };
+    const file = source && source.file;
+    if (file) {
+      t.load = async function () {
+        try { return await decodeFile(file); }
+        catch (err) {                                     // the file on disk has gone or changed: the copy kept in this browser is the fallback
+          const rec = typeof Store !== "undefined" ? await Store.get(key) : null;
+          if (rec && rec.file) return decodeFile(rec.file);
+          throw err;
+        }
+      };
+    }
+    return t;
   }
 
   // `cancelled()` is asked at every progress report; a throw there ends the analysis early
@@ -118,6 +139,7 @@
     return Store.put({
       key: t.key, added: Date.now(), title: t.title, artist: t.artist, name: source.name || t.title, file: source.file || null, demo: source.demo || null,
       rev: ANALYSIS_REV, analysis: t.analysis, keyOverride: t.keyOverride, shiftBeats: t.shiftBeats,
+      peaks: t.peaks, fine: t.fine, duration: t.duration, channels: t.channels,
     }).then(function () { if (storeOk === null) { storeOk = true; changed(); } Store.keep(); }, function (err) { storeFailed(err, t.title); });
   }
   function saveEdit(t) {
@@ -140,9 +162,10 @@
       const analysis = await analyse(buffer, ph, function () { return ep !== addEpoch; });
       if (ep !== addEpoch) return;                                   // Remove all was pressed while it was being analysed
       if (player.library.length >= MAX_TRACKS) { fullNote(); return; }
-      const t = makeTrack(typeof Store !== "undefined" ? Store.newKey() : "k" + nextId, name, artist, buffer, analysis);
+      const t = makeTrack(typeof Store !== "undefined" ? Store.newKey() : "k" + nextId, name, artist, buffer, analysis, source);
       player.add(t);
       saveTrack(t, source || {});
+      if (t.load) t.buffer = null;                                   // decoded again when it comes up
     } catch (err) {
       if (ep === addEpoch) player.note("Could not analyse " + name + ": " + err.message);
     } finally {
@@ -222,23 +245,31 @@
       const ph = { name: rec.title + " (restoring)", progress: 0 };
       loading.push(ph); changed();
       try {
-        let buffer;
-        if (rec.demo) {
-          const d = Synth.DEMOS.filter(function (x) { return x.title === rec.demo; })[0];
-          if (!d) throw new Error("that demo no longer exists");
-          await tick();
-          buffer = renderDemo(d);
+        const fresh = rec.rev === ANALYSIS_REV && rec.analysis;
+        let t;
+        if (fresh && !rec.demo && rec.file && rec.peaks && rec.fine && rec.duration && rec.channels) {
+          // everything about it is saved: it comes back without being decoded, and is decoded when it is needed
+          t = makeTrack(rec.key, rec.title, rec.artist, null, rec.analysis, { file: rec.file }, rec);
         } else {
-          buffer = await getDecodeCtx().decodeAudioData(await rec.file.arrayBuffer());
+          let buffer;
+          if (rec.demo) {
+            const d = Synth.DEMOS.filter(function (x) { return x.title === rec.demo; })[0];
+            if (!d) throw new Error("that demo no longer exists");
+            await tick();
+            buffer = renderDemo(d);
+          } else {
+            buffer = await decodeFile(rec.file);
+          }
+          if (epoch !== addEpoch) break;
+          const analysis = fresh ? rec.analysis : await analyse(buffer, ph, function () { return epoch !== addEpoch; });
+          if (epoch !== addEpoch) break;
+          t = makeTrack(rec.key, rec.title, rec.artist, buffer, analysis, rec.demo ? null : { file: rec.file });
+          if (!fresh || !rec.peaks) Store.patch(rec.key, { analysis: analysis, rev: ANALYSIS_REV, peaks: t.peaks, fine: t.fine, duration: t.duration, channels: t.channels }).catch(function () { /* ok */ });
+          if (t.load) t.buffer = null;                                // one at a time: never the whole library at once
         }
         if (epoch !== addEpoch) break;
-        const fresh = rec.rev === ANALYSIS_REV && rec.analysis;
-        const analysis = fresh ? rec.analysis : await analyse(buffer, ph, function () { return epoch !== addEpoch; });
-        if (epoch !== addEpoch) break;
-        const t = makeTrack(rec.key, rec.title, rec.artist, buffer, analysis);
         t.keyOverride = rec.keyOverride || null; t.shiftBeats = rec.shiftBeats || 0;
         player.library.push(t); byKey[rec.key] = t;
-        if (!fresh) Store.patch(rec.key, { analysis: analysis, rev: ANALYSIS_REV }).catch(function () { /* ok */ });
       } catch (err) {
         if (epoch === addEpoch) player.note("Could not bring back " + rec.title + ": " + (err && err.message ? err.message : err));
       } finally {
@@ -392,18 +423,18 @@
     const logHtml = player.log.map(function (l) { return "<li><b>" + mmss(l.t) + "</b>" + esc(l.text) + "</li>"; }).join("") || "<li>It will explain each choice here.</li>";
     setHtml($("log"), logHtml);
 
-    // memory is the only real limit on how many tracks fit: a decoded track is raw audio
+    // decoded audio is kept only for the tracks that are playing or next up, so this stays small
     let bytes = 0;
-    player.library.forEach(function (t) { bytes += t.buffer.length * t.buffer.numberOfChannels * 4; });
+    player.library.forEach(function (t) { if (t.buffer) { bytes += t.buffer.length * t.buffer.numberOfChannels * 4; } });
     const mb = Math.round(bytes / 1048576), n = player.library.length;
     saveOrder();
     setText($("lib-stat"), n ? n + (n === 1 ? " track" : " tracks") + (n >= MAX_TRACKS ? " (the limit)" : "") + " · " + mb + " MB in memory" + (storeOk ? " · saved in this browser" : storeOk === false ? " · not saved (browser storage is off or full)" : "") + (mb > 1500 ? " — heavy; remove a few if the page slows" : "") : "");
     $("lib-stat").classList.toggle("warn", mb > 1500);
 
     const running = player.running;
-    setHtml($("btn-go"), running ? "&#9632; Stop the set" : "&#9654; Start the set");
+    setHtml($("btn-go"), running ? "&#9632; Stop the set" : player.starting ? "Loading\u2026" : "&#9654; Start the set");
     $("btn-go").classList.toggle("stop", running);
-    $("btn-go").disabled = !running && !player.queue.length;
+    $("btn-go").disabled = !running && (!player.queue.length || !!player.starting);
     $("btn-clear").disabled = (!player.library.length && !loading.length && !adding.total) || running;
     $("btn-pause").disabled = !running;
     setText($("btn-pause"), player.paused ? "Resume" : "Pause");
@@ -610,7 +641,7 @@
     // slows to a halt and runs backwards exactly as the sound does
     const pos = d.started ? d.pos : d.voice.tl.offset;
     if (!REDUCED_MOTION.matches) st.k.vinyl.style.transform = "rotate(" + Turntable.angleOf(pos).toFixed(1) + "deg)";
-    const frac = Math.max(0, Math.min(1, pos / d.track.buffer.duration));
+    const frac = Math.max(0, Math.min(1, pos / Engine.durationOf(d.track)));
     st.k.arm.style.setProperty("--sweep", (frac * 16).toFixed(1) + "deg");
     st.k.arm.classList.toggle("lifted", !d.started || (snap.paused && !snap.pausing));
     st.k.tt.classList.toggle("locked", !d.touch);
@@ -1084,10 +1115,20 @@
   $("btn-export").addEventListener("click", async function () {
     const tracks = (player.running && player.cur ? [player.cur.track] : []).concat(player.queue);
     if (tracks.length < 2) { player.note("Queue at least two tracks to export a mix"); return; }
+    // a mix is rendered with every one of its tracks decoded at once, so the size of it is limited by memory
+    const need = tracks.reduce(function (sum, t) { return sum + (t.buffer ? 0 : Engine.durationOf(t) * 44100 * Engine.channelsOf(t) * 4); }, 0);
+    const EXPORT_MB = 2000;
+    if (need > EXPORT_MB * 1048576) {
+      const fit = Math.max(2, Math.floor(tracks.length * EXPORT_MB * 1048576 / need));
+      player.note("Rendering a mix holds all of its tracks in memory at once (about " + Math.round(need / 1048576) + " MB here). Queue about " + fit + " tracks or fewer to export.");
+      return;
+    }
     const b = $("btn-export"), label = b.textContent;
     b.disabled = true; b.textContent = "Rendering…";
     try {
+      player.pinned = tracks.slice();
       await tick();
+      await Promise.all(tracks.map(function (t) { return player.ensureLoaded(t); }));
       const res = await Engine.renderSet(tracks, { settings: player.settings, index0: player.running && player.cur ? player.history.length - 1 : 0 });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(encodeWav(res.buffer));
@@ -1097,6 +1138,9 @@
     } catch (err) {
       player.note("Export failed: " + err.message);
     }
+    player.pinned = [];
+    player.releaseUnused();
+    if (!player.running) player.library.forEach(function (t) { if (t.load) t.buffer = null; });
     b.disabled = false; b.textContent = label;
   });
 

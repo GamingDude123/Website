@@ -226,20 +226,29 @@ row). Now:
   a file being analysed has its own small list, so its progress never redraws
   the tracks; and nothing is written to the page unless it changed.
 
-Measured with 300 stand-in tracks (before the 50-track limit): a redraw that changed
+Measured with 300 stand-in tracks (before there was a track limit): a redraw that changed
 something went from about 110 ms and 13,000 page elements to under 1 ms and 720
 (the first page of rows), or 0 and under 0.1 ms while hidden. Spotify and
 SoundCloud lists can be long, so those keep the paging.
 
 ## How many tracks?
 
-The library holds **50 tracks**. Adding hundreds made the page, and memory,
-struggle: a decoded five-minute track takes about 50 MB, so 50 is already around
-2.5 GB. Files beyond the limit are not added (the log says so), and a saved
-library bigger than that comes back as its first 50. The counter above the list
-shows the estimate and warns past about 1.5 GB — if the tab slows or crashes,
-remove a few tracks. **Remove all** and **Stop adding** both drop anything still
-being added.
+The library holds **150 tracks**. Decoded audio is big (five minutes of stereo is
+about 100 MB), so the page never holds the whole library decoded: only the track
+that is playing and the one next in the queue are kept in memory, and a track is
+read again from its saved copy when it comes up (a second or so, done while the
+one before it is still playing). What stays for every track is small: the
+analysis, the waveform and the length. Files beyond the limit are not added (the
+log says so), and a saved library bigger than that comes back as its first 150.
+The counter above the list shows what is in memory right now. **Remove all** and
+**Stop adding** both drop anything still being added.
+
+Two things still cost memory in proportion to the number of tracks: **Export a
+mix** decodes every track it renders at once (it says so and stops if that would
+be more than about 2 GB, and how many tracks would fit), and the track list
+itself (see hiding long lists above). The saved copies are the original files, so
+150 of them take as much disk as the files do; if the browser refuses to keep
+that much, the counter says "not saved" and they will be gone after a refresh.
 
 ## Things to know
 
