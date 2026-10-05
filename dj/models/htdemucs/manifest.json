@@ -1,0 +1,28 @@
+{
+  "name": "htdemucs",
+  "version": "demucs@1.0.0",
+  "bytes": 174263526,
+  "sha256": "da9e5101ee0804d04933974b59d8aae9c862e80e14f2f24e7c74cae76bdbe748",
+  "parts": [
+    {
+      "file": "htdemucs.onnx.part00",
+      "bytes": 43565882,
+      "sha256": "5a645bf4335ffe652ee9f1f276dc5a607b91f0e15340e40564772696d6645bf2"
+    },
+    {
+      "file": "htdemucs.onnx.part01",
+      "bytes": 43565882,
+      "sha256": "e35990c102677c93743acdf016901884126875ec94c1e1ad6ca283416bb06805"
+    },
+    {
+      "file": "htdemucs.onnx.part02",
+      "bytes": 43565882,
+      "sha256": "ed16d6ffd36fe9e793c9c49722699717a34c029cee4c2abe189fc6264abcdb51"
+    },
+    {
+      "file": "htdemucs.onnx.part03",
+      "bytes": 43565880,
+      "sha256": "710a882135c6af3db326f2064cf0124de44050863d7fd9e025352561ffd3b006"
+    }
+  ]
+}
