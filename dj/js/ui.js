@@ -661,7 +661,7 @@
     else if (d.vox.ai && d.vox.sep && stem && stem.phase === "failed") { voxNote = "AI failed"; voxTitle = "The AI could not split this track: " + (stem.error || "unknown error"); }
     else if (d.vox.ai && d.vox.sep && model && model.phase !== "ready") { voxNote = "AI model " + (model.phase === "downloading" ? "downloading " + Math.floor(model.progress * 20) * 5 + "%" : "loading"); voxTitle = "Getting the AI model ready (a large file, kept in this browser after the first time)"; }
     else if (d.vox.ai && d.vox.sep) { voxNote = "waiting"; voxTitle = "Waiting its turn to be split (the AI does one track at a time)"; }
-    else if (!d.vox.sep && !d.vox.ok) { voxTitle = "The vocal tools work on files you add; the demo tracks are synthetic and have no vocals"; }
+    else if (d.vox.ai && !d.vox.sep && !d.vox.ok) { voxTitle = "The vocal tools work on files you add; the demo tracks are synthetic and have no vocals"; }
     else { voxTitle = d.vox.mono ? "Vocal tools need a stereo track; this one is mono" : "Vocal tools need a browser with audio worklets"; }
     setText(st.k.voxnote, voxNote);
     st.k.vox.title = voxTitle;
