@@ -7,13 +7,15 @@ turntables you can grab, Pause stops them like a DJ would, it drops sound effect
 in on its own, and it can take the vocals out of a track, or keep only the vocals.
 
 Open `dj/index.html` from a web server (`localhost` or `https://`). No build
-step, no dependencies, nothing uploaded. **Add demo tracks** gives you four
+step, nothing uploaded (the AI vocal model, if you use it, is a large download that
+runs in your browser; see Vocal tools). **Add demo tracks** gives you four
 generated tracks to hear it straight away; **Add your files** takes anything the
 browser can decode.
 
 ## What it is, and isn't
 
-It is signal processing and rules, not a neural network or a language model. It
+It is signal processing and rules, not a language model; the one neural network in it
+is the vocal separation model (see Vocal tools), which only splits tracks. It
 copies the *techniques* of club DJing — phrase-matched mixing, bass swaps,
 swapping on the drop, building with filters and rolls. It does not have taste,
 read a crowd, or choose tracks the way a person with years of records does, so
@@ -181,7 +183,7 @@ comes up again later (they are not saved). It works on mono files too.
   project's tests, wasm, one thread) it runs at about a fifth of real time, which
   is too slow to use, so the CPU path is only used by the tests.
 - **Memory:** a separated five-minute track is about 320 MB (six channels), so two
-  of them are about 650 MB, on top of the model and its working memory (about 1.5 GB on the CPU path;
+  of them are about 650 MB (three for a moment during a blend), on top of the model and its working memory (about 1.5 GB on the CPU path;
   the GPU path has not been measured).
 - **How good it is:** this is the model a lot of stem-splitting tools use, and it
   should be far better than the filter below on real songs, but it has only been run

@@ -86,7 +86,7 @@ var Engine = (function () {
     return {
       title0: track.title, bpm: a.bpm, key: track.keyOverride || a.key.camelot,
       energy: a.energy, bars: a.bars, cues: a.cues, sections: a.sections, lead: a.lead, stereo: a.stereo,
-      stems: !!(track.buffer && track.buffer.numberOfChannels === 6),          // separated by the AI: vocal moves need no stereo image
+      stems: hasStems(track),                                              // separated by the AI: vocal moves need no stereo image
     };
   }
 
@@ -98,8 +98,10 @@ var Engine = (function () {
   // The six-channel buffer a separated track plays (see Voice): the mix, then the instrumental, then the
   // vocals, each as left and right. `stems` is {inst: [L, R], vocals: [L, R]}, as long as the track.
   // Channel order is that of 5.1, so a two-channel source mixed in with it still lands in the mix pair.
+  const STEMS = new WeakSet();            // the buffers made by stemBuffer (a decoded 5.1 file is also six channels, and is not one of these)
   function stemBuffer(ctx, orig, stems) {
     const n = orig.length, b = ctx.createBuffer(6, n, orig.sampleRate);
+    STEMS.add(b);
     const L = orig.getChannelData(0), R = orig.numberOfChannels > 1 ? orig.getChannelData(1) : L;
     const put = function (c, a) { b.copyToChannel(a.length === n ? a : a.subarray(0, n), c); };
     put(0, L); put(1, R);
@@ -107,7 +109,29 @@ var Engine = (function () {
     put(4, stems.vocals[0]); put(5, stems.vocals[1] || stems.vocals[0]);
     return b;
   }
-  function hasStems(track) { return !!track.buffer && track.buffer.numberOfChannels === 6; }
+  // Every track the page plays is two channels (or, once separated, a stem buffer): a mono file is played
+  // from both speakers, and a file with more than two channels is mixed down. 5.1 is L R C LFE Ls Rs;
+  // for anything else the even channels go to the left and the odd to the right.
+  function stereoize(ctx, b) {
+    const n = b.numberOfChannels;
+    if (n === 2) return b;
+    const out = ctx.createBuffer(2, b.length, b.sampleRate), L = out.getChannelData(0), R = out.getChannelData(1), ch = [];
+    for (let c = 0; c < n; c++) ch.push(b.getChannelData(c));
+    if (n === 1) { L.set(ch[0]); R.set(ch[0]); return out; }
+    if (n === 6) {
+      const k = Math.SQRT1_2, g = 1 / (1 + 2 * k);
+      for (let i = 0; i < b.length; i++) { L[i] = (ch[0][i] + k * ch[2][i] + k * ch[4][i]) * g; R[i] = (ch[1][i] + k * ch[2][i] + k * ch[5][i]) * g; }
+      return out;
+    }
+    const ne = Math.ceil(n / 2), no = Math.floor(n / 2);
+    for (let i = 0; i < b.length; i++) {
+      let l = 0, r = 0;
+      for (let c = 0; c < n; c++) { if (c % 2 === 0) l += ch[c][i]; else r += ch[c][i]; }
+      L[i] = l / ne; R[i] = r / no;
+    }
+    return out;
+  }
+  function hasStems(track) { return !!track.buffer && STEMS.has(track.buffer); }
 
   // May the planner use vocal moves between these two tracks? With both separated, yes. Otherwise only
   // through the basic filter, if that is what this mixer is allowed to use.
@@ -169,7 +193,7 @@ var Engine = (function () {
     // vocals L R] (see stemBuffer). One source plays all six in step, so everything the deck does (tempo,
     // brake, scrub, jump) carries the three versions with it, and this picks which one is heard. A
     // two-channel track is just the mix. (The nodes ahead of this keep however many channels arrive.)
-    this.stemsLive = track.buffer.numberOfChannels === 6;
+    this.stemsLive = hasStems(track);
     this.sp = ctx.createChannelSplitter(6);
     this.sel = ctx.createGain();
     this.stemG = {}; this.stemM = [];
@@ -180,6 +204,9 @@ var Engine = (function () {
       this.stemG[k[0]] = g; this.stemM.push(m);
     }, this);
     this.trim.connect(this.sp);
+    // a mono buffer arrives on the splitter's first output only: the same signal goes to the right as well
+    this.monoG = ctx.createGain(); this.monoG.gain.value = !this.stemsLive && track.buffer.numberOfChannels === 1 ? 1 : 0;
+    this.sp.connect(this.monoG, 0); this.monoG.connect(this.stemM[0], 0, 1);
     if (mixer.voxOk) {
       // The vocal stage: every deck goes through the same delay, so the decks stay in time
       // with each other (and with the effects, which are delayed to match) whether or not
@@ -339,7 +366,7 @@ var Engine = (function () {
   // through the basic filter, which needs a stereo track and a browser with worklets, and which the page
   // switches off (mixer.filterFallback = false) when the AI separation is what it wants to use.
   Voice.prototype.voxAvailable = function () {
-    if (this.stemsLive) return true;
+    if (this.stemsLive || (this.vox && this.voxMode !== "off")) return true;       // (and a filter that is on can always be switched off)
     const a = this.track.analysis;
     return this.mixer.filterFallback !== false && !!this.mixer.voxOk && channelsOf(this.track) >= 2 && !(a && a.stereo === false);
   };
@@ -412,11 +439,21 @@ var Engine = (function () {
   // this deck plays that, at the same place and speed. The mix is channels 0 and 1 of it, so the
   // hand-over is of identical sound and cannot be heard. A deck that has not started yet starts on it.
   Voice.prototype.useStems = function (t) {
-    if (this.stemsLive || this.track.buffer.numberOfChannels !== 6) return false;
-    const at = Math.max(t, this.t0), nodes = [{ t: at, r: this.tl.rateAt(at) }];
+    if (this.stemsLive || !STEMS.has(this.track.buffer)) return false;
+    const at = Math.max(t, this.t0), nodes = [{ t: at, r: this.tl.rateAt(at) }], mode = this.voxModeAt(at);
     this.tl.nodes.forEach(function (n) { if (n.t > at) nodes.push({ t: n.t, r: n.r }); });
     this.replaceSource(at, this.tl.posAt(at), nodes, 0.012);
     this.stemsLive = true;
+    this.monoG.gain.setValueAtTime(0, at);
+    if (this.vox) {
+      // the basic filter was in use: it is let go of, and what it was doing is done by the stems
+      const g = 0.05, back = function (name, p, v) { this.voxMove(name, p, at, [{ t: at + g, v: v }]); }.bind(this);
+      back("cut", this.vox.parameters.get("cut"), 0); back("solo", this.vox.parameters.get("solo"), 0);
+      back("wet", this.voxWet.gain, 0); back("dry", this.voxDryGain.gain, 1);
+      this.voxEvents = this.voxEvents.filter(function (e) { return e.t < at; });
+      this.voxMode = "off";
+      if (mode !== "off") this.setVox(at, mode, 0.1);
+    }
     return true;
   };
 
@@ -425,7 +462,7 @@ var Engine = (function () {
     if (this.vox) { try { this.vox.port.postMessage({ type: "dispose" }); } catch (e) { /* ok */ } }
     [this.src, this.sg, this.env, this.trim, this.low, this.mid, this.high, this.hp, this.lp, this.tap, this.fader, this.echoSend, this.revSend]
       .concat(this.voxIn ? [this.voxIn, this.voxDry, this.voxDryGain, this.voxOut] : []).concat(this.vox ? [this.vox, this.voxWet] : [])
-      .concat([this.sp, this.sel, this.stemG.mix, this.stemG.inst, this.stemG.vox], this.stemM)
+      .concat([this.sp, this.sel, this.monoG, this.stemG.mix, this.stemG.inst, this.stemG.vox], this.stemM)
       .concat(this.extra).forEach(function (n) { try { n.disconnect(); } catch (e) { /* ok */ } });
   };
 
@@ -1009,7 +1046,7 @@ var Engine = (function () {
 
   return {
     Mixer: Mixer, Voice: Voice, renderSet: renderSet, reversedWindow: reversedWindow, loadVox: loadVox, VOX_N: VOX_N,
-    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn, durationOf: durationOf, channelsOf: channelsOf, stemBuffer: stemBuffer, hasStems: hasStems, voxPolicy: voxPolicy,
+    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn, durationOf: durationOf, channelsOf: channelsOf, stemBuffer: stemBuffer, stereoize: stereoize, hasStems: hasStems, voxPolicy: voxPolicy,
     LOOKAHEAD: LOOKAHEAD, KILL: KILL, BRAKE: BRAKE, SPINUP: SPINUP,
   };
 })();
