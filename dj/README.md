@@ -155,44 +155,62 @@ faster and louder) and **Zap** (a laser) — which are synthesised like the rest
 
 ## Vocal tools
 
-Each deck has **Full / No vocals / Vocals only**. *No vocals* takes the centred
-vocal out (an instrumental), *Vocals only* keeps just the centred vocal (an a
-cappella: the instrumental taken out).
+Each deck has **Full / No vocals / Vocals only**. *No vocals* is the instrumental
+(the singer taken out), *Vocals only* is the a cappella (the instruments taken out).
 
-This is classic signal processing, not AI source separation. A short-time
-Fourier transform (`js/vocal-worklet.js`, an AudioWorklet) looks at each frequency
-band of the left and right channels, and where both have the same level and phase,
-the sound is in the middle of the mix; the vocal range of what is in the middle
-is turned down or kept. Measured on synthetic mixes (nobody has run it on a
-real song yet): with only a centred voice and some hard-panned instruments the
-voice drops by more than 70 dB and the panned instruments are not touched; on a
-busier mix where a lead and a pad share the voice's frequencies, *No vocals* takes
-the voice down by about 19 dB and the lead and pad by 3-4 dB along with it, and
-*Vocals only* keeps the voice but only turns those down by about 5-6 dB, while the
-centred drums and bass go by 18-29 dB. So expect a much quieter vocal, not a clean
-studio instrumental, and expect it to be at its best on music where the singer has
-the middle to themselves. Real music is harder than test tones:
+**AI separation (the default).** Tracks are split with Meta's Demucs v4
+(`htdemucs`, four stems; drums, bass and other are summed into the instrumental),
+running in your browser through onnxruntime-web on **WebGPU**, in a worker
+(`js/separator.js`, `vendor/separator/`). The first time, it downloads the model
+(about 170 MB, in four parts under `models/htdemucs/`, plus a 24 MB wasm file) and keeps it in the
+browser's cache storage, so later visits need no download. Then the track that is
+playing and the one next in the queue are split one at a time in the background,
+the playing one first; the deck's buttons say "splitting 42%" until it is done.
+When the stems arrive the track's audio becomes a six-channel buffer (mix,
+instrumental, vocals) and the deck is handed over to it without a sound; from then on
+the buttons only choose between the three, so they are instant and everything else
+the deck does (tempo, brake, scrub, loop roll, spinback) carries all three along.
+Stems are held only for the playing and next track and are made again if a track
+comes up again later (they are not saved). It works on mono files too.
 
-- it works for stereo mixes with the vocal in the middle, which is most pop, rock
-  and dance music; it does not work on mono files (the buttons are off and say so);
-- anything else in the middle in the same range (a snare, a centred lead synth, a
-  bass guitar's upper harmonics) goes with the vocal, and a vocal with stereo
-  reverb or doubling leaves some of itself behind;
-- with *No vocals* the bass and the kick (below about 150 Hz) and the cymbals
-  (above about 8 kHz) are untouched, so the track is not thinned out.
+- **Needs WebGPU:** a recent Chrome, Edge or Safari. Without it, with *AI vocal
+  separation* switched off in the settings, or if the model cannot be loaded, the
+  buttons use the basic filter below (the log says which).
+- **How long it takes depends on the GPU.** The model's author reports about 3x
+  real time on a desktop GPU; that has not been measured here. On a CPU (this
+  project's tests, wasm, one thread) it runs at about a fifth of real time, which
+  is too slow to use, so the CPU path is only used by the tests.
+- **Memory:** a separated five-minute track is about 320 MB (six channels), so two
+  of them are about 650 MB, on top of the model and its working memory (about 1.5 GB on the CPU path;
+  the GPU path has not been measured).
+- **How good it is:** this is the model a lot of stem-splitting tools use, and it
+  should be far better than the filter below on real songs, but it has only been run
+  on synthetic test signals here, never on a real song by ear. Expect faint
+  traces of the vocal in the instrumental and of the instruments in the vocal; it
+  is much better than a filter at both, not perfect.
+- **Licence:** the weights are Meta's, which the package they came from
+  (`demucs@1.0.0` on npm) says are for personal and research use only; see
+  `models/htdemucs/NOTICE.md`.
 
-The worklet adds a fixed 512 samples (about 11.6 ms) of delay. Every deck goes
-through the same delay, and the effects are delayed to match, so beats still line
-up whatever is switched on (measured in the browser test).
+**In blends**, *Take clashing vocals out of blends* (on by default) and the
+vocal mashup use the stems too: from the vocal stem the analysis works out, bar by
+bar, how much of the loudness is a voice. When both the outgoing track's end and the
+incoming intro riding over it have a voice, the outgoing vocal is taken out until the
+swap; a mashup brings the incoming vocal in over an instrumental ending and
+lets its instruments join over the last two beats. These moves are only planned
+between two tracks that have both been split; if the next track is not ready when the
+mix is planned, that mix simply has no vocal move.
 
-**In blends**, *Take clashing vocals out of blends* (on by default) does it for
-you: the analysis estimates, bar by bar, how much of a track is a centred voice or
-lead (energy in 300 Hz - 3.4 kHz in the middle against the side, relative to the
-track's loud bars). When both the outgoing track's overlap and the incoming intro
-riding over it are high, the outgoing vocal is taken out until the swap. That
-estimate cannot tell a voice from a centred lead, so treat it as "something is
-singing or leading in the middle"; the deck buttons are the override. Tracks
-analysed before this was added are re-analysed the first time they are restored.
+**The basic filter (the fallback).** A short-time Fourier transform (`js/vocal-worklet.js`, an
+AudioWorklet) turns down or keeps whatever is in the middle of the stereo image in the
+vocal range. It is classic signal processing, not AI, and rough on real songs: on a
+busy synthetic mix *No vocals* took the voice down about 19 dB and the lead and pad
+3-4 dB with it. It does not work on mono files, anything else in the middle
+(a snare, a centred lead) goes with the vocal, and a vocal with reverb or doubling leaves
+some of itself behind. With it, every deck goes through a fixed 512-sample (11.6 ms)
+delay and the effects are delayed to match, so beats still line up. Its per-bar
+estimate of where a voice is (stereo image, 300 Hz - 3.4 kHz) cannot tell a voice from a
+centred lead.
 
 ## Your files stay put
 
@@ -321,6 +339,7 @@ not the real service.
 ```sh
 node dj/test/logic.test.js     # analysis on tracks with known answers, planner, timeline maths, Spotify matching
 node dj/test/spotify.test.js   # login + playlist import against a stand-in Spotify
+node dj/test/separator.test.js # the AI separation: the real model on a synthetic clip, in Node and in the browser (slow on a CPU; SEP_SKIP_BROWSER=1 skips the browser part)
 node dj/test/browser.test.js   # the real page: offline mix measurements, then live playback
 ```
 
