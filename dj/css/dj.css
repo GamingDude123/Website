@@ -289,3 +289,4 @@ button.more[hidden], .tracks-sum[hidden], #btn-hide[hidden], ol.loading-list[hid
 .vox button { border: 0; background: transparent; color: var(--dim); padding: .22em .75em; font-size: .76rem; border-radius: 99px; }
 .vox button[aria-pressed=true] { background: var(--glass-2); color: var(--ink); box-shadow: 0 0 16px -6px var(--c); }
 .vox button:disabled { opacity: .35; }
+.vox-note { display: block; min-height: 1.1em; margin-top: .15rem; font-size: .7rem; color: var(--dim); }

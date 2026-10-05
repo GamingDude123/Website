@@ -614,8 +614,9 @@
             '<div class="vox" role="group" aria-label="Deck ' + label + ' vocals" data-k="vox">' +
               '<button data-vox="off" aria-pressed="true" title="The track as it is">Full</button>' +
               '<button data-vox="cut" aria-pressed="false" title="Take the centred vocals out: an instrumental">No vocals</button>' +
-              '<button data-vox="solo" aria-pressed="false" title="Take the instruments out: just the centred vocals">Vocals only</button>' +
+              '<button data-vox="solo" aria-pressed="false" title="Take the instruments out: just the vocals">Vocals only</button>' +
             '</div>' +
+            '<small class="vox-note" data-k="voxnote" aria-live="polite"></small>' +
             '<small class="tt-note" data-k="note" aria-live="polite"></small>' +
           '</div>' +
         '</div>' +
@@ -649,7 +650,17 @@
       b.setAttribute("aria-pressed", String(b.dataset.vox === d.vox.mode));
       b.disabled = !d.vox.ok || snap.paused;
     });
-    st.k.vox.title = d.vox.ok ? "" : d.vox.mono ? "Vocal tools need a stereo track; this one is mono" : "Vocal tools need a browser with audio worklets";
+    // what the vocal buttons are waiting for, in words
+    let voxTitle = "", voxNote = "";
+    const stem = d.vox.stem, model = d.vox.model;
+    if (d.vox.ok) { voxNote = d.vox.ai && stem && stem.phase === "ready" ? "AI split" : d.vox.ai ? "" : "basic filter"; voxTitle = d.vox.ai ? "Vocals and instruments separated by the AI model" : "The basic filter: it takes out whatever is in the middle of the mix, so it is rough on real songs"; }
+    else if (d.vox.ai && stem && stem.phase === "working") { voxNote = "splitting " + Math.round(stem.progress * 100) + "%"; voxTitle = "The AI is splitting this track into vocals and instruments"; }
+    else if (d.vox.ai && stem && stem.phase === "failed") { voxNote = "AI failed"; voxTitle = "The AI could not split this track: " + (stem.error || "unknown error"); }
+    else if (d.vox.ai && model && model.phase !== "ready") { voxNote = "AI model " + (model.phase === "downloading" ? "downloading " + Math.round(model.progress * 100) + "%" : "loading"); voxTitle = "Getting the AI model ready (a large file, kept in this browser after the first time)"; }
+    else if (d.vox.ai) { voxNote = "waiting"; voxTitle = "Waiting its turn to be split (the AI does one track at a time)"; }
+    else { voxTitle = d.vox.mono ? "Vocal tools need a stereo track; this one is mono" : "Vocal tools need a browser with audio worklets"; }
+    setText(st.k.voxnote, voxNote);
+    st.k.vox.title = voxTitle;
     st.k.platter.tabIndex = d.touch ? 0 : -1;
     const pct = Math.round(frac * 100);
     if (pct !== st.pct) {
@@ -926,7 +937,7 @@
       knob.style.left = (curLabel === "B" ? 100 : 0) + "%"; bar.style.width = (curLabel === "B" ? 100 : 0) + "%";
       if (now - preview.at > 0.5 || preview.key !== player.queue[0].id + ":" + JSON.stringify(player.settings)) {
         preview.at = now; preview.key = player.queue[0].id + ":" + JSON.stringify(player.settings);
-        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length, vox: !!(player.mixer && player.mixer.voxOk) });
+        preview.plan = Brain.planTransition(Engine.infoOf(player.cur.track), Engine.infoOf(player.queue[0]), { entryBar: player.cur.entryBar, settings: player.settings, index: player.history.length, vox: !!(player.mixer && Engine.voxPolicy(player.mixer, player.cur.track, player.queue[0])) });
       }
       const pl = preview.plan;
       $("strip-title").textContent = "Next · " + Brain.label(pl) + " → " + player.queue[0].title;
@@ -970,6 +981,7 @@
       { key: "minPlay", type: "range", label: "Play each track for at least", unit: " bars", hint: "Before the next handover may begin." },
       { key: "variety", type: "range", label: "Variety", unit: PCT, hint: "How often it takes the move it normally wouldn\u2019t." },
       { key: "tricks", type: "toggle", label: "Filter swaps, stutter cuts and vocal mashups", hint: "The more creative ways in and out: a filter swap closes one track down as the next opens up; a stutter chops the last two beats with a gate; a mashup brings in the next track's vocal over an instrumental ending." },
+      { key: "aiVocals", type: "toggle", label: "AI vocal separation", hint: "Splits each track that is playing or next into vocals and instruments with an AI model, for the deck buttons and the vocal moves in blends. Needs a browser with WebGPU; the first time it downloads a large model file (about 170 MB, kept in this browser). Takes a minute or two per track, in the background. Off, or without WebGPU, the buttons use the basic filter." },
       { key: "voxAuto", type: "toggle", label: "Take clashing vocals out of blends", hint: "When the outgoing track and the intro riding over it both have a vocal or lead in the middle, the outgoing one is taken out until the swap. An estimate; the deck buttons do it by hand." },
       { key: "brakes", type: "toggle", label: "Vinyl brakes & spinbacks", hint: "Ways out that need no matching key or tempo: the deck winds down or is spun backwards as the next track lands." },
     ] },

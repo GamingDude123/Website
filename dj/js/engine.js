@@ -86,6 +86,7 @@ var Engine = (function () {
     return {
       title0: track.title, bpm: a.bpm, key: track.keyOverride || a.key.camelot,
       energy: a.energy, bars: a.bars, cues: a.cues, sections: a.sections, lead: a.lead, stereo: a.stereo,
+      stems: !!(track.buffer && track.buffer.numberOfChannels === 6),          // separated by the AI: vocal moves need no stereo image
     };
   }
 
@@ -93,6 +94,27 @@ var Engine = (function () {
   // (the page keeps decoded audio only for tracks that are playing or next up).
   function durationOf(track) { return track.duration != null ? track.duration : track.buffer.duration; }
   function channelsOf(track) { return track.channels != null ? track.channels : track.buffer.numberOfChannels; }
+
+  // The six-channel buffer a separated track plays (see Voice): the mix, then the instrumental, then the
+  // vocals, each as left and right. `stems` is {inst: [L, R], vocals: [L, R]}, as long as the track.
+  // Channel order is that of 5.1, so a two-channel source mixed in with it still lands in the mix pair.
+  function stemBuffer(ctx, orig, stems) {
+    const n = orig.length, b = ctx.createBuffer(6, n, orig.sampleRate);
+    const L = orig.getChannelData(0), R = orig.numberOfChannels > 1 ? orig.getChannelData(1) : L;
+    const put = function (c, a) { b.copyToChannel(a.length === n ? a : a.subarray(0, n), c); };
+    put(0, L); put(1, R);
+    put(2, stems.inst[0]); put(3, stems.inst[1] || stems.inst[0]);
+    put(4, stems.vocals[0]); put(5, stems.vocals[1] || stems.vocals[0]);
+    return b;
+  }
+  function hasStems(track) { return !!track.buffer && track.buffer.numberOfChannels === 6; }
+
+  // May the planner use vocal moves between these two tracks? With both separated, yes. Otherwise only
+  // through the basic filter, if that is what this mixer is allowed to use.
+  function voxPolicy(mixer, a, b) {
+    if (hasStems(a) && hasStems(b)) return true;
+    return mixer.filterFallback !== false && !!mixer.voxOk;
+  }
 
   function replayGain(track, settings) {
     if (settings && settings.levelMatch === false) return 1;
@@ -143,6 +165,21 @@ var Engine = (function () {
     // can swap one for another without a click
     this.sg = ctx.createGain();
     src.connect(this.sg); this.sg.connect(this.env); this.env.connect(this.trim);
+    // Stems. A track whose audio has been separated is a six-channel buffer: [mix L R, instrumental L R,
+    // vocals L R] (see stemBuffer). One source plays all six in step, so everything the deck does (tempo,
+    // brake, scrub, jump) carries the three versions with it, and this picks which one is heard. A
+    // two-channel track is just the mix. (The nodes ahead of this keep however many channels arrive.)
+    this.stemsLive = track.buffer.numberOfChannels === 6;
+    this.sp = ctx.createChannelSplitter(6);
+    this.sel = ctx.createGain();
+    this.stemG = {}; this.stemM = [];
+    [["mix", 0, 1], ["inst", 2, 0], ["vox", 4, 0]].forEach(function (k, i) {
+      const m = ctx.createChannelMerger(2), g = ctx.createGain();
+      g.gain.value = k[2];
+      this.sp.connect(m, k[1], 0); this.sp.connect(m, k[1] + 1, 1); m.connect(g); g.connect(this.sel);
+      this.stemG[k[0]] = g; this.stemM.push(m);
+    }, this);
+    this.trim.connect(this.sp);
     if (mixer.voxOk) {
       // The vocal stage: every deck goes through the same delay, so the decks stay in time
       // with each other (and with the effects, which are delayed to match) whether or not
@@ -151,12 +188,13 @@ var Engine = (function () {
       this.voxDry = ctx.createDelay(0.2); this.voxDry.delayTime.value = mixer.voxLat;
       this.voxDryGain = ctx.createGain();
       this.voxOut = ctx.createGain();
-      this.trim.connect(this.voxIn); this.voxIn.connect(this.voxDry); this.voxDry.connect(this.voxDryGain);
+      this.sel.connect(this.voxIn); this.voxIn.connect(this.voxDry); this.voxDry.connect(this.voxDryGain);
       this.voxDryGain.connect(this.voxOut); this.voxOut.connect(this.low);
-    } else this.trim.connect(this.low);
+    } else this.sel.connect(this.low);
     this.voxMode = "off";                                    // the mode the last move ends in (see voxModeAt for the one in force at a time)
     this.voxEvents = [];                                     // [{t, mode}], when each move begins
-    this.voxLv = { cut: [{ t: 0, v: 0 }], solo: [{ t: 0, v: 0 }], wet: [{ t: 0, v: 0 }], dry: [{ t: 0, v: 1 }] };   // what each stage parameter is set to follow
+    this.voxLv = { cut: [{ t: 0, v: 0 }], solo: [{ t: 0, v: 0 }], wet: [{ t: 0, v: 0 }], dry: [{ t: 0, v: 1 }],      // what each stage parameter is set to follow
+      smix: [{ t: 0, v: 1 }], sinst: [{ t: 0, v: 0 }], svox: [{ t: 0, v: 0 }] };
     this.low.connect(this.mid); this.mid.connect(this.high);
     this.high.connect(this.hp); this.hp.connect(this.lp); this.lp.connect(this.tap);
     this.tap.connect(this.fader); this.fader.connect(mixer.masterIn);
@@ -222,7 +260,7 @@ var Engine = (function () {
     this.mixer.fxNodes = fxn.filter(function (f) { return f.t < now - 0.01; });
     this.mixer.fxEvents = (this.mixer.fxEvents || []).filter(function (e) { return e.t0 < now - 0.01; });
     this.fxBar = null;                                   // automatic effects are planned afresh from here
-    if (this.vox) this.setVox(now, this.voxModeAt(now), 0.05);       // a vocal move planned for the transition goes with it
+    if (this.vox || this.stemsLive) this.setVox(now, this.voxModeAt(now), 0.05);       // a vocal move planned for the transition goes with it
     void self;
   };
 
@@ -297,10 +335,13 @@ var Engine = (function () {
     this.replaceSource(t, pos, nodes, fade == null ? 0.012 : fade);
   };
 
-  // Is the vocal remover available for this deck (a stereo track, in a browser with worklets)?
+  // Is the vocal remover available for this deck? With stems (the track has been separated) always; otherwise
+  // through the basic filter, which needs a stereo track and a browser with worklets, and which the page
+  // switches off (mixer.filterFallback = false) when the AI separation is what it wants to use.
   Voice.prototype.voxAvailable = function () {
+    if (this.stemsLive) return true;
     const a = this.track.analysis;
-    return !!this.mixer.voxOk && channelsOf(this.track) >= 2 && !(a && a.stereo === false);
+    return this.mixer.filterFallback !== false && !!this.mixer.voxOk && channelsOf(this.track) >= 2 && !(a && a.stereo === false);
   };
 
   // The worklet for this deck, made the first time it is needed.
@@ -330,30 +371,52 @@ var Engine = (function () {
     return m;
   };
 
+  // Move a stage parameter: from where the moves already scheduled on it will have taken it by t,
+  // through `pts` ([{t, v}] linear). Cutting in on a move that is still gliding carries on from it.
+  Voice.prototype.voxMove = function (name, p, t, pts) {
+    const nodes = this.voxLv[name], v0 = levelAt(nodes, t);
+    p.cancelScheduledValues(t);
+    p.linearRampToValueAtTime(v0, t);                  // an unfinished move carries on up to t
+    const out = this.voxLv[name] = nodes.filter(function (n) { return n.t < t; }).concat([{ t: t, v: v0 }]);
+    pts.forEach(function (q) { p.linearRampToValueAtTime(q.v, q.t); out.push({ t: q.t, v: q.v }); });
+  };
+
   // "off" (the deck as it is), "cut" (the centred vocals taken out: an instrumental) or "solo"
-  // (only the centred vocals: the instrument taken out), from time t, glided over `glide` s.
-  // Each move starts from where the stage will be at t (not where it is now), so moves
-  // can be laid out ahead of time, and cutting in on one that is still gliding carries on from it.
-  // Cut and solo do not blend, so going from one straight to the other passes through the full track.
+  // (only the vocals: the instruments taken out), from time t, glided over `glide` s.
+  // Moves start from where the stage will be at t (not where it is now), so they can be laid out
+  // ahead of time.
   Voice.prototype.setVox = function (t, mode, glide) {
     if (!this.voxAvailable()) return false;
-    const g = Math.max(0.02, glide == null ? 0.3 : glide), node = this.voxNode(), on = mode === "cut" || mode === "solo";
-    const was = this.voxModeAt(t), direct = (was === "cut" && mode === "solo") || (was === "solo" && mode === "cut"), h = direct ? g / 2 : g;
-    const lv = this.voxLv;
-    const move = function (name, p, pts) {
-      const nodes = lv[name], v0 = levelAt(nodes, t);
-      p.cancelScheduledValues(t);
-      p.linearRampToValueAtTime(v0, t);                  // an unfinished move carries on up to t
-      lv[name] = nodes.filter(function (n) { return n.t < t; }).concat([{ t: t, v: v0 }]);
-      pts.forEach(function (q) { p.linearRampToValueAtTime(q.v, q.t); lv[name].push({ t: q.t, v: q.v }); });
-    };
+    const g = Math.max(0.02, glide == null ? 0.3 : glide), on = mode === "cut" || mode === "solo", self = this;
     const one = function (to) { return [{ t: t + g, v: to }]; };
-    move("cut", node.parameters.get("cut"), mode === "cut" ? (direct ? [{ t: t + h, v: 0 }, { t: t + g, v: 1 }] : one(1)) : (direct ? [{ t: t + h, v: 0 }] : one(0)));
-    move("solo", node.parameters.get("solo"), mode === "solo" ? (direct ? [{ t: t + h, v: 0 }, { t: t + g, v: 1 }] : one(1)) : (direct ? [{ t: t + h, v: 0 }] : one(0)));
-    move("wet", this.voxWet.gain, one(on ? 1 : 0));
-    move("dry", this.voxDryGain.gain, one(on ? 0 : 1));
+    if (this.stemsLive) {
+      // separated: the three versions are always there, this only chooses between them
+      this.voxMove("smix", this.stemG.mix.gain, t, one(on ? 0 : 1));
+      this.voxMove("sinst", this.stemG.inst.gain, t, one(mode === "cut" ? 1 : 0));
+      this.voxMove("svox", this.stemG.vox.gain, t, one(mode === "solo" ? 1 : 0));
+    } else {
+      // the basic filter. Cut and solo do not blend, so going from one straight to the other passes through the full track.
+      const node = this.voxNode(), was = this.voxModeAt(t), direct = (was === "cut" && mode === "solo") || (was === "solo" && mode === "cut"), h = direct ? g / 2 : g;
+      this.voxMove("cut", node.parameters.get("cut"), t, mode === "cut" ? (direct ? [{ t: t + h, v: 0 }, { t: t + g, v: 1 }] : one(1)) : (direct ? [{ t: t + h, v: 0 }] : one(0)));
+      this.voxMove("solo", node.parameters.get("solo"), t, mode === "solo" ? (direct ? [{ t: t + h, v: 0 }, { t: t + g, v: 1 }] : one(1)) : (direct ? [{ t: t + h, v: 0 }] : one(0)));
+      this.voxMove("wet", this.voxWet.gain, t, one(on ? 1 : 0));
+      this.voxMove("dry", this.voxDryGain.gain, t, one(on ? 0 : 1));
+    }
+    void self;
     this.voxEvents = this.voxEvents.filter(function (e) { return e.t < t; }).concat([{ t: t, mode: on ? mode : "off" }]);
     this.voxMode = on ? mode : "off";
+    return true;
+  };
+
+  // The track's audio has been separated (track.buffer is now the six-channel version): from time t
+  // this deck plays that, at the same place and speed. The mix is channels 0 and 1 of it, so the
+  // hand-over is of identical sound and cannot be heard. A deck that has not started yet starts on it.
+  Voice.prototype.useStems = function (t) {
+    if (this.stemsLive || this.track.buffer.numberOfChannels !== 6) return false;
+    const at = Math.max(t, this.t0), nodes = [{ t: at, r: this.tl.rateAt(at) }];
+    this.tl.nodes.forEach(function (n) { if (n.t > at) nodes.push({ t: n.t, r: n.r }); });
+    this.replaceSource(at, this.tl.posAt(at), nodes, 0.012);
+    this.stemsLive = true;
     return true;
   };
 
@@ -362,6 +425,7 @@ var Engine = (function () {
     if (this.vox) { try { this.vox.port.postMessage({ type: "dispose" }); } catch (e) { /* ok */ } }
     [this.src, this.sg, this.env, this.trim, this.low, this.mid, this.high, this.hp, this.lp, this.tap, this.fader, this.echoSend, this.revSend]
       .concat(this.voxIn ? [this.voxIn, this.voxDry, this.voxDryGain, this.voxOut] : []).concat(this.vox ? [this.vox, this.voxWet] : [])
+      .concat([this.sp, this.sel, this.stemG.mix, this.stemG.inst, this.stemG.vox], this.stemM)
       .concat(this.extra).forEach(function (n) { try { n.disconnect(); } catch (e) { /* ok */ } });
   };
 
@@ -373,6 +437,7 @@ var Engine = (function () {
     this.offline = !!opts.offline;
     this.settings = Settings.sanitize(opts.settings);
     this.fxOn = opts.fx !== undefined ? opts.fx !== false : this.settings.fx;
+    this.filterFallback = opts.filterFallback !== false;      // the basic vocal filter may be used where there are no stems
     const dest = opts.destination || ctx.destination;
 
     this.masterIn = ctx.createGain();
@@ -912,7 +977,7 @@ var Engine = (function () {
     const voices = [A], plans = [];
     for (let k = 1; k < tracks.length; k++) {
       const plan = Brain.planTransition(infoOf(tracks[k - 1]), infoOf(tracks[k]), {
-        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k + (opts.index0 || 0), vox: !!this.voxOk,
+        entryBar: A.entryBar, style: opts.style, settings: opts.settings || this.settings, index: k + (opts.index0 || 0), vox: voxPolicy(this, tracks[k - 1], tracks[k]),
       });
       const B = this.scheduleTransition(A, tracks[k], plan, k % 2 ? "B" : "A");
       voices.push(B); plans.push(plan);
@@ -944,7 +1009,7 @@ var Engine = (function () {
 
   return {
     Mixer: Mixer, Voice: Voice, renderSet: renderSet, reversedWindow: reversedWindow, loadVox: loadVox, VOX_N: VOX_N,
-    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn, durationOf: durationOf, channelsOf: channelsOf,
+    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn, durationOf: durationOf, channelsOf: channelsOf, stemBuffer: stemBuffer, hasStems: hasStems, voxPolicy: voxPolicy,
     LOOKAHEAD: LOOKAHEAD, KILL: KILL, BRAKE: BRAKE, SPINUP: SPINUP,
   };
 })();

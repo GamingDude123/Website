@@ -18,6 +18,7 @@ var Player = (function () {
     opts = opts || {};
     this.library = [];
     this.pinned = [];                      // tracks whose audio must stay while something (an export) is using it
+    this.stemJob = null;                   // the track being separated into vocals and instrumental right now
     this.queue = [];
     this.history = [];
     this.voices = [];
@@ -106,6 +107,7 @@ var Player = (function () {
       await this.ctx.resume();
       this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
       await this.mixer.init();
+      this.mixer.filterFallback = !this.aiActive();
       // the first track's audio is decoded now (only the ones playing or next up are kept decoded)
       while (this.queue.length && !first) {
         const cand = this.queue[0];
@@ -132,7 +134,8 @@ var Player = (function () {
     if (this.ctx) { this.ctx.close(); this.ctx = null; }
     this.voices = []; this.cur = null; this.mixer = null;
     this.gen++;
-    this.library.forEach(function (t) { if (t.load) t.buffer = null; });
+    this.stopStems();
+    this.library.forEach(function (t) { t.stem = null; if (t.load) t.buffer = null; });
     this.session = null; this.paused = false; this.pausing = false; this.wantToggle = false; this.brakeState = null;
     this.onChange();
   };
@@ -230,7 +233,84 @@ var Player = (function () {
   // drop the audio of every track that no deck is playing and that is not about to be
   Player.prototype.releaseUnused = function () {
     const keep = this.voices.map(function (v) { return v.track; }).concat(this.queue.slice(0, 2), this.pinned);
-    this.library.forEach(function (t) { if (t.load && t.buffer && keep.indexOf(t) < 0) t.buffer = null; });
+    const self = this;
+    this.library.forEach(function (t) {
+      if (t.load && t.buffer && keep.indexOf(t) < 0) {
+        if (self.stemJob && self.stemJob.track === t) self.stopStems();
+        t.buffer = null; t.stem = null;
+      }
+    });
+  };
+
+  // ------------------------------------------------------------- AI vocal separation
+  //
+  // The vocal tools work on a track that has been split into vocals and instrumental by the Separator (an
+  // AI model in a worker; see separator.js). That takes a while, so it is done for the tracks that are
+  // playing or next up, one at a time, the playing one first. When the stems arrive the track's audio is
+  // replaced by the six-channel version (Engine.stemBuffer) and the deck playing it is handed over to it.
+  // Where the model cannot run (no WebGPU, or switched off) the basic filter is what the buttons use.
+
+  Player.prototype.aiWanted = function () {
+    return !!this.settings.aiVocals && typeof Separator !== "undefined" && Separator.supported();
+  };
+  Player.prototype.aiActive = function () { return this.aiWanted() && Separator.state().phase !== "unavailable"; };
+
+  // a track the separation could be run on, and has not been
+  Player.prototype.stemsNeeded = function (t) {
+    return !!t.load && !!t.buffer && t.buffer.numberOfChannels !== 6 && t.buffer.sampleRate === 44100 && !t.stem;      // (the demos are synthetic: nothing to separate)
+  };
+
+  Player.prototype.stemTick = function (now) {
+    this.mixer.filterFallback = !this.aiActive();
+    if (!this.aiActive()) {
+      if (this.settings.aiVocals && !this.aiNoted && typeof Separator !== "undefined") {
+        this.aiNoted = true;
+        const st = Separator.state();
+        this.note(Separator.supported() ? "The AI vocal model could not be used (" + (st.reason || "unknown reason") + "): the vocal buttons use the basic filter" :
+          "AI vocal separation needs a browser with WebGPU (a recent Chrome, Edge or Safari): the vocal buttons use the basic filter here");
+      }
+      return;
+    }
+    Separator.init();                                      // starts the model's download and set-up the first time
+    // hand finished stems to the decks that are playing them (not while paused, or with a hand on the platter)
+    if (!this.paused && !this.pausing && !this.session) {
+      this.voices.forEach(function (v) { if (!v.exit && Engine.hasStems(v.track) && !v.stemsLive) v.useStems(now + 0.06); });
+    }
+    if (this.stemJob || Separator.state().phase !== "ready") return;
+    const next = [this.cur.track].concat(this.queue.slice(0, 2)).filter(this.stemsNeeded, this)[0];
+    if (next) this.startStems(next);
+  };
+
+  Player.prototype.startStems = function (track) {
+    const self = this, buf = track.buffer, ac = new AbortController(), job = { track: track, abort: ac };
+    this.stemJob = job;
+    track.stem = { phase: "working", progress: 0 };
+    const chans = [];
+    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c));
+    let shown = 0;
+    Separator.separate(chans, buf.sampleRate, function (p) {
+      if (track.stem) track.stem.progress = p;
+      if (p - shown >= 0.01) { shown = p; self.onChange(); }
+    }, ac.signal).then(function (res) {
+      if (self.stemJob === job) self.stemJob = null;
+      if (track.buffer !== buf || !self.ctx) { track.stem = null; return; }        // it was let go of, or the set stopped, meanwhile
+      // where there is a voice, bar by bar, now from the stem rather than a guess from the stereo image
+      const a = track.analysis;
+      if (a && a.bars && a.barLen) a.lead = Analysis.vocalProfile(res.vocals, [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)], buf.sampleRate, a.downbeat, a.barLen, a.bars);
+      track.buffer = Engine.stemBuffer(self.ctx, buf, { inst: res.inst, vocals: res.vocals });
+      track.stem = { phase: "ready", progress: 1 };
+      self.note("Vocals separated in " + track.title + " (" + Math.round(res.seconds) + " s)");
+    }, function (err) {
+      if (self.stemJob === job) self.stemJob = null;
+      if (err && err.name === "AbortError") { track.stem = null; return; }
+      track.stem = { phase: "failed", progress: 0, error: err && err.message ? err.message : String(err) };
+      self.note("Could not separate the vocals in " + track.title + ": " + track.stem.error);
+    });
+  };
+
+  Player.prototype.stopStems = function () {
+    if (this.stemJob) { try { this.stemJob.abort.abort(); } catch (e) { /* ok */ } this.stemJob = null; }
+    if (typeof Separator !== "undefined" && Separator.cancelAll) Separator.cancelAll();
   };
 
   Player.prototype.scheduleNext = function (now, quick) {
@@ -242,7 +322,8 @@ var Player = (function () {
       this.ensureLoaded(next).catch(function () { self.loadFailed(next); });
       return false;
     }
-    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length, vox: !!this.mixer.voxOk };
+    if (Engine.hasStems(A.track) && !A.stemsLive && !this.paused && !this.session) A.useStems(now + 0.06);
+    const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length, vox: Engine.voxPolicy(this.mixer, A.track, next) && (!Engine.hasStems(A.track) || A.stemsLive) };
     const plan_ = function (opts) { return Brain.planTransition(Engine.infoOf(A.track), Engine.infoOf(next), opts); };
     const late = function (p) { return A.timeOfBar(p.startBar) < now + 0.3; };
     let plan;
@@ -300,6 +381,7 @@ var Player = (function () {
     }
     this.ensureNext();
     this.releaseUnused();
+    this.stemTick(now);
     const up = this.queue[0];
     if (up && !up.buffer && up.load && !up.loading) { this.ensureLoaded(up).catch(function () { self.loadFailed(up); }); }
     if (this.queue.length && !(this.cur.exit)) this.scheduleNext(now, false);
@@ -433,12 +515,13 @@ var Player = (function () {
     if (!this.ctx || !this.running) return null;
     const now = this.ctx.currentTime;
     const touch = this.touchable(now);
+    const ai = this.aiActive();
     const decks = this.voices.map(function (v) {
       const bar = v.barAt(now);
       return {
         voice: v, label: v.label, track: v.track, bar: bar, pos: v.tl.posAt(now), rate: v.tl.rateAt(now),
         bpm: Math.abs(v.tempoAt(now)), started: now >= v.t0, touch: !!touch.voice && touch.voice === v,
-        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: Engine.channelsOf(v.track) < 2 || (v.track.analysis && v.track.analysis.stereo === false) },
+        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: Engine.channelsOf(v.track) < 2 || (v.track.analysis && v.track.analysis.stereo === false), ai: ai, stem: v.track.stem || null, model: ai ? Separator.state() : null },
         eq: { low: v.low.gain.value, mid: v.mid.gain.value, high: v.high.gain.value },
         level: v.fader.gain.value,
         audible: now >= v.t0 && v.fader.gain.value > 0.02,

@@ -314,6 +314,55 @@ function makeStereoWav(seconds, bpm) {
   await page.click("#btn-go");
   await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
   check("stopping the set lets go of all of it", (await page.evaluate(() => window.__dj.player.library.filter((t) => t.buffer).length)) === 0);
+
+  // ---- AI vocal separation, with a stand-in for the model (the real one is tested on its own): the page asks for stems
+  //      for the track that is playing and the next one, hands them to the decks, and the vocal buttons then work
+  await page.evaluate(() => {
+    window.__sepOrig = window.Separator; window.__sepCalls = []; window.__sepState = { phase: "downloading", progress: 0.4 };
+    window.Separator = {
+      supported: () => true, state: () => window.__sepState, init: () => Promise.resolve(true), cancelAll() {},
+      separate(chans, sr, onProgress, signal) {
+        window.__sepCalls.push(chans.length + ":" + chans[0].length + ":" + sr);
+        return new Promise((res, rej) => {
+          let p = 0; const iv = setInterval(() => {
+            if (signal && signal.aborted) { clearInterval(iv); const e = new Error("aborted"); e.name = "AbortError"; rej(e); return; }
+            p += 0.25; onProgress(Math.min(1, p));
+            if (p >= 1) { clearInterval(iv); const mk = (a, g) => { const o = new Float32Array(a.length); for (let i = 0; i < a.length; i++) o[i] = a[i] * g; return o; }; const L = chans[0], R = chans[1] || chans[0]; res({ vocals: [mk(L, 0.25), mk(R, 0.25)], inst: [mk(L, 0.75), mk(R, 0.75)], seconds: 1 }); }
+          }, 100);
+        });
+      },
+    };
+  });
+  await page.click("#btn-go");
+  await page.waitForFunction(() => window.__dj.player.running && window.__dj.player.ctx.currentTime > 1.5, null, { timeout: 30000 });
+  await page.waitForTimeout(600);
+  const waitingModel = await page.evaluate(() => ({ disabled: document.querySelector("#deck-A .vox button[data-vox=cut]").disabled, note: document.querySelector("#deck-A .vox-note").textContent, calls: window.__sepCalls.length }));
+  check("while the AI model is still being fetched the vocal buttons wait and say so (no basic filter, no separation yet)", waitingModel.disabled && /AI model downloading 40%/.test(waitingModel.note) && waitingModel.calls === 0, JSON.stringify(waitingModel));
+  await page.evaluate(() => { window.__sepState = { phase: "ready", progress: 1 }; });
+  await page.waitForFunction(() => window.__dj.player.cur.track.stem && window.__dj.player.cur.track.stem.phase === "ready", null, { timeout: 20000 })
+    .then(() => check("the playing track is separated once the model is ready", true), () => check("the playing track is separated once the model is ready", false));
+  await page.waitForFunction(() => window.__dj.player.voices[0].stemsLive, null, { timeout: 5000 });
+  await page.waitForTimeout(400);
+  const sep1 = await page.evaluate(() => { const p = window.__dj.player, t = p.cur.track; return { ch: t.buffer.numberOfChannels, live: p.voices[0].stemsLive, btn: !document.querySelector("#deck-A .vox button[data-vox=cut]").disabled, note: document.querySelector("#deck-A .vox-note").textContent, calls: window.__sepCalls[0] }; });
+  check("the deck is handed the stems and the buttons come on", sep1.ch === 6 && sep1.live && sep1.btn && /AI split/.test(sep1.note) && /^1:\d+:44100$|^2:\d+:44100$/.test(sep1.calls), JSON.stringify(sep1));
+  await page.click('#deck-A .vox button[data-vox="cut"]');
+  await page.waitForTimeout(700);
+  const gains = await page.evaluate(() => { const g = window.__dj.player.voices[0].stemG; return { mix: g.mix.gain.value, inst: g.inst.gain.value, vox: g.vox.gain.value, mode: window.__dj.player.voices[0].voxMode }; });
+  check("No vocals plays the instrumental version of the deck", gains.mode === "cut" && gains.mix < 0.05 && gains.inst > 0.95 && gains.vox < 0.05, JSON.stringify(gains));
+  await page.click('#deck-A .vox button[data-vox="solo"]');
+  await page.waitForTimeout(700);
+  const gains2 = await page.evaluate(() => { const g = window.__dj.player.voices[0].stemG; return { mix: g.mix.gain.value, inst: g.inst.gain.value, vox: g.vox.gain.value }; });
+  check("Vocals only plays the vocal version", gains2.vox > 0.95 && gains2.inst < 0.05 && gains2.mix < 0.05, JSON.stringify(gains2));
+  await page.click('#deck-A .vox button[data-vox="off"]');
+  await page.waitForFunction(() => window.__dj.player.queue[0].stem && window.__dj.player.queue[0].stem.phase === "ready", null, { timeout: 20000 })
+    .then(() => check("the next track is separated too, one track at a time", true), () => check("the next track is separated too, one track at a time", false));
+  const sep2 = await page.evaluate(() => ({ calls: window.__sepCalls.length, held: window.__dj.player.library.filter((t) => t.buffer).length, six: window.__dj.player.library.filter((t) => t.buffer && t.buffer.numberOfChannels === 6).length }));
+  check("only the playing and the next track are held, both as stems", sep2.held === 2 && sep2.six === 2 && sep2.calls === 2, JSON.stringify(sep2));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
+  const sep3 = await page.evaluate(() => window.__dj.player.library.filter((t) => t.buffer || t.stem).length);
+  check("stopping the set lets go of the stems with the audio", sep3 === 0, String(sep3));
+  await page.evaluate(() => { window.Separator = window.__sepOrig; });
   // exporting a long queue would hold every track at once: it says so rather than crashing the tab
   await page.evaluate(() => { const p = window.__dj.player, base = p.library[0]; for (let i = 0; i < 12; i++) p.add(Object.assign({}, base, { id: 9000 + i, key: "fake-x" + i, title: "Long Mix Track " + i, buffer: null, duration: 1800, channels: 2, load: async () => { throw new Error("never"); } })); });
   await page.evaluate(() => document.getElementById("btn-export").click());              // (the Export card is collapsed)
@@ -770,6 +819,72 @@ function makeStereoWav(seconds, bpm) {
       R.rollback = { voice: db(bp(rb, 700, lateRb, lateRb + 2), bp(alone, 700, lateRb, lateRb + 2)), before: rb.modeBefore, after: rb.modeAfter };
     }
 
+    // 3d. separated tracks (stems): the same mix with its voice and its instruments handed over as separate stems.
+    //     The deck plays a six-channel buffer and only chooses between the versions, so these are exact.
+    {
+      const goertzel = (x, f, a, b) => { const w = 2 * Math.PI * f / sr; let re = 0, im = 0; for (let i = Math.floor(a * sr); i < Math.floor(b * sr); i++) { re += x[i] * Math.cos(w * i); im -= x[i] * Math.sin(w * i); } return Math.hypot(re, im) * 2 / ((b - a) * sr); };
+      const db = (a, b) => 20 * Math.log10((a + 1e-9) / (b + 1e-9));
+      const parts = (n) => {
+        const mk = () => new Float32Array(n), voice = [mk(), mk()], inst = [mk(), mk()], mix = [mk(), mk()];
+        for (let i = 0; i < n; i++) {
+          const t = i / sr, v = 0.12 * Math.sin(2 * Math.PI * 700 * t), b = 0.12 * Math.sin(2 * Math.PI * 55 * t);
+          const iL = b + 0.12 * Math.sin(2 * Math.PI * 330 * t), iR = b + 0.12 * Math.sin(2 * Math.PI * 440 * t);
+          voice[0][i] = voice[1][i] = v; inst[0][i] = iL; inst[1][i] = iR; mix[0][i] = v + iL; mix[1][i] = v + iR;
+        }
+        return { voice: voice, inst: inst, mix: mix };
+      };
+      const N = sr * 40, P = parts(N);
+      const plain = (ctx, ch) => { const buf = ctx.createBuffer(ch, N, sr); buf.copyToChannel(P.mix[0], 0); if (ch > 1) buf.copyToChannel(P.mix[1], 1); return { title: "plain", buffer: buf, duration: 40, shiftBeats: 0, analysis: Object.assign({}, analysis, { stereo: ch > 1 }) }; };
+      const separated = (ctx) => { const t = plain(ctx, 2); t.buffer = Engine.stemBuffer(ctx, t.buffer, { inst: P.inst, vocals: P.voice }); return t; };
+      async function run(build, steps, secs) {
+        const ctx = new OfflineAudioContext(2, sr * (secs || 10), sr), m = new Engine.Mixer(ctx, { offline: true, fx: false, filterFallback: false });
+        await m.init();
+        const t = build(ctx), v = m.firstVoice(t, 0.1, "A"), info = steps ? steps(m, v, t, ctx) : {};
+        const o = await ctx.startRendering();
+        return { l: o.getChannelData(0), r: o.getChannelData(1), v: v, info: info };
+      }
+      const lv = (r, a, b) => ({ voice: goertzel(r.l, 700, a, b), lead: goertzel(r.l, 330, a, b), pad: goertzel(r.r, 440, a, b), bass: goertzel(r.l, 55, a, b) });
+      const base = lv(await run(separated), 3, 6);
+      const cutR = await run(separated, (m, v) => v.setVox(0.5, "cut", 0.05)), soloR = await run(separated, (m, v) => v.setVox(0.5, "solo", 0.05));
+      const c = lv(cutR, 3, 6), so = lv(soloR, 3, 6);
+      R.stems = {
+        has: Engine.hasStems(separated(new OfflineAudioContext(1, 1, sr))), live: cutR.v.stemsLive, avail: cutR.v.voxAvailable(),
+        cut: { voice: db(c.voice, base.voice), lead: db(c.lead, base.lead), pad: db(c.pad, base.pad), bass: db(c.bass, base.bass) },
+        solo: { voice: db(so.voice, base.voice), lead: db(so.lead, base.lead), pad: db(so.pad, base.pad), bass: db(so.bass, base.bass) },
+      };
+      // the deck with no stems and the filter switched off may not offer the filter; with stems it is on
+      const noFilter = await run((ctx) => plain(ctx, 2));
+      R.stemsOff = { avail: noFilter.v.voxAvailable(), same: db(lv(noFilter, 3, 6).voice, base.voice) };
+      // a mono file is separated too (the stems are stereo)
+      const mono = await run((ctx) => { const t = plain(ctx, 1); t.buffer = Engine.stemBuffer(ctx, t.buffer, { inst: P.inst, vocals: P.voice }); return t; }, (m, v) => v.setVox(0.5, "cut", 0.05));
+      R.stemsMono = { voice: db(lv(mono, 3, 6).voice, base.voice), lead: db(lv(mono, 3, 6).lead, base.lead) };
+      // handing a deck that is already playing its stems: same sound, no click, and the buttons work after
+      const swap = await run((ctx) => plain(ctx, 2), (m, v, t, ctx) => { t.buffer = Engine.stemBuffer(ctx, t.buffer, { inst: P.inst, vocals: P.voice }); v.useStems(2); v.setVox(4, "cut", 0.05); return { live: v.stemsLive }; }, 8);
+      const steady = Math.max.apply(null, Array.from(swap.l.subarray(Math.floor(sr * 1), Math.floor(sr * 1.8))).map((x, i, a) => i ? Math.abs(x - a[i - 1]) : 0));
+      const around = Math.max.apply(null, Array.from(swap.l.subarray(Math.floor(sr * 1.95), Math.floor(sr * 2.15))).map((x, i, a) => i ? Math.abs(x - a[i - 1]) : 0));
+      R.stemsSwap = { live: swap.info.live, before: lv(swap, 1, 1.8), after: lv(swap, 2.3, 3.8), cut: lv(swap, 5, 7.5), steady: steady, around: around };
+      // a loop roll by hand on an instrumental deck stays instrumental
+      const roll = await run(separated, (m, v) => { v.setVox(0.5, "cut", 0.05); const beat = v.beatSec(3); m.rollNow(v, 3); return { beat: beat }; });
+      R.stemsRoll = { voice: db(lv(roll, 3.1, 3.1 + 0.9).voice, base.voice), lead: db(lv(roll, 3.1, 3.1 + 0.9).lead, base.lead) };
+      // a mashup with stems: the incoming vocal over the outgoing track, its instruments joining at the end
+      const sil = (ctx2) => ({ title: "silence", buffer: ctx2.createBuffer(2, sr * 40, sr), duration: 40, shiftBeats: 0, analysis: Object.assign({}, analysis, { stereo: true }) });
+      async function blend(extra, aT, bT) {
+        const c2 = new OfflineAudioContext(2, sr * 30, sr), m2 = new Engine.Mixer(c2, { offline: true, fx: false, filterFallback: false, settings: Settings.make({ autoFx: "off", fx: false, auto: false }) });
+        await m2.init();
+        const A = m2.firstVoice(aT(c2), 0.1, "A"), B = m2.scheduleTransition(A, bT(c2), Object.assign({}, blendPlan, extra), "B");
+        const x = (await c2.startRendering()); return { l: x.getChannelData(0), r: x.getChannelData(1), tStart: B.entry.tStart, tSwap: B.entry.tSwap };
+      }
+      const mash = await blend({ vox: { inn: "solo" } }, sil, separated), mid = mash.tStart + 0.35 * (mash.tSwap - mash.tStart), aft = mash.tSwap + 0.5;
+      const beat = 60 / analysis.bpm, at = (k) => mash.tSwap - k * beat;
+      R.stemsMash = { voiceDuring: lv(mash, mid, mid + 2).voice, leadDuring: lv(mash, mid, mid + 2).lead, voiceAfter: lv(mash, aft, aft + 2).voice, leadAfter: lv(mash, aft, aft + 2).lead, join: [2.6, 1.8, 1.2, 0.6].map((k) => lv(mash, at(k), at(k) + 0.2).lead) };
+      const clash = await blend({ vox: { out: "cut" } }, separated, sil), noClash = await blend({}, separated, sil), late = clash.tStart + 0.7 * (clash.tSwap - clash.tStart);
+      R.stemsClash = { voice: db(lv(clash, late, late + 2).voice, lv(noClash, late, late + 2).voice), lead: db(lv(clash, late, late + 2).lead, lv(noClash, late, late + 2).lead) };
+      // voxPolicy: with both tracks separated the planner may use vocal moves, with neither it may only if the filter is allowed
+      const fakeM = (ff, ok) => ({ filterFallback: ff, voxOk: ok });
+      const sepT = { buffer: { numberOfChannels: 6 } }, twoT = { buffer: { numberOfChannels: 2 } };
+      R.policy = { both: Engine.voxPolicy(fakeM(false, true), sepT, sepT), one: Engine.voxPolicy(fakeM(false, true), sepT, twoT), filterOn: Engine.voxPolicy(fakeM(true, true), twoT, twoT), noWorklet: Engine.voxPolicy(fakeM(true, false), twoT, twoT) };
+    }
+
     // 4. the pads by hand: a loop roll, a spinback and a vinyl brake each give the track back exactly on the beat
     async function playWith(fn) {
       const ctx = new OfflineAudioContext(2, sr * 10, sr), m = new Engine.Mixer(ctx, { offline: true, fx: false });
@@ -808,6 +923,17 @@ function makeStereoWav(seconds, bpm) {
   check("mashup: the incoming track comes in as vocals only, and its instruments are back after the swap", osc.mashup.voiceDuring > 8 * osc.mashup.leadDuring && osc.mashup.leadAfter > 0.5 * osc.mashup.voiceAfter && osc.mashup.leadDuring < 0.2 * osc.mashupPlain.leadDuring, JSON.stringify([osc.mashup, osc.mashupPlain]));
   check("mashup: the instruments join over the last two beats as a glide, not a step", osc.mashupJoin[0] < 0.1 * osc.mashupJoin[3] && osc.mashupJoin[1] > 1.15 * osc.mashupJoin[0] && osc.mashupJoin[2] > 1.15 * osc.mashupJoin[1] && osc.mashupJoin[3] > 1.15 * osc.mashupJoin[2], JSON.stringify(osc.mashupJoin));
   check("a mix that is called off takes its vocal move with it", Math.abs(osc.rollback.voice) < 1.5 && osc.rollback.before === "cut" && osc.rollback.after === "off", JSON.stringify(osc.rollback));
+  check("stems: a separated track is offered the vocal buttons, and plays all of its six channels as one", osc.stems.has && osc.stems.live && osc.stems.avail, JSON.stringify([osc.stems.has, osc.stems.live, osc.stems.avail]));
+  check("stems, No vocals: the voice is gone (40 dB or more) and the instruments are exactly as they were", osc.stems.cut.voice < -40 && Math.abs(osc.stems.cut.lead) < 0.5 && Math.abs(osc.stems.cut.pad) < 0.5 && Math.abs(osc.stems.cut.bass) < 0.5, JSON.stringify(osc.stems.cut));
+  check("stems, Vocals only: the instruments are gone (40 dB or more) and the voice is exactly as it was", osc.stems.solo.lead < -40 && osc.stems.solo.pad < -40 && osc.stems.solo.bass < -40 && Math.abs(osc.stems.solo.voice) < 0.5, JSON.stringify(osc.stems.solo));
+  check("a track that is not separated is not offered the basic filter when the page wants the AI one", osc.stemsOff.avail === false && Math.abs(osc.stemsOff.same) < 0.5, JSON.stringify(osc.stemsOff));
+  check("stems work for a mono file too", osc.stemsMono.voice < -40 && Math.abs(osc.stemsMono.lead) < 0.5, JSON.stringify(osc.stemsMono));
+  check("a deck that is already playing can be handed its stems without a click or a change of sound", osc.stemsSwap.live && Math.abs(20 * Math.log10(osc.stemsSwap.after.voice / osc.stemsSwap.before.voice)) < 0.2 && osc.stemsSwap.around < 1.6 * osc.stemsSwap.steady + 1e-6, JSON.stringify(osc.stemsSwap));
+  check("... and then No vocals works on it", osc.stemsSwap.cut.voice < 0.05 * osc.stemsSwap.before.voice && osc.stemsSwap.cut.lead > 0.8 * osc.stemsSwap.before.lead, JSON.stringify(osc.stemsSwap.cut));
+  check("a loop roll on an instrumental deck stays instrumental", osc.stemsRoll.voice < -30 && Math.abs(osc.stemsRoll.lead) < 1.5, JSON.stringify(osc.stemsRoll));
+  check("stems, mashup: only the incoming vocal during the blend, instruments back after the swap, joining as a glide", osc.stemsMash.voiceDuring > 8 * osc.stemsMash.leadDuring && osc.stemsMash.leadAfter > 0.5 * osc.stemsMash.voiceAfter && osc.stemsMash.join[0] < 0.1 * osc.stemsMash.join[3] && osc.stemsMash.join[1] > 1.15 * osc.stemsMash.join[0] && osc.stemsMash.join[2] > 1.15 * osc.stemsMash.join[1] && osc.stemsMash.join[3] > 1.15 * osc.stemsMash.join[2], JSON.stringify(osc.stemsMash));
+  check("stems, clashing vocals: the outgoing vocal is taken out of the blend and its instruments are not", osc.stemsClash.voice < -30 && Math.abs(osc.stemsClash.lead) < 2, JSON.stringify(osc.stemsClash));
+  check("planner: vocal moves need both tracks separated, or the basic filter to be allowed", osc.policy.both && !osc.policy.one && osc.policy.filterOn && !osc.policy.noWorklet, JSON.stringify(osc.policy));
   check("clashing vocals: the outgoing track's vocal is taken out of the blend and its instruments are not", osc.clash.voice < -12 && Math.abs(osc.clash.lead) < 4, JSON.stringify(osc.clash));
   check("the vocal stage delays decks and effects alike, so a hit still lands on its beat (within a millisecond)", Math.abs(osc.voxTiming.deck - osc.voxTiming.fx) < 0.001, JSON.stringify(osc.voxTiming));        // (both also carry the master compressor's look-ahead)
   check("roll pad: the roll repeats the beat, and the track is back on the beat afterwards", osc.roll.repeat > 0.85 && osc.roll.baseRepeat < 0.6 && osc.roll.aligned < 2.5 && osc.roll.rmsAfter > 0.9 * osc.roll.rmsBase, JSON.stringify(osc.roll));
