@@ -1,0 +1,14 @@
+{
+  "name": "autopilot-dj-separator-build",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Build tooling for the in-browser htdemucs vocal separator. Not shipped: the output is committed under dj/vendor/separator and dj/models/htdemucs. See README.md.",
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "onnxruntime-web": "1.23.0"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "1.23.0"
+  }
+}

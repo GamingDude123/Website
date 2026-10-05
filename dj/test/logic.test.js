@@ -344,6 +344,13 @@ function check(name, cond, extra) {
     check("stereo profile: a stereo file is stereo, a copy of mono in two channels is not, and one channel is not", wide.stereo && !mono.stereo && !one.stereo, [wide.width, mono.width].map((x) => x.toFixed(2)).join(" / "));
     const odd = [1, 3, 5, 7].map((b) => wide.lead[b]), even = [0, 2, 4, 6].map((b) => wide.lead[b]);
     check("stereo profile: bars with a centred voice score clearly higher than bars of stereo pads alone", Math.min.apply(null, odd) > 0.5 && Math.max.apply(null, even) < 0.45, odd.map((x) => x.toFixed(2)).join(" ") + " vs " + even.map((x) => x.toFixed(2)).join(" "));
+    // from a separated vocal stem: bars with a voice score high, bars without score zero, whatever the stereo image
+    {
+      const V = new Float32Array(n), MX = new Float32Array(n);
+      for (let i = 0; i < n; i++) { const t = i / sr, bar = Math.floor(t / barLen), v = bar % 2 === 1 ? 0.15 * Math.sin(2 * Math.PI * 500 * t) : 0; V[i] = v; MX[i] = v + 0.4 * Math.sin(2 * Math.PI * 100 * t) + 0.2 * Math.sin(2 * Math.PI * 1500 * t); }
+      const vp = Analysis.vocalProfile([V, V], [MX, MX], sr, 0, barLen, bars);
+      check("vocal profile: bars with a voice in the stem score high, bars without score zero", [1, 3, 5, 7].every((b) => vp[b] > 0.5) && [0, 2, 4, 6].every((b) => vp[b] === 0), Array.from(vp).map((x) => x.toFixed(2)).join(" "));
+    }
     // wide uncorrelated sound at full level, and a mono sub-bass on its own, are not a vocal or a lead
     const nz = (seed) => { let x = seed; return () => { x = (x * 1664525 + 1013904223) % 4294967296; return x / 4294967296 - 0.5; }; };
     const rl = nz(7), rr = nz(99), WL = new Float32Array(n), WR = new Float32Array(n), BL = new Float32Array(n);
@@ -376,6 +383,7 @@ function check(name, cond, extra) {
       for (let i = 0; i < 60; i++) { const p = Brain.planTransition(mkv("O" + i, 0.1, true), mkv("I" + i, 0.8, true), { settings: S({ tricks: true, voxAuto: false }), index: i }); if (p.vox && p.vox.inn === "solo") mashes++; }
       check("vocal tools: mashups belong to Creative moves, not to the clash remover setting", mashes > 5, mashes);
     }
+    check("vocal tools: a mono track that has been separated by the AI is not left out", !!Brain.planTransition(Object.assign(mkv("O", 0.8, false), { stems: true }), Object.assign(mkv("I", 0.8, false), { stems: true }), { settings: S() }).vox);
     check("vocal tools: a mono track is never touched", !Brain.planTransition(mkv("O", 0.8, false), mkv("I", 0.8, true), { settings: S() }).vox && !Brain.planTransition(mkv("O", 0.8, true), mkv("I", 0.8, false), { settings: S() }).vox);
     check("vocal tools: tracks analysed before this existed (no lead) are left alone", !Brain.planTransition(Object.assign(mkv("O", 0.8, true), { lead: undefined }), mkv("I", 0.8, true), { settings: S() }).vox);
   }

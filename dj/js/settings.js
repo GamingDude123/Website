@@ -27,6 +27,7 @@ var Settings = (function () {
     brakes: true,              // vinyl brakes and spinbacks as ways out
     autoFx: "subtle",          // off | subtle | lively | wild — sound effects the DJ drops in on its own, mid-track
     voxAuto: true,             // take the outgoing vocals out of a blend when both tracks have one there
+    aiVocals: true,            // split tracks into vocals and instrumental with the AI model (where the browser can run it)
     tricks: true,              // the more creative moves: filter swaps, stutter cuts, vocal mashups
     sweeps: true,              // soft crashes and downlifters
     echoAmount: 55,            // 0-100
@@ -78,7 +79,7 @@ var Settings = (function () {
     wKey: [0, 100, 1], wTempo: [0, 100, 1], wEnergy: [0, 100, 1],
     flair: [0, 100, 1], echoAmount: [0, 100, 1], reverbAmount: [0, 100, 1],
   };
-  const BOOLS = ["rolls", "risers", "impacts", "echoThrows", "brakes", "voxAuto", "tricks", "sweeps", "auto", "levelMatch", "endless", "fx"];
+  const BOOLS = ["rolls", "risers", "impacts", "echoThrows", "brakes", "voxAuto", "aiVocals", "tricks", "sweeps", "auto", "levelMatch", "endless", "fx"];
 
   function num(v, lo, hi, step, fallback) {
     v = typeof v === "string" ? parseFloat(v) : v;
@@ -112,7 +113,7 @@ var Settings = (function () {
 
   // Which preset these settings are exactly, or "custom". Output toggles that
   // are not part of a personality (endless, fx, level match) are ignored.
-  const PERSONALITY = Object.keys(DEFAULTS).filter(function (k) { return ["endless", "fx", "levelMatch", "auto"].indexOf(k) < 0; });
+  const PERSONALITY = Object.keys(DEFAULTS).filter(function (k) { return ["endless", "fx", "levelMatch", "auto", "aiVocals"].indexOf(k) < 0; });
   function presetOf(s) {
     for (const id of Object.keys(PRESETS)) {
       const p = make(PRESETS[id].values);

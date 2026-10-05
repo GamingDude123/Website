@@ -573,6 +573,24 @@ var Analysis = (function () {
     return out;
   }
 
+  // Per bar, how much of the mix is a voice, from a separated vocal stem (the AI model's, which knows what a
+  // voice is, so this is far better than stereoProfile's guess from what is in the middle): 0 for an
+  // instrumental bar, up to 1 where the voice is a fifth or more of the loudness. Same shape as stereoProfile's `lead`.
+  function vocalProfile(vocals, mix, sampleRate, downbeat, barLen, bars) {
+    const lead = new Float32Array(bars), ev = new Float64Array(bars), em = new Float64Array(bars);
+    const n = Math.min(vocals[0].length, mix[0].length), V = vocals, M = mix, ch = Math.min(V.length, M.length);
+    for (let i = 0; i < n; i += 2) {
+      const bar = Math.floor((i / sampleRate - downbeat) / barLen);
+      if (bar < 0 || bar >= bars) continue;
+      for (let c = 0; c < ch; c++) { ev[bar] += V[c][i] * V[c][i]; em[bar] += M[c][i] * M[c][i]; }
+    }
+    for (let b = 0; b < bars; b++) {
+      const ratio = Math.sqrt(ev[b] / (em[b] + 1e-12));
+      lead[b] = Math.max(0, Math.min(1, (ratio - 0.04) / 0.2));
+    }
+    return lead;
+  }
+
   // ------------------------------------------------------------------ driver
 
   async function analyze(samples, sampleRate, opts) {
@@ -658,6 +676,7 @@ var Analysis = (function () {
   return {
     analyze: analyze,
     stereoProfile: stereoProfile,
+    vocalProfile: vocalProfile,
     toMono: toMono,
     camelot: camelot,
     NOTE_NAMES: NOTE_NAMES,
