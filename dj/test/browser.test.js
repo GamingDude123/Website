@@ -268,8 +268,11 @@ function makeStereoWav(seconds, bpm) {
   await page.reload();
   await page.evaluate(() => window.__dj.restored);
   const back = await page.evaluate(() => { const p = window.__dj.player, byTitle = (n) => p.library.find((t) => t.title === n); const w = byTitle("Four On The Floor"), c = byTitle("Chrome Hearts");
-    return { n: p.library.length, titles: p.library.map((t) => t.title), wav: w && { artist: w.artist, bpm: w.analysis.bpm, dur: w.duration, decoded: w.buffer.length > 0, peaks: w.peaks.length }, key: c && c.keyOverride, shift: c && c.shiftBeats, first: p.queue[0] && p.queue[0].title, queued: p.queue.length }; });
-  check("after a refresh every file is back", back.n === 5 && back.wav && back.wav.decoded, JSON.stringify(back.titles));
+    return { n: p.library.length, titles: p.library.map((t) => t.title), wav: w && { artist: w.artist, bpm: w.analysis.bpm, dur: w.duration, decoded: !!w.buffer, peaks: w.peaks.length, channels: w.channels, lazy: typeof w.load === "function" }, key: c && c.keyOverride, shift: c && c.shiftBeats, first: p.queue[0] && p.queue[0].title, queued: p.queue.length }; });
+  check("after a refresh every file is back", back.n === 5 && back.wav, JSON.stringify(back.titles));
+  check("... without being decoded again: only its analysis, waveform and length are kept until it is needed", back.wav && !back.wav.decoded && back.wav.lazy && back.wav.peaks === 900 && back.wav.channels >= 1, JSON.stringify(back.wav));
+  const lazyLoad = await page.evaluate(async () => { const p = window.__dj.player, w = p.library.find((t) => t.title === "Four On The Floor"); await p.ensureLoaded(w); const r = { len: w.buffer.length, dur: w.buffer.duration }; p.releaseUnused(); r.after = !!w.buffer; return r; });
+  check("a saved file is decoded from its saved copy when it is needed, and let go of when nothing is using it", lazyLoad.len > 0 && Math.abs(lazyLoad.dur - 40) < 0.1 && lazyLoad.after === false, JSON.stringify(lazyLoad));
   check("a file you added comes back with its artist, tempo and length", back.wav && back.wav.artist === "Test Artist" && Math.abs(back.wav.bpm - 124) < 1.5 && Math.abs(back.wav.dur - 40) < 0.1, JSON.stringify(back.wav));
   check("the key and downbeat fixes you made come back", back.key === "5A" && back.shift === 1, back.key + " / " + back.shift);
   check("the queue order comes back, and everything is queued", back.first === "Neon Static" && back.queued === 5, back.first + " / " + back.queued);
@@ -290,6 +293,36 @@ function makeStereoWav(seconds, bpm) {
   await page.reload();
   await page.evaluate(() => window.__dj.restored);
   check("Remove all really empties the saved library", (await page.evaluate(() => window.__dj.player.library.length)) === 0);
+
+  // ---- decoded audio is kept only for the track that is playing and the next one
+  const lazyFiles = [];
+  for (let i = 0; i < 5; i++) { const f = path.join(OUT, "Lazy Artist - Lazy Song " + i + ".wav"); fs.writeFileSync(f, makeWav(40, 118 + 2 * i)); lazyFiles.push(f); }
+  await page.setInputFiles("#file-in", lazyFiles);
+  await page.waitForFunction(() => window.__dj.player.library.length === 5 && !window.__dj.loading.length, null, { timeout: 90000 });
+  await page.waitForTimeout(300);
+  const lz0 = await page.evaluate(() => ({ held: window.__dj.player.library.filter((t) => t.buffer).length, stat: document.getElementById("lib-stat").textContent }));
+  check("tracks that are added are not kept decoded: nothing is held in memory", lz0.held === 0 && /\b0 MB in memory/.test(lz0.stat), JSON.stringify(lz0));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => window.__dj.player.running && window.__dj.player.ctx.currentTime > 1.5, null, { timeout: 30000 });
+  await page.waitForFunction(() => { const p = window.__dj.player; return p.queue[0] && p.queue[0].buffer; }, null, { timeout: 15000 })
+    .then(() => check("the track that is next is decoded ahead of time", true), () => check("the track that is next is decoded ahead of time", false));
+  const lz1 = await page.evaluate(() => { const p = window.__dj.player; return { held: p.library.filter((t) => t.buffer).length, cur: !!p.cur.track.buffer, next: !!p.queue[0].buffer, rest: p.queue.slice(1).filter((t) => t.buffer).length, btn: document.getElementById("btn-go").textContent }; });
+  check("only the track that is playing and the next one are in memory", lz1.held === 2 && lz1.cur && lz1.next && lz1.rest === 0 && /Stop/.test(lz1.btn), JSON.stringify(lz1));
+  await page.evaluate(() => { const p = window.__dj.player, q = p.queue.slice(); p.queue = [q[2], q[1], q[0], q[3]]; p.onChange(); });
+  await page.waitForFunction(() => { const p = window.__dj.player; return p.queue[0].buffer && p.library.filter((t) => t.buffer).length === 2; }, null, { timeout: 15000 })
+    .then(() => check("when the queue is reordered the new next track is decoded and the old one let go", true), async () => check("when the queue is reordered the new next track is decoded and the old one let go", false, JSON.stringify(await page.evaluate(() => window.__dj.player.library.map((t) => !!t.buffer)))));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
+  check("stopping the set lets go of all of it", (await page.evaluate(() => window.__dj.player.library.filter((t) => t.buffer).length)) === 0);
+  // exporting a long queue would hold every track at once: it says so rather than crashing the tab
+  await page.evaluate(() => { const p = window.__dj.player, base = p.library[0]; for (let i = 0; i < 12; i++) p.add(Object.assign({}, base, { id: 9000 + i, key: "fake-x" + i, title: "Long Mix Track " + i, buffer: null, duration: 1800, channels: 2, load: async () => { throw new Error("never"); } })); });
+  await page.click("#btn-export");
+  await page.waitForFunction(() => /holds all of its tracks in memory at once/.test(window.__dj.player.log.map((l) => l.text).join(" | ")), null, { timeout: 5000 })
+    .then(() => check("export of a queue too big for memory says so and stops", true), () => check("export of a queue too big for memory says so and stops", false));
+  await page.evaluate(() => { const p = window.__dj.player; p.library = p.library.filter((t) => !/^fake-x/.test(t.key)); p.queue = p.queue.filter((t) => !/^fake-x/.test(t.key)); p.onChange(); });
+  await page.click("#btn-clear"); await page.click("#btn-clear");
+  await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
+  await page.waitForTimeout(400);
   await page.click("#btn-demo");
   await page.waitForFunction(() => document.querySelectorAll("#tracks .trk .edit").length >= 4, null, { timeout: 120000 });
 
@@ -399,7 +432,7 @@ function makeStereoWav(seconds, bpm) {
   await page.waitForTimeout(200);
 
   // ---- Remove all while files are still being added drops them; Stop adding keeps what is there; two batches at once lose
-  //      nothing; and the library holds 50 tracks
+  //      nothing; and the library holds 150 tracks
   const many = [];
   for (let i = 0; i < 10; i++) { const f = path.join(OUT, "Batch Artist - Song " + i + ".wav"); fs.writeFileSync(f, makeWav(120, 118 + i)); many.push(f); }
   const settle = () => page.waitForFunction(() => !window.__dj.loading.length && document.getElementById("btn-stop").hidden, null, { timeout: 90000 });
@@ -440,13 +473,13 @@ function makeStereoWav(seconds, bpm) {
   await settle();
   await page.click("#btn-clear"); await page.click("#btn-clear");
   await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });
-  await page.evaluate(() => { const p = window.__dj.player; for (let i = 0; i < 48; i++) p.add({ id: 7000 + i, key: "fake-l" + i, title: "Limit Track " + i, artist: "A", buffer: { length: 10, numberOfChannels: 1, duration: 1 }, analysis: { bpm: 120, key: { camelot: "8A", name: "A" }, energy: 5, loudnessDb: -12, bars: 8, sections: [], cues: {} }, peaks: new Float32Array(4), fine: new Float32Array(4), duration: 1, keyOverride: null, shiftBeats: 0 }); });
+  await page.evaluate(() => { const p = window.__dj.player; for (let i = 0; i < 148; i++) p.add({ id: 7000 + i, key: "fake-l" + i, title: "Limit Track " + i, artist: "A", buffer: { length: 10, numberOfChannels: 1, duration: 1 }, analysis: { bpm: 120, key: { camelot: "8A", name: "A" }, energy: 5, loudnessDb: -12, bars: 8, sections: [], cues: {} }, peaks: new Float32Array(4), fine: new Float32Array(4), duration: 1, keyOverride: null, shiftBeats: 0 }); });
   await page.setInputFiles("#file-in", many.slice(0, 4));
-  await page.waitForFunction(() => window.__dj.player.library.length === 50, null, { timeout: 90000 });
+  await page.waitForFunction(() => window.__dj.player.library.length === 150, null, { timeout: 90000 });
   await settle();
   await page.waitForTimeout(300);
   const limited = await page.evaluate(() => ({ lib: window.__dj.player.library.length, note: window.__dj.player.log.map((l) => l.text).join(" | "), stat: document.getElementById("lib-stat").textContent }));
-  check("the library holds 50 tracks and says why the rest were not added", limited.lib === 50 && /holds up to 50 tracks/.test(limited.note) && /\(the limit\)/.test(limited.stat), JSON.stringify([limited.lib, limited.stat]));
+  check("the library holds 150 tracks and says why the rest were not added", limited.lib === 150 && /holds up to 150 tracks/.test(limited.note) && /\(the limit\)/.test(limited.stat), JSON.stringify([limited.lib, limited.stat]));
   await page.click("#btn-hide");                                                     // an explicit Show ...
   await page.click("#btn-clear"); await page.click("#btn-clear");                    // ... must not outlive Remove all
   await page.waitForFunction(() => window.__dj.player.library.length === 0, null, { timeout: 5000 });

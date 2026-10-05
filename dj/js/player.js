@@ -17,6 +17,7 @@ var Player = (function () {
   function Player(opts) {
     opts = opts || {};
     this.library = [];
+    this.pinned = [];                      // tracks whose audio must stay while something (an export) is using it
     this.queue = [];
     this.history = [];
     this.voices = [];
@@ -97,14 +98,22 @@ var Player = (function () {
   Player.prototype.start = async function () {
     if (this.running || this.starting || !this.queue.length) return;
     this.starting = true;                                // (the set is only running once the audio is ready)
+    this.onChange();
     const Ctor = window.AudioContext || window.webkitAudioContext;
+    let first = null;
     try {
       this.ctx = new Ctor({ latencyHint: "playback" });
       await this.ctx.resume();
       this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
       await this.mixer.init();
+      // the first track's audio is decoded now (only the ones playing or next up are kept decoded)
+      while (this.queue.length && !first) {
+        const cand = this.queue[0];
+        try { await this.ensureLoaded(cand); first = this.queue.shift(); }
+        catch (err) { this.loadFailed(cand); }
+      }
     } finally { this.starting = false; }
-    const first = this.queue.shift();
+    if (!first) { this.ctx.close(); this.ctx = null; this.mixer = null; this.onChange(); return; }
     this.history.push(first);
     this.cur = this.mixer.firstVoice(first, this.ctx.currentTime + 0.2, "A");
     this.voices = [this.cur];
@@ -123,6 +132,7 @@ var Player = (function () {
     if (this.ctx) { this.ctx.close(); this.ctx = null; }
     this.voices = []; this.cur = null; this.mixer = null;
     this.gen++;
+    this.library.forEach(function (t) { if (t.load) t.buffer = null; });
     this.session = null; this.paused = false; this.pausing = false; this.wantToggle = false; this.brakeState = null;
     this.onChange();
   };
@@ -195,10 +205,43 @@ var Player = (function () {
     if (best) this.queue.push(best);
   };
 
+  // ------------------------------------------------- decoded audio, only where it is needed
+  //
+  // Five minutes of stereo is about 100 MB once decoded, so a library of a hundred tracks could never
+  // be held whole. A track with a `load` function keeps its audio only while a deck is playing it or it
+  // is next in the queue (see releaseUnused); the analysis, peaks and length stay for good.
+
+  Player.prototype.ensureLoaded = function (track) {
+    if (track.buffer || !track.load) return Promise.resolve(track.buffer);
+    if (!track.loading) {
+      const self = this;
+      track.loading = track.load().then(function (buf) {
+        track.buffer = buf; track.loading = null; self.onChange(); return buf;
+      }, function (err) { track.loading = null; throw err; });
+    }
+    return track.loading;
+  };
+
+  Player.prototype.loadFailed = function (track) {
+    this.queue = this.queue.filter(function (t) { return t !== track; });
+    this.note("Could not read " + track.title + " again, so it is left out of the queue (its file may have been moved or the saved copy removed)");
+  };
+
+  // drop the audio of every track that no deck is playing and that is not about to be
+  Player.prototype.releaseUnused = function () {
+    const keep = this.voices.map(function (v) { return v.track; }).concat(this.queue.slice(0, 2), this.pinned);
+    this.library.forEach(function (t) { if (t.load && t.buffer && keep.indexOf(t) < 0) t.buffer = null; });
+  };
+
   Player.prototype.scheduleNext = function (now, quick) {
     const A = this.cur, ctx = this.ctx;
     const next = this.queue[0];
     if (!next) return false;
+    if (!next.buffer) {                                  // not decoded yet: it is on its way (see tick), and this is tried again
+      const self = this;
+      this.ensureLoaded(next).catch(function () { self.loadFailed(next); });
+      return false;
+    }
     const base = { entryBar: A.entryBar, settings: this.settings, index: this.history.length, vox: !!this.mixer.voxOk };
     const plan_ = function (opts) { return Brain.planTransition(Engine.infoOf(A.track), Engine.infoOf(next), opts); };
     const late = function (p) { return A.timeOfBar(p.startBar) < now + 0.3; };
@@ -256,13 +299,16 @@ var Player = (function () {
       else { this.onChange(); return; }
     }
     this.ensureNext();
+    this.releaseUnused();
+    const up = this.queue[0];
+    if (up && !up.buffer && up.load && !up.loading) { this.ensureLoaded(up).catch(function () { self.loadFailed(up); }); }
     if (this.queue.length && !(this.cur.exit)) this.scheduleNext(now, false);
     // automatic effects for the deck that is playing
     const playing = this.voices.filter(function (v) { return now >= v.t0; }).pop();
     if (playing) this.mixer.autoFxTick(playing, now);
-    const track = this.cur.track;
-    if (this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(track.buffer.duration) + 0.5) { this.hardCut(now); this.onChange(); return; }
-    if (!this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(track.buffer.duration) + 0.5) { this.note("End of set"); this.stop(); return; }
+    const dur = Engine.durationOf(this.cur.track);
+    if (this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(dur) + 0.5) { if (this.queue[0].buffer) { this.hardCut(now); this.onChange(); } return; }     // (if the next one is still being decoded it starts as soon as it is)
+    if (!this.queue.length && !this.cur.exit && now > this.cur.tl.timeAtPos(dur) + 0.5) { this.note("End of set"); this.stop(); return; }
     this.onChange();
   };
 
@@ -384,7 +430,7 @@ var Player = (function () {
 
   // What the UI needs to draw a frame.
   Player.prototype.snapshot = function () {
-    if (!this.ctx) return null;
+    if (!this.ctx || !this.running) return null;
     const now = this.ctx.currentTime;
     const touch = this.touchable(now);
     const decks = this.voices.map(function (v) {
@@ -392,7 +438,7 @@ var Player = (function () {
       return {
         voice: v, label: v.label, track: v.track, bar: bar, pos: v.tl.posAt(now), rate: v.tl.rateAt(now),
         bpm: Math.abs(v.tempoAt(now)), started: now >= v.t0, touch: !!touch.voice && touch.voice === v,
-        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: v.track.buffer.numberOfChannels < 2 || (v.track.analysis && v.track.analysis.stereo === false) },
+        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: Engine.channelsOf(v.track) < 2 || (v.track.analysis && v.track.analysis.stereo === false) },
         eq: { low: v.low.gain.value, mid: v.mid.gain.value, high: v.high.gain.value },
         level: v.fader.gain.value,
         audible: now >= v.t0 && v.fader.gain.value > 0.02,
@@ -463,7 +509,7 @@ var Player = (function () {
     if (!hit.voice || hit.voice.label !== label) return false;
     if (hit.unschedule) { this.unschedule(now); this.note("Took the planned mix back — deck " + label + " was moved"); }
     const v = hit.voice, t = this.ctx.currentTime + 0.02;
-    const pos = v.tl.posAt(t), dur = v.track.buffer.duration;
+    const pos = v.tl.posAt(t), dur = Engine.durationOf(v.track);
     const target = Math.max(0, Math.min(dur - 0.5, pos + bars * v.grid.barLen));
     if (Math.abs(target - pos) < 0.05) return false;
     v.seek(t, target);

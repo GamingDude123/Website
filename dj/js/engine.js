@@ -89,6 +89,11 @@ var Engine = (function () {
     };
   }
 
+  // A track's length and channel count are known without its audio being in memory
+  // (the page keeps decoded audio only for tracks that are playing or next up).
+  function durationOf(track) { return track.duration != null ? track.duration : track.buffer.duration; }
+  function channelsOf(track) { return track.channels != null ? track.channels : track.buffer.numberOfChannels; }
+
   function replayGain(track, settings) {
     if (settings && settings.levelMatch === false) return 1;
     return Math.max(0.3, Math.min(2.5, db(TARGET_DB - track.analysis.loudnessDb)));
@@ -295,7 +300,7 @@ var Engine = (function () {
   // Is the vocal remover available for this deck (a stereo track, in a browser with worklets)?
   Voice.prototype.voxAvailable = function () {
     const a = this.track.analysis;
-    return !!this.mixer.voxOk && this.track.buffer.numberOfChannels >= 2 && !(a && a.stereo === false);
+    return !!this.mixer.voxOk && channelsOf(this.track) >= 2 && !(a && a.stereo === false);
   };
 
   // The worklet for this deck, made the first time it is needed.
@@ -915,7 +920,7 @@ var Engine = (function () {
     }
     voices.forEach(function (v) { const r = this.autoFxRange(v); this.scheduleAutoFx(v, r.min, r.max + 1); }, this);
     const last = voices[voices.length - 1];
-    const end = last.tl.timeAtPos(Math.min(last.track.buffer.duration, last.barTime(last.track.analysis.bars)));
+    const end = last.tl.timeAtPos(Math.min(durationOf(last.track), last.barTime(last.track.analysis.bars)));
     return { voices: voices, plans: plans, end: end };
   };
 
@@ -939,7 +944,7 @@ var Engine = (function () {
 
   return {
     Mixer: Mixer, Voice: Voice, renderSet: renderSet, reversedWindow: reversedWindow, loadVox: loadVox, VOX_N: VOX_N,
-    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn,
+    gridOf: gridOf, infoOf: infoOf, replayGain: replayGain, fadeIn: fadeIn, durationOf: durationOf, channelsOf: channelsOf,
     LOOKAHEAD: LOOKAHEAD, KILL: KILL, BRAKE: BRAKE, SPINUP: SPINUP,
   };
 })();

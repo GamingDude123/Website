@@ -57,6 +57,7 @@ var Store = (function () {
       return (rows || []).filter(function (r) { return r && r.key; }).sort(function (a, b) { return (a.added || 0) - (b.added || 0); });
     });
   }
+  function get(key) { return run("readonly", function (s) { return s.get(key); }); }
   function put(rec) { return run("readwrite", function (s) { return s.put(rec); }); }
   function remove(key) { return run("readwrite", function (s) { return s.delete(key); }); }
 
@@ -87,7 +88,7 @@ var Store = (function () {
     return Promise.resolve(null);
   }
 
-  return { newKey: newKey, all: all, put: put, patch: patch, remove: remove, clear: clear, keep: keep, usage: usage };
+  return { newKey: newKey, all: all, get: get, put: put, patch: patch, remove: remove, clear: clear, keep: keep, usage: usage };
 })();
 
 if (typeof module !== "undefined" && module.exports) module.exports = Store;
