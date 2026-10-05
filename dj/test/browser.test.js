@@ -77,6 +77,7 @@ function makeStereoWav(seconds, bpm) {
     args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required"],
   });
   const page = await browser.newPage({ viewport: { width: 1100, height: 1300 } });
+  await page.addInitScript(() => { try { Object.defineProperty(navigator, "gpu", { get: () => undefined, configurable: true }); } catch (e) { /* ok */ } });     // the AI vocal model is only used where a test stands one in
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("console", (m) => {
@@ -318,9 +319,9 @@ function makeStereoWav(seconds, bpm) {
   // ---- AI vocal separation, with a stand-in for the model (the real one is tested on its own): the page asks for stems
   //      for the track that is playing and the next one, hands them to the decks, and the vocal buttons then work
   await page.evaluate(() => {
-    window.__sepOrig = window.Separator; window.__sepCalls = []; window.__sepState = { phase: "downloading", progress: 0.4 };
+    window.__sepOrig = window.Separator; window.__sepCalls = []; window.__sepInitCount = 0; window.__sepState = { phase: "downloading", progress: 0.4 };
     window.Separator = {
-      supported: () => true, state: () => window.__sepState, init: () => Promise.resolve(true), cancelAll() {},
+      supported: () => true, state: () => window.__sepState, init: () => { window.__sepInitCount++; return Promise.resolve(true); }, cancelAll() {},
       separate(chans, sr, onProgress, signal) {
         window.__sepCalls.push(chans.length + ":" + chans[0].length + ":" + sr);
         return new Promise((res, rej) => {
@@ -362,6 +363,25 @@ function makeStereoWav(seconds, bpm) {
   await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
   const sep3 = await page.evaluate(() => window.__dj.player.library.filter((t) => t.buffer || t.stem).length);
   check("stopping the set lets go of the stems with the audio", sep3 === 0, String(sep3));
+  // a set with nothing the AI could split (the demos are synthetic): the model is not even fetched, and the buttons say why
+  await page.evaluate(async () => {
+    const p = window.__dj.player, base = p.library[0]; await p.ensureLoaded(base);
+    const mk = (i) => Object.assign({}, base, { id: 9500 + i, key: "fake-d" + i, title: "Demo-like " + i, load: null, loading: null, stem: null });
+    const a = mk(1), b = mk(2); p.library.push(a, b); p.queue = [a, b]; p.onChange(); window.__sepInit0 = window.__sepInitCount;
+  });
+  await page.click("#btn-go");
+  await page.waitForFunction(() => window.__dj.player.running && window.__dj.player.ctx.currentTime > 1.5, null, { timeout: 30000 });
+  await page.waitForTimeout(900);
+  const nodemo = await page.evaluate(() => ({ init: window.__sepInitCount - window.__sepInit0, note: document.querySelector("#deck-A .vox-note").textContent, title: document.querySelector("#deck-A .vox").title }));
+  check("a set with nothing the AI could split does not fetch the model, and the buttons say why instead of 'waiting'", nodemo.init === 0 && !/waiting|downloading|splitting/.test(nodemo.note) && /files you add/.test(nodemo.title), JSON.stringify(nodemo));
+  await page.click("#btn-go");
+  await page.waitForFunction(() => document.getElementById("btn-go").textContent.indexOf("Start") >= 0, null, { timeout: 5000 });
+  await page.evaluate(() => { const p = window.__dj.player; p.library = p.library.filter((t) => !/^fake-d/.test(t.key)); p.queue = p.queue.filter((t) => !/^fake-d/.test(t.key)); p.onChange(); });
+  // choosing a vibe does not switch AI vocal separation back on
+  await page.evaluate(() => { const p = window.__dj.player; p.setSettings(Object.assign({}, p.settings, { aiVocals: false })); });
+  await page.click("[data-vibe]");
+  check("choosing a vibe keeps the AI vocal separation setting as it was", (await page.evaluate(() => window.__dj.player.settings.aiVocals)) === false);
+  await page.evaluate(() => { const p = window.__dj.player; p.setSettings(Object.assign({}, p.settings, { aiVocals: true })); });
   await page.evaluate(() => { window.Separator = window.__sepOrig; });
   // exporting a long queue would hold every track at once: it says so rather than crashing the tab
   await page.evaluate(() => { const p = window.__dj.player, base = p.library[0]; for (let i = 0; i < 12; i++) p.add(Object.assign({}, base, { id: 9000 + i, key: "fake-x" + i, title: "Long Mix Track " + i, buffer: null, duration: 1800, channels: 2, load: async () => { throw new Error("never"); } })); });
@@ -888,7 +908,20 @@ function makeStereoWav(seconds, bpm) {
       R.stemsClash = { voice: db(lv(clash, late, late + 2).voice, lv(noClash, late, late + 2).voice), lead: db(lv(clash, late, late + 2).lead, lv(noClash, late, late + 2).lead) };
       // voxPolicy: with both tracks separated the planner may use vocal moves, with neither it may only if the filter is allowed
       const fakeM = (ff, ok) => ({ filterFallback: ff, voxOk: ok });
-      const sepT = { buffer: { numberOfChannels: 6 } }, twoT = { buffer: { numberOfChannels: 2 } };
+      const mini = new OfflineAudioContext(1, 1, sr), mb = mini.createBuffer(2, 8, sr), z = [new Float32Array(8), new Float32Array(8)];
+      const sepT = { buffer: Engine.stemBuffer(mini, mb, { inst: z, vocals: z }) }, twoT = { buffer: mb }, fiveOne = { buffer: mini.createBuffer(6, 8, sr) };
+      R.fiveOne = { stems: Engine.hasStems(fiveOne), info: Engine.infoOf(Object.assign({ analysis: analysis, title: "x" }, fiveOne)).stems };
+      {
+        // every track the page plays is stereo: a mono buffer is copied to both channels, 5.1 is mixed down, stereo is left alone
+        const m1 = mini.createBuffer(1, 8, sr); m1.getChannelData(0).set([1, 2, 3, 4, 5, 6, 7, 8]);
+        const s1 = Engine.stereoize(mini, m1), s6 = mini.createBuffer(6, 8, sr); for (let c = 0; c < 6; c++) s6.getChannelData(c).fill(c === 3 ? 1 : 0.5);
+        const d6 = Engine.stereoize(mini, s6);
+        R.stereoize = { mono: s1.numberOfChannels === 2 && Array.from(s1.getChannelData(1)).join() === "1,2,3,4,5,6,7,8" && Array.from(s1.getChannelData(0)).join() === "1,2,3,4,5,6,7,8", same: Engine.stereoize(mini, mb) === mb, six: d6.numberOfChannels === 2 && Math.abs(d6.getChannelData(0)[0] - 0.5) < 1e-6 && Math.abs(d6.getChannelData(1)[0] - 0.5) < 1e-6 };
+      }
+      // a hand-made mono buffer (the page itself never makes one) still comes out of both speakers
+      const monoRaw = await run((ctx) => plain(ctx, 1));
+      let eL = 0, eR = 0; for (let i = Math.floor(sr * 3); i < Math.floor(sr * 6); i++) { eL += monoRaw.l[i] * monoRaw.l[i]; eR += monoRaw.r[i] * monoRaw.r[i]; }
+      R.monoRaw = { ratio: Math.sqrt(eR / (eL + 1e-12)) };
       R.policy = { both: Engine.voxPolicy(fakeM(false, true), sepT, sepT), one: Engine.voxPolicy(fakeM(false, true), sepT, twoT), filterOn: Engine.voxPolicy(fakeM(true, true), twoT, twoT), noWorklet: Engine.voxPolicy(fakeM(true, false), twoT, twoT) };
     }
 
@@ -940,6 +973,9 @@ function makeStereoWav(seconds, bpm) {
   check("a loop roll on an instrumental deck stays instrumental (the voice's share of the sound is gone)", osc.stemsRoll.voice < -25 && osc.stemsRoll.ratio > 0.7 && osc.stemsRoll.ratio < 0.95, JSON.stringify(osc.stemsRoll));
   check("stems, mashup: only the incoming vocal during the blend, instruments back after the swap, joining as a glide", osc.stemsMash.voiceDuring > 8 * osc.stemsMash.leadDuring && osc.stemsMash.leadAfter > 0.5 * osc.stemsMash.voiceAfter && osc.stemsMash.join[0] < 0.1 * osc.stemsMash.join[3] && osc.stemsMash.join[1] > 1.15 * osc.stemsMash.join[0] && osc.stemsMash.join[2] > 1.15 * osc.stemsMash.join[1] && osc.stemsMash.join[3] > 1.15 * osc.stemsMash.join[2], JSON.stringify(osc.stemsMash));
   check("stems, clashing vocals: the outgoing vocal is taken out of the blend and its instruments are not", osc.stemsClash.voice < -30 && Math.abs(osc.stemsClash.lead) < 2, JSON.stringify(osc.stemsClash));
+  check("a decoded 5.1 file is not mistaken for a separated track", !osc.fiveOne.stems && !osc.fiveOne.info, JSON.stringify(osc.fiveOne));
+  check("every track is played as stereo: mono is copied to both channels, 5.1 mixed down, stereo left alone", osc.stereoize.mono && osc.stereoize.same && osc.stereoize.six, JSON.stringify(osc.stereoize));
+  check("a mono buffer comes out of both speakers, not just the left", osc.monoRaw.ratio > 0.9 && osc.monoRaw.ratio < 1.1, JSON.stringify(osc.monoRaw));
   check("planner: vocal moves need both tracks separated, or the basic filter to be allowed", osc.policy.both && !osc.policy.one && osc.policy.filterOn && !osc.policy.noWorklet, JSON.stringify(osc.policy));
   check("clashing vocals: the outgoing track's vocal is taken out of the blend and its instruments are not", osc.clash.voice < -12 && Math.abs(osc.clash.lead) < 4, JSON.stringify(osc.clash));
   check("the vocal stage delays decks and effects alike, so a hit still lands on its beat (within a millisecond)", Math.abs(osc.voxTiming.deck - osc.voxTiming.fx) < 0.001, JSON.stringify(osc.voxTiming));        // (both also carry the master compressor's look-ahead)

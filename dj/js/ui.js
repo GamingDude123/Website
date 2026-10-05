@@ -69,13 +69,14 @@
   // hundred of those. What stays is small: the analysis, the waveform peaks, the length.
   // `saved` is what a saved copy already knows, so a track can be brought back without decoding it.
   // The demos are synthesised and small, so they simply stay in memory.
-  async function decodeFile(file) { return getDecodeCtx().decodeAudioData(await file.arrayBuffer()); }
+  // (every track is two channels: a mono file plays from both speakers, a 5.1 file is mixed down)
+  async function decodeFile(file) { return Engine.stereoize(getDecodeCtx(), await getDecodeCtx().decodeAudioData(await file.arrayBuffer())); }
 
   function makeTrack(key, name, artist, buffer, analysis, source, saved) {
     const t = {
       id: nextId++, key: key, title: name, artist: artist, buffer: buffer, analysis: analysis,
       peaks: saved && saved.peaks ? saved.peaks : peaksOf(buffer, 900), fine: saved && saved.fine ? saved.fine : finePeaks(buffer),
-      duration: buffer ? buffer.duration : saved.duration, channels: buffer ? buffer.numberOfChannels : saved.channels,
+      duration: buffer ? buffer.duration : saved.duration, channels: 2,
       keyOverride: null, shiftBeats: 0, load: null, loading: null,
     };
     const file = source && source.file;
@@ -191,7 +192,7 @@
       const parts = base.split(/\s+-\s+/);
       const artist = parts.length > 1 ? parts[0] : "", title = parts.length > 1 ? parts.slice(1).join(" - ") : base;
       try {
-        const buf = await getDecodeCtx().decodeAudioData(await f.arrayBuffer());
+        const buf = await decodeFile(f);
         if (epoch !== addEpoch) return;
         await addBuffer(title, artist, buf, { file: f, name: f.name }, epoch);
       } catch (err) {
@@ -205,7 +206,7 @@
     const r = Synth.renderTrack(d);
     const buf = getDecodeCtx().createBuffer(1, r.samples.length, r.sampleRate);
     buf.copyToChannel(r.samples, 0);
-    return buf;
+    return Engine.stereoize(getDecodeCtx(), buf);
   }
 
   async function addDemos() {
@@ -653,11 +654,14 @@
     // what the vocal buttons are waiting for, in words
     let voxTitle = "", voxNote = "";
     const stem = d.vox.stem, model = d.vox.model;
-    if (d.vox.ok) { voxNote = d.vox.ai && stem && stem.phase === "ready" ? "AI split" : d.vox.ai ? "" : "basic filter"; voxTitle = d.vox.ai ? "Vocals and instruments separated by the AI model" : "The basic filter: it takes out whatever is in the middle of the mix, so it is rough on real songs"; }
-    else if (d.vox.ai && stem && stem.phase === "working") { voxNote = "splitting " + Math.round(stem.progress * 100) + "%"; voxTitle = "The AI is splitting this track into vocals and instruments"; }
-    else if (d.vox.ai && stem && stem.phase === "failed") { voxNote = "AI failed"; voxTitle = "The AI could not split this track: " + (stem.error || "unknown error"); }
-    else if (d.vox.ai && model && model.phase !== "ready") { voxNote = "AI model " + (model.phase === "downloading" ? "downloading " + Math.round(model.progress * 100) + "%" : "loading"); voxTitle = "Getting the AI model ready (a large file, kept in this browser after the first time)"; }
-    else if (d.vox.ai) { voxNote = "waiting"; voxTitle = "Waiting its turn to be split (the AI does one track at a time)"; }
+    if (d.vox.ok) {
+      voxNote = d.vox.stems ? "AI split" : "basic filter";
+      voxTitle = d.vox.stems ? "Vocals and instruments separated by the AI model" : "The basic filter: it takes out whatever is in the middle of the mix, so it is rough on real songs";
+    } else if (d.vox.ai && d.vox.sep && stem && stem.phase === "working") { voxNote = "splitting " + Math.floor(stem.progress * 20) * 5 + "%"; voxTitle = "The AI is splitting this track into vocals and instruments"; }
+    else if (d.vox.ai && d.vox.sep && stem && stem.phase === "failed") { voxNote = "AI failed"; voxTitle = "The AI could not split this track: " + (stem.error || "unknown error"); }
+    else if (d.vox.ai && d.vox.sep && model && model.phase !== "ready") { voxNote = "AI model " + (model.phase === "downloading" ? "downloading " + Math.floor(model.progress * 20) * 5 + "%" : "loading"); voxTitle = "Getting the AI model ready (a large file, kept in this browser after the first time)"; }
+    else if (d.vox.ai && d.vox.sep) { voxNote = "waiting"; voxTitle = "Waiting its turn to be split (the AI does one track at a time)"; }
+    else if (d.vox.ai && !d.vox.sep && !d.vox.ok) { voxTitle = "The vocal tools work on files you add; the demo tracks are synthetic and have no vocals"; }
     else { voxTitle = d.vox.mono ? "Vocal tools need a stereo track; this one is mono" : "Vocal tools need a browser with audio worklets"; }
     setText(st.k.voxnote, voxNote);
     st.k.vox.title = voxTitle;
@@ -1055,7 +1059,7 @@
   $("vibes").addEventListener("click", function (e) {
     const b = e.target.closest("button[data-vibe]");
     if (!b) return;
-    const keep = {}; ["endless", "fx", "levelMatch"].concat(b.dataset.vibe === "balanced" ? [] : ["auto"]).forEach(function (k) { keep[k] = player.settings[k]; });
+    const keep = {}; ["endless", "fx", "levelMatch", "aiVocals"].concat(b.dataset.vibe === "balanced" ? [] : ["auto"]).forEach(function (k) { keep[k] = player.settings[k]; });
     const next = Object.assign(Settings.applyPreset(b.dataset.vibe), keep);
     if (b.dataset.vibe === "balanced") next.auto = true;
     commit(next, "Vibe: " + Settings.describe(next));

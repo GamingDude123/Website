@@ -31,7 +31,7 @@ var Separator = (function () {
   const cfg = { allowWasm: false, forceWasm: false, workerUrl: null, modelBase: null, overlap: 0.25 };
   let st = { phase: "idle", progress: 0, reason: undefined, ep: undefined };
   const subs = [];
-  let worker = null, initP = null, permanent = false, loadWaiter = null, loadToken = 0;
+  let worker = null, initP = null, permanent = false, loadWaiter = null, loadToken = 0, workerFail = null;
   let nextId = 1, active = null;
   const queue = [];
 
@@ -177,6 +177,7 @@ var Separator = (function () {
   function crash(reason, w) {
     if (w && w !== worker) return;
     const waiter = loadWaiter; loadWaiter = null;
+    loadToken++;                                          // a download still going on must not write over this
     if (worker) { try { worker.terminate(); } catch (e) { /* gone */ } worker = null; }
     const jobs = (active ? [active] : []).concat(queue.splice(0));
     active = null;
@@ -196,6 +197,7 @@ var Separator = (function () {
         break;
       case "fail":
         if (loadWaiter) { const w = loadWaiter; loadWaiter = null; w.reject(new Error(m.reason || "The vocal separation model could not be started")); }
+        else workerFail = m.reason || "The vocal separation model could not be started";          // still being sent the model: load() stops at its next step
         break;
       case "progress":
         if (active && active.id === m.id && !active.finished) active.onProgress(m.f);
@@ -226,8 +228,21 @@ var Separator = (function () {
 
   async function load() {
     if (!supported()) return giveUp(typeof Worker === "undefined" ? "This browser has no Web Workers" : "WebGPU is not available in this browser, so AI vocal separation cannot run here", true);
+    // Is there a graphics card to run it on? Asked before anything is downloaded: a browser can have the
+    // WebGPU API and no usable adapter, or only a software one, and 170 MB would then be fetched for nothing.
+    let useWasm = !!cfg.forceWasm;
+    if (!useWasm) {
+      let ad = null;
+      try { ad = await navigator.gpu.requestAdapter(); } catch (e) { ad = null; }
+      const software = !!(ad && (ad.isFallbackAdapter || (ad.info && ad.info.isFallbackAdapter)));
+      if (!ad || software) {
+        if (!cfg.allowWasm) return giveUp(!ad ? "This browser has no graphics adapter it can use for WebGPU, so AI vocal separation cannot run here" : "This browser only has a software WebGPU adapter, which is far too slow for AI vocal separation", true);
+        useWasm = true;
+      }
+    }
     setState("downloading", 0);
     const token = ++loadToken;
+    workerFail = null;
     const cancelled = function () { const e = new Error("cancelled"); e.cancelled = true; return e; };
     try {
       const base = modelBase();
@@ -236,14 +251,16 @@ var Separator = (function () {
       if (token !== loadToken) throw cancelled();
       worker = startWorker();
       const w = worker;
-      w.postMessage({ t: "model-begin", bytes: man.bytes, allowWasm: cfg.allowWasm, forceWasm: cfg.forceWasm });
+      w.postMessage({ t: "model-begin", bytes: man.bytes, allowWasm: cfg.allowWasm, forceWasm: useWasm });
       let done = 0, offset = 0;
       for (const part of man.parts) {
         const buf = await getPart(cache, base, part, function (n) { done += n; if (token === loadToken) setState("downloading", done / man.bytes * 0.999); });
         if (token !== loadToken || worker !== w) throw cancelled();
+        if (workerFail) throw new Error(workerFail);
         w.postMessage({ t: "model-part", offset: offset, buf: buf }, [buf]);
         offset += part.bytes;
       }
+      if (workerFail) throw new Error(workerFail);
       setState("downloading", 1);
       setState("loading", 0.05);
       const ep = await new Promise(function (resolve, reject) {
@@ -336,7 +353,9 @@ var Separator = (function () {
   function dispose() {
     cancelAll();
     if (worker) { try { worker.postMessage({ t: "dispose" }); worker.terminate(); } catch (e) { /* gone */ } worker = null; }
+    const pending = loadWaiter;
     loadWaiter = null; initP = null; permanent = false; active = null; loadToken++;
+    if (pending) { const e = new Error("cancelled"); e.cancelled = true; pending.reject(e); }       // so nobody waits on init() for ever
     setState("idle", 0);
   }
 

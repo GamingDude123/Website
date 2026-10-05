@@ -83,6 +83,7 @@ var Player = (function () {
   };
 
   Player.prototype.remove = function (track) {
+    if (this.stemJob && this.stemJob.track === track) this.stopStems();
     this.library = this.library.filter(function (t) { return t !== track; });
     this.queue = this.queue.filter(function (t) { return t !== track; });
     this.onChange();
@@ -107,6 +108,8 @@ var Player = (function () {
       await this.ctx.resume();
       this.mixer = new Engine.Mixer(this.ctx, { settings: this.settings, volume: this.volume });
       await this.mixer.init();
+      this.aiNoted = false;
+      if (this.aiWanted() && Separator.state().phase === "unavailable") Separator.init({ retry: true });       // a failure earlier may have been the network
       this.mixer.filterFallback = !this.aiActive();
       // the first track's audio is decoded now (only the ones playing or next up are kept decoded)
       while (this.queue.length && !first) {
@@ -255,13 +258,25 @@ var Player = (function () {
   };
   Player.prototype.aiActive = function () { return this.aiWanted() && Separator.state().phase !== "unavailable"; };
 
-  // a track the separation could be run on, and has not been
+  // The deck a track is on, if any
+  Player.prototype.voiceOf = function (t) { return this.voices.filter(function (v) { return v.track === t; }).pop(); };
+
+  // could this track be split at all (not yet looking at whether its audio is in memory)? Not if it is a demo,
+  // has been, failed, or is on a deck whose way out is already planned (the stems could not be used by it).
+  Player.prototype.splittable = function (t) {
+    const v = this.voiceOf(t);
+    return !!t.load && !Engine.hasStems(t) && !(t.stem && t.stem.phase === "failed") && !(v && (v.exit || v.stemsLive));
+  };
+  // ... and can be now
   Player.prototype.stemsNeeded = function (t) {
-    return !!t.load && !!t.buffer && t.buffer.numberOfChannels !== 6 && t.buffer.sampleRate === 44100 && !t.stem;      // (the demos are synthetic: nothing to separate)
+    return this.splittable(t) && !!t.buffer && t.buffer.sampleRate === 44100 && !t.stem;
   };
 
   Player.prototype.stemTick = function (now) {
     this.mixer.filterFallback = !this.aiActive();
+    const cand = [this.cur.track].concat(this.queue.slice(0, 2));
+    // a job nobody can use any more (the track went, a way out was planned, the AI was switched off) stops
+    if (this.stemJob && (!this.aiActive() || cand.indexOf(this.stemJob.track) < 0 || !this.splittable(this.stemJob.track))) this.stopStems();
     if (!this.aiActive()) {
       if (this.settings.aiVocals && !this.aiNoted && typeof Separator !== "undefined") {
         this.aiNoted = true;
@@ -271,13 +286,14 @@ var Player = (function () {
       }
       return;
     }
-    Separator.init();                                      // starts the model's download and set-up the first time
     // hand finished stems to the decks that are playing them (not while paused, or with a hand on the platter)
     if (!this.paused && !this.pausing && !this.session) {
       this.voices.forEach(function (v) { if (!v.exit && Engine.hasStems(v.track) && !v.stemsLive) v.useStems(now + 0.06); });
     }
+    if (!cand.some(this.splittable, this)) return;          // nothing here to split: the model is not even fetched
+    Separator.init();                                        // starts the model's download and set-up the first time
     if (this.stemJob || Separator.state().phase !== "ready") return;
-    const next = [this.cur.track].concat(this.queue.slice(0, 2)).filter(this.stemsNeeded, this)[0];
+    const next = cand.filter(this.stemsNeeded, this)[0];
     if (next) this.startStems(next);
   };
 
@@ -294,12 +310,19 @@ var Player = (function () {
     }, ac.signal).then(function (res) {
       if (self.stemJob === job) self.stemJob = null;
       if (track.buffer !== buf || !self.ctx) { track.stem = null; return; }        // it was let go of, or the set stopped, meanwhile
-      // where there is a voice, bar by bar, now from the stem rather than a guess from the stereo image
-      const a = track.analysis;
-      if (a && a.bars && a.barLen) a.lead = Analysis.vocalProfile(res.vocals, [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)], buf.sampleRate, a.downbeat, a.barLen, a.bars);
-      track.buffer = Engine.stemBuffer(self.ctx, buf, { inst: res.inst, vocals: res.vocals });
-      track.stem = { phase: "ready", progress: 1 };
-      self.note("Vocals separated in " + track.title + " (" + Math.round(res.seconds) + " s)");
+      try {
+        const six = Engine.stemBuffer(self.ctx, buf, { inst: res.inst, vocals: res.vocals });
+        // where there is a voice, bar by bar, now from the stem rather than a guess from the stereo image
+        const a = track.analysis;
+        const lead = a && a.bars && a.barLen ? Analysis.vocalProfile(res.vocals, [buf.getChannelData(0), buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)], buf.sampleRate, a.downbeat, a.barLen, a.bars) : null;
+        track.buffer = six;
+        if (lead) a.lead = lead;
+        track.stem = { phase: "ready", progress: 1 };
+        self.note("Vocals separated in " + track.title + " (" + Math.round(res.seconds) + " s)");
+      } catch (err) {                                                                // (most likely: not enough memory for the six-channel copy)
+        track.stem = { phase: "failed", progress: 0, error: err && err.message ? err.message : String(err) };
+        self.note("Could not use the separated vocals of " + track.title + ": " + track.stem.error);
+      }
     }, function (err) {
       if (self.stemJob === job) self.stemJob = null;
       if (err && err.name === "AbortError") { track.stem = null; return; }
@@ -521,7 +544,7 @@ var Player = (function () {
       return {
         voice: v, label: v.label, track: v.track, bar: bar, pos: v.tl.posAt(now), rate: v.tl.rateAt(now),
         bpm: Math.abs(v.tempoAt(now)), started: now >= v.t0, touch: !!touch.voice && touch.voice === v,
-        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: Engine.channelsOf(v.track) < 2 || (v.track.analysis && v.track.analysis.stereo === false), ai: ai, stem: v.track.stem || null, model: ai ? Separator.state() : null },
+        vox: { mode: v.voxModeAt(now), ok: v.voxAvailable(), mono: Engine.channelsOf(v.track) < 2 || (v.track.analysis && v.track.analysis.stereo === false), ai: ai, sep: !!v.track.load, stems: v.stemsLive, stem: v.track.stem || null, model: ai ? Separator.state() : null },
         eq: { low: v.low.gain.value, mid: v.mid.gain.value, high: v.high.gain.value },
         level: v.fader.gain.value,
         audible: now >= v.t0 && v.fader.gain.value > 0.02,
