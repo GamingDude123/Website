@@ -316,7 +316,7 @@ function makeStereoWav(seconds, bpm) {
   check("stopping the set lets go of all of it", (await page.evaluate(() => window.__dj.player.library.filter((t) => t.buffer).length)) === 0);
   // exporting a long queue would hold every track at once: it says so rather than crashing the tab
   await page.evaluate(() => { const p = window.__dj.player, base = p.library[0]; for (let i = 0; i < 12; i++) p.add(Object.assign({}, base, { id: 9000 + i, key: "fake-x" + i, title: "Long Mix Track " + i, buffer: null, duration: 1800, channels: 2, load: async () => { throw new Error("never"); } })); });
-  await page.click("#btn-export");
+  await page.evaluate(() => document.getElementById("btn-export").click());              // (the Export card is collapsed)
   await page.waitForFunction(() => /holds all of its tracks in memory at once/.test(window.__dj.player.log.map((l) => l.text).join(" | ")), null, { timeout: 5000 })
     .then(() => check("export of a queue too big for memory says so and stops", true), () => check("export of a queue too big for memory says so and stops", false));
   await page.evaluate(() => { const p = window.__dj.player; p.library = p.library.filter((t) => !/^fake-x/.test(t.key)); p.queue = p.queue.filter((t) => !/^fake-x/.test(t.key)); p.onChange(); });
