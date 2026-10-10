@@ -290,3 +290,26 @@ button.more[hidden], .tracks-sum[hidden], #btn-hide[hidden], ol.loading-list[hid
 .vox button[aria-pressed=true] { background: var(--glass-2); color: var(--ink); box-shadow: 0 0 16px -6px var(--c); }
 .vox button:disabled { opacity: .35; }
 .vox-note { display: block; min-height: 1.1em; margin-top: .15rem; font-size: .7rem; color: var(--dim); }
+
+/* ---- phones: what iPhone Safari struggles with, turned off or simplified ---- */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+button, select, summary, .filebtn, .chip-btn { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+body { min-height: 100vh; min-height: 100svh; }
+@media (hover: none), (max-width: 820px) {
+  body { background: linear-gradient(170deg, #1a1040 0%, #2a1650 38%, #1b2457 100%); }     /* a fixed-attachment background is repainted on every scroll frame in Safari */
+  body::after { display: none; }                                                            /* the full-screen grain blend */
+  .aurora i { animation: none; will-change: auto; filter: none; opacity: .75; }             /* colour that holds still: gradients, not huge blurred, moving discs */
+  .aurora i:nth-child(1) { background: radial-gradient(closest-side, rgba(255,122,198,.85), rgba(255,122,198,0)); width: 90vmax; height: 90vmax; }
+  .aurora i:nth-child(2) { background: radial-gradient(closest-side, rgba(111,141,255,.8), rgba(111,141,255,0)); width: 90vmax; height: 90vmax; }
+  .aurora i:nth-child(3) { display: none; }
+  .top, .deck, .card, .about, .chip-btn { -webkit-backdrop-filter: none; backdrop-filter: none; }     /* blurring what is behind is the costliest thing Safari does while scrolling */
+  .top { background: #211450; }
+  .deck, .card, .about { background: rgba(255,255,255,.1); }
+  .deck::before, .card::before, .about::before { display: none; }                          /* the masked gradient hairlines are costly to paint */
+  .deck, .card, .about { border-color: rgba(255,255,255,.2); transition: none; contain: layout style; }
+  .vinyl { box-shadow: 0 0 0 1px rgba(255,255,255,.16), 0 10px 20px -10px rgba(0,0,0,.7); transition: none; }
+  .trk { content-visibility: auto; contain-intrinsic-size: auto 66px; }                      /* rows far off screen are not laid out until near */
+  .read b.big { text-shadow: none; }
+  button.go:not(:disabled):not(.stop) { animation: none; }
+  .deck .empty::before { animation: none; }
+}
