@@ -513,10 +513,22 @@
   }
 
   // keep a canvas's backing store matched to its on-screen size
+  // The size is learned once and then kept up to date by a ResizeObserver: asking the page for it on every frame forces a layout every frame.
+  const LITE = window.matchMedia("(hover: none), (max-width: 820px)");       // a phone or tablet: draw less
+  const canvasSeen = new WeakMap();                                           // canvases that are on screen
+  const seenWatch = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(function (list) {
+    list.forEach(function (en) { canvasSeen.set(en.target, en.isIntersecting); });
+  });
+  const canvasSize = new WeakMap();
+  const sizeWatch = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(function (list) {
+    list.forEach(function (en) { canvasSize.set(en.target, { w: en.contentRect.width, h: en.contentRect.height }); });
+  });
   function fit(c) {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
-    if (w && (c.width !== w || c.height !== h)) { c.width = w; c.height = h; }
+    const dpr = Math.min(LITE.matches ? 1.5 : 2, window.devicePixelRatio || 1);
+    let sz = canvasSize.get(c);
+    if (!sz) { sz = { w: c.clientWidth, h: c.clientHeight }; canvasSize.set(c, sz); if (sizeWatch) sizeWatch.observe(c); if (seenWatch) seenWatch.observe(c); }
+    const w = Math.round(sz.w * dpr), h = Math.round(sz.h * dpr);
+    if (w && h && (c.width !== w || c.height !== h)) { c.width = w; c.height = h; }
     return dpr;
   }
 
@@ -524,6 +536,7 @@
 
   // the scrolling waveform: beat grid, bar numbers, playhead in the middle
   function drawZoom(canvas, track, pos, color, label, playing) {
+    if (canvasSeen.get(canvas) === false) return;                            // off screen: nothing to draw
     const dpr = fit(canvas), W = canvas.width, H = canvas.height, g = canvas.getContext("2d");
     const a = Engine.gridOf(track), half = ZOOM_BARS * a.barLen, spp = (2 * half) / W;
     g.clearRect(0, 0, W, H);
@@ -841,14 +854,18 @@
   let preview = { at: 0, plan: null, key: "" };
   let peakHold = 0;
 
+  let meterBuf = null;
   function drawMeter() {
+    if (canvasSeen.get($("meter")) === false) return;
     const c = $("meter");
     const dpr = fit(c), W = c.width, H = c.height, g = c.getContext("2d");
     g.clearRect(0, 0, W, H);
     let level = 0;
     if (player.mixer && !player.paused) {
-      const buf = new Uint8Array(player.mixer.analyser.fftSize);
-      player.mixer.analyser.getByteTimeDomainData(buf);
+      const an = player.mixer.analyser;
+      if (!meterBuf || meterBuf.length !== an.fftSize) meterBuf = new Uint8Array(an.fftSize);
+      const buf = meterBuf;
+      an.getByteTimeDomainData(buf);
       let e = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; e += v * v; }
       level = Math.min(1, Math.sqrt(e / buf.length) * 2.6);
     }
@@ -901,8 +918,11 @@
     hitWas = hit;
   }
 
-  function frame() {
+  let lastFrame = 0;
+  function frame(ts) {
     requestAnimationFrame(frame);
+    if (LITE.matches && ts - lastFrame < 30) return;                          // about 30 pictures a second is plenty on a phone, and leaves the scroll its time
+    lastFrame = ts;
     drawMeter();
     tickHold();
     const snap = player.snapshot();
