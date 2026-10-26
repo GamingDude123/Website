@@ -4,7 +4,7 @@ Chrome extension (Manifest V3) that shows suggested answers for the current Puff
 
 ## Install
 1. `chrome://extensions` > enable Developer mode > Load unpacked > pick this folder.
-2. Open the extension's Options and paste an Anthropic API key.
+2. No API key needed.
 3. Open krillion.io and start a game. The sidebar appears top-right.
 
 ## Use
