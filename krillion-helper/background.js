@@ -3,17 +3,33 @@
 const WIKI = "https://en.wikipedia.org/w/api.php";
 
 const BUNDLED = {
-  cheese: ["Cheddar", "Brie", "Gouda", "Mozzarella", "Parmesan", "Feta", "Swiss", "Camembert"],
-  fruit: ["Apple", "Banana", "Orange", "Grape", "Mango", "Pear", "Peach", "Cherry"],
-  vegetable: ["Carrot", "Broccoli", "Potato", "Onion", "Spinach", "Celery", "Pepper", "Lettuce"],
-  animal: ["Dog", "Cat", "Horse", "Lion", "Tiger", "Bear", "Wolf", "Fox"],
-  color: ["Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Pink", "Brown"],
-  country: ["France", "Brazil", "Japan", "Canada", "Egypt", "India", "Italy", "Mexico"],
-  car: ["Toyota", "Ford", "Honda", "BMW", "Tesla", "Audi", "Chevrolet", "Nissan"],
-  sport: ["Soccer", "Tennis", "Golf", "Hockey", "Rugby", "Boxing", "Baseball", "Cricket"],
-  instrument: ["Guitar", "Piano", "Violin", "Drums", "Flute", "Trumpet", "Cello", "Harp"],
-  dog: ["Poodle", "Beagle", "Bulldog", "Husky", "Corgi", "Boxer", "Dachshund", "Pug"]
+  military: ["General", "Colonel", "Major", "Captain", "Lieutenant", "Sergeant", "Corporal", "Private", "Admiral", "Commander", "Ensign", "Brigadier"],
+  cheese: ["Cheddar", "Brie", "Gouda", "Mozzarella", "Parmesan", "Feta", "Swiss", "Camembert", "Provolone", "Havarti"],
+  fruit: ["Apple", "Banana", "Orange", "Grape", "Mango", "Pear", "Peach", "Cherry", "Lemon", "Strawberry", "Plum", "Kiwi"],
+  vegetable: ["Carrot", "Broccoli", "Potato", "Onion", "Spinach", "Celery", "Pepper", "Lettuce", "Corn", "Cabbage", "Pea", "Cucumber"],
+  animal: ["Dog", "Cat", "Horse", "Lion", "Tiger", "Bear", "Wolf", "Fox", "Elephant", "Giraffe", "Monkey", "Zebra"],
+  bird: ["Eagle", "Robin", "Owl", "Sparrow", "Penguin", "Parrot", "Crow", "Hawk", "Duck", "Swan", "Falcon", "Pigeon"],
+  fish: ["Salmon", "Tuna", "Trout", "Bass", "Cod", "Shark", "Goldfish", "Catfish", "Eel", "Carp", "Perch", "Pike"],
+  color: ["Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Pink", "Brown", "Black", "White", "Gray", "Teal"],
+  country: ["France", "Brazil", "Japan", "Canada", "Egypt", "India", "Italy", "Mexico", "Spain", "China", "Germany", "Peru"],
+  state: ["Texas", "Florida", "Ohio", "Maine", "Utah", "Iowa", "Nevada", "Oregon", "Alaska", "Georgia", "Hawaii", "Idaho"],
+  city: ["Paris", "London", "Tokyo", "Rome", "Madrid", "Berlin", "Sydney", "Cairo", "Moscow", "Dallas", "Boston", "Miami"],
+  planet: ["Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"],
+  element: ["Hydrogen", "Oxygen", "Carbon", "Iron", "Gold", "Silver", "Helium", "Neon", "Copper", "Zinc", "Sodium", "Lead"],
+  language: ["English", "Spanish", "French", "German", "Chinese", "Arabic", "Hindi", "Russian", "Italian", "Japanese", "Korean", "Latin"],
+  month: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+  car: ["Toyota", "Ford", "Honda", "BMW", "Tesla", "Audi", "Chevrolet", "Nissan", "Jeep", "Subaru", "Mazda", "Kia"],
+  sport: ["Soccer", "Tennis", "Golf", "Hockey", "Rugby", "Boxing", "Baseball", "Cricket", "Football", "Basketball", "Swimming", "Skiing"],
+  instrument: ["Guitar", "Piano", "Violin", "Drums", "Flute", "Trumpet", "Cello", "Harp", "Saxophone", "Clarinet", "Banjo", "Tuba"],
+  dog: ["Poodle", "Beagle", "Bulldog", "Husky", "Corgi", "Boxer", "Dachshund", "Pug", "Labrador", "Collie", "Terrier", "Chihuahua"],
+  drink: ["Water", "Coffee", "Tea", "Milk", "Juice", "Soda", "Beer", "Wine", "Lemonade", "Cola", "Smoothie", "Cocoa"],
+  tree: ["Oak", "Maple", "Pine", "Birch", "Willow", "Elm", "Cedar", "Palm", "Spruce", "Ash", "Fir", "Redwood"],
+  flower: ["Rose", "Tulip", "Daisy", "Lily", "Orchid", "Sunflower", "Daffodil", "Violet", "Poppy", "Lotus", "Iris", "Lilac"],
+  subject: ["Math", "Science", "History", "English", "Art", "Music", "Biology", "Chemistry", "Physics", "Geography", "Gym", "Algebra"],
+  job: ["Doctor", "Teacher", "Nurse", "Lawyer", "Chef", "Pilot", "Farmer", "Plumber", "Engineer", "Artist", "Police", "Firefighter"]
 };
+
+const ALIAS = { army: "military", navy: "military", rank: "military", ranks: "military", cities: "city", states: "state", breed: "dog", breeds: "dog", cars: "car", brand: "car", beverage: "drink", beverages: "drink", occupation: "job", profession: "job", school: "subject", countries: "country" };
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type !== "suggest") return;
@@ -54,14 +70,27 @@ async function wiki(params) {
   return res.json();
 }
 
+// Orders titles by recent pageviews, so well-known answers come before obscure ones.
+async function byPopularity(titles) {
+  const views = new Map();
+  for (let i = 0; i < titles.length; i += 50) {
+    const batch = titles.slice(i, i + 50);
+    const r = await wiki({ action: "query", prop: "pageviews", pvipdays: "30", titles: batch.join("|") });
+    for (const p of Object.values(r.query?.pages || {})) {
+      views.set(p.title, Object.values(p.pageviews || {}).reduce((sum, v) => sum + (v || 0), 0));
+    }
+  }
+  return [...titles].sort((a, b) => (views.get(b) || 0) - (views.get(a) || 0));
+}
+
 async function fromCategory(topic) {
   const s = await wiki({ action: "query", list: "search", srsearch: topic, srnamespace: "14", srlimit: "3" });
   for (const hit of s.query?.search || []) {
     const m = await wiki({
-      action: "query", list: "categorymembers", cmtitle: hit.title, cmtype: "page", cmlimit: "60"
+      action: "query", list: "categorymembers", cmtitle: hit.title, cmtype: "page", cmlimit: "150"
     });
-    const names = (m.query?.categorymembers || []).map((p) => clean(p.title)).filter(usable);
-    if (names.length >= 5) return names;
+    const titles = (m.query?.categorymembers || []).map((p) => p.title).filter((t) => usable(clean(t)));
+    if (titles.length >= 5) return (await byPopularity(titles)).map(clean);
   }
   return [];
 }
@@ -72,13 +101,15 @@ async function fromListPage(topic) {
   if (!page) return [];
   const l = await wiki({ action: "query", prop: "links", titles: page, pllimit: "100", plnamespace: "0" });
   const pages = Object.values(l.query?.pages || {});
-  return (pages[0]?.links || []).map((x) => clean(x.title)).filter(usable);
+  const titles = (pages[0]?.links || []).map((x) => x.title).filter((t) => usable(clean(t)));
+  return (await byPopularity(titles)).map(clean);
 }
 
 async function candidates(topic) {
   const words = topic.split(/\s+/);
   const keys = [topic, singular(topic), ...words, ...words.map(singular)];
   for (const k of keys) if (BUNDLED[k]) return BUNDLED[k];
+  for (const w of words) if (ALIAS[w]) return BUNDLED[ALIAS[w]];
 
   const cacheKey = `cache:${topic}`;
   const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
@@ -91,8 +122,7 @@ async function candidates(topic) {
   } catch (e) {
     if (!names.length) throw e;
   }
-  // Short names are easier to type and more recognisable, so they go first.
-  names = [...new Set(names)].sort((a, b) => a.length - b.length).slice(0, 40);
+  names = [...new Set(names)].slice(0, 40);
   if (names.length) await chrome.storage.local.set({ [cacheKey]: names });
   return names;
 }
