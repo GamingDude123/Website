@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.4.1
+// @version      0.5.0
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -11,6 +11,7 @@
 // @grant        GM_setValue
 // @connect      en.wikipedia.org
 // @connect      api.datamuse.com
+// @connect      text.pollinations.ai
 // @updateURL    https://raw.githubusercontent.com/GamingDude123/Website/claude/magical-rubin-okrvsh/krillion-helper/puffer-helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/GamingDude123/Website/claude/magical-rubin-okrvsh/krillion-helper/puffer-helper.user.js
 // ==/UserScript==
@@ -66,6 +67,7 @@ function matchCategory(prompt) {
       let score = 0;
       if (text.includes(" " + al.join(" ") + " ")) score = 12 * al.length;
       else if (al.length > 1 && al.every((w) => words.includes(w))) score = 10 * al.length;
+      if (score && al.length / words.length < 0.5) score = 0; // a stray word isn't a match
       if (score > bestScore) { bestScore = score; best = c; }
     }
   }
@@ -191,13 +193,45 @@ async function candidates(topic, onPartial) {
   return web;
 }
 
+// Free, keyless text endpoint (Pollinations). Only the category text is sent.
+function askAI(prompt) {
+  const q =
+    `Game category: "${prompt}". List 30 different valid answers, most obvious and common first, ` +
+    `rarer ones later. Reply with only the answers separated by commas. No numbering, no explanation.`;
+  return new Promise((resolve, reject) => {
+    GM_xmlhttpRequest({
+      method: "GET",
+      url: `https://text.pollinations.ai/${encodeURIComponent(q)}?model=openai&seed=${Math.floor(Math.random() * 1e6)}`,
+      timeout: 12000,
+      onload: (r) => {
+        if (r.status < 200 || r.status >= 300) return reject(new Error(`AI HTTP ${r.status}`));
+        const items = r.responseText
+          .split(/[,\n]/)
+          .map((x) => x.replace(/^[\s\-*\d.)"']+|[\s."']+$/g, "").trim())
+          .filter((x) => x && x.length <= 40 && !/[:{}]/.test(x));
+        items.length >= 5 ? resolve([...new Set(items)].slice(0, 60)) : reject(new Error("AI gave no list"));
+      },
+      onerror: () => reject(new Error("AI network error")),
+      ontimeout: () => reject(new Error("AI timeout"))
+    });
+  });
+}
+
 async function suggest(prompt, onPartial) {
   const cat = matchCategory(prompt);
   if (cat) return { answers: cat.items, topic: cat.name, source: "built-in" };
+  const clean = prompt.replace(/\s+/g, " ").trim();
+  const cached = GM_getValue(`ai:${clean}`);
+  if (cached) return { answers: cached, topic: clean, source: "free AI" };
+  try {
+    const answers = await askAI(clean);
+    GM_setValue(`ai:${clean}`, answers);
+    return { answers, topic: clean, source: "free AI" };
+  } catch (_) { /* fall through to the web lookup */ }
   const topic = topicOf(prompt);
-  if (!topic) throw new Error("Couldn't work out the category.");
-  const answers = await candidates(topic, () => {});
-  if (!answers.length) throw new Error(`No answers found for "${topic}".`);
+  if (!topic) throw new Error("No list for this category yet.");
+  const answers = await candidates(topic, () => {}).catch(() => []);
+  if (!answers.length) throw new Error("No list for this category yet.");
   return { answers, topic, source: "web, may be rough" };
 }
 
