@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.2.0
+// @version      0.2.1
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -27,7 +27,7 @@ function getJSON(url) {
       onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(JSON.parse(r.responseText)) : reject(new Error(`HTTP ${r.status}`))),
       onerror: () => reject(new Error("network error")),
       ontimeout: () => reject(new Error("timeout")),
-      timeout: 10000
+      timeout: 6000
     });
   });
 }
@@ -98,10 +98,13 @@ function wiki(params) {
 // Orders titles by recent pageviews, so well-known answers come before obscure ones.
 async function byPopularity(titles) {
   const views = new Map();
-  for (let i = 0; i < titles.length; i += 50) {
-    const batch = titles.slice(i, i + 50);
-    const r = await wiki({ action: "query", prop: "pageviews", pvipdays: "30", titles: batch.join("|") });
-    for (const p of Object.values(r.query?.pages || {})) {
+  const batches = [];
+  for (let i = 0; i < titles.length; i += 50) batches.push(titles.slice(i, i + 50));
+  const results = await Promise.all(
+    batches.map((batch) => wiki({ action: "query", prop: "pageviews", pvipdays: "30", titles: batch.join("|") }).catch(() => null))
+  );
+  for (const r of results) {
+    for (const p of Object.values(r?.query?.pages || {})) {
       views.set(p.title, Object.values(p.pageviews || {}).reduce((sum, v) => sum + (v || 0), 0));
     }
   }
@@ -110,11 +113,13 @@ async function byPopularity(titles) {
 
 async function fromCategory(topic) {
   const s = await wiki({ action: "query", list: "search", srsearch: topic, srnamespace: "14", srlimit: "3" });
-  for (const hit of s.query?.search || []) {
-    const m = await wiki({
-      action: "query", list: "categorymembers", cmtitle: hit.title, cmtype: "page", cmlimit: "150"
-    });
-    const titles = (m.query?.categorymembers || []).map((p) => p.title).filter((t) => usable(clean(t)));
+  const lists = await Promise.all(
+    (s.query?.search || []).map((hit) =>
+      wiki({ action: "query", list: "categorymembers", cmtitle: hit.title, cmtype: "page", cmlimit: "150" }).catch(() => null)
+    )
+  );
+  for (const m of lists) {
+    const titles = (m?.query?.categorymembers || []).map((p) => p.title).filter((t) => usable(clean(t)));
     if (titles.length >= 5) return (await byPopularity(titles)).map(clean);
   }
   return [];
@@ -155,18 +160,15 @@ async function candidates(topic) {
   const cached = GM_getValue(cacheKey);
   if (cached) return cached;
 
-  let names = [], lastError;
-  for (const v of variants(topic)) {
-    for (const source of [fromCategory, fromListPage, fromDatamuse]) {
-      try {
-        names = await source(v);
-      } catch (e) {
-        lastError = e;
-        names = [];
-      }
-      if (names.length >= 5) break;
-    }
-    if (names.length >= 5) break;
+  // Every variant and source runs at once; the best-ranked variant with enough answers wins.
+  let lastError;
+  const runs = variants(topic).map((v) =>
+    Promise.all([fromCategory, fromListPage, fromDatamuse].map((src) => src(v).catch((e) => { lastError = e; return []; })))
+  );
+  let names = [];
+  for (const run of runs) {
+    const found = (await run).find((n) => n.length >= 5);
+    if (found) { names = found; break; }
   }
   if (!names.length && lastError) throw lastError;
   names = [...new Set(names)].slice(0, 40);
@@ -284,7 +286,11 @@ async function suggest(prompt, used) {
   }
 
   let timer;
-  new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(refresh, 250); })
+  let last = 0;
+  new MutationObserver(() => {
+    if (timer) return;
+    timer = setTimeout(() => { timer = 0; last = Date.now(); refresh(); }, Math.max(300, 800 - (Date.now() - last)));
+  })
     .observe(document.body, { childList: true, subtree: true, characterData: true });
   refresh();
 
