@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.2.1
+// @version      0.2.2
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -213,29 +213,63 @@ async function suggest(prompt, used) {
   const $ = (id) => root.getElementById(id);
 
   const LABEL = /^category\s*\d+$/i;
+  const HINT = /any answer passes the puffer/i;
   const IGNORE = /^(any answer|category|unrated|floating)/i;
+  const clip = (el) => (el.innerText || "").replace(/\s+/g, " ").trim();
   const fontOf = (el) => parseFloat(getComputedStyle(el).fontSize) || 0;
   const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  const leaves = (el) => [...el.querySelectorAll("*")].filter((n) => n.children.length === 0 && (n.innerText || "").trim() && visible(n));
 
-  // The prompt is the largest text sharing a container (up to 3 levels up) with a "CATEGORY n" label.
+  // Anchors: the small "CATEGORY n" label, or the "any answer passes the puffer" hint. Text may be split across
+  // child elements (typewriter effects), so match on an element's whole text, deepest match first.
+  function anchors() {
+    const found = [];
+    for (const el of document.body.querySelectorAll("*")) {
+      if (HOST.contains(el) || el.tagName === "SCRIPT" || el.tagName === "STYLE") continue;
+      const t = clip(el);
+      if (t.length > 40 || !t) continue;
+      if (!(LABEL.test(t) || HINT.test(t)) || !visible(el)) continue;
+      if ([...el.children].some((c) => LABEL.test(clip(c)) || HINT.test(clip(c)))) continue; // deeper match wins
+      found.push(el);
+    }
+    return found;
+  }
+
+  // The prompt is the largest text sharing a container (up to 4 levels up) with an anchor.
   function detectPrompt() {
-    let best = null, bestFont = 0;
-    for (const label of leaves(document.body)) {
-      if (HOST.contains(label) || !LABEL.test(label.innerText.trim())) continue;
-      let box = label.parentElement;
-      for (let i = 0; i < 3 && box; i++, box = box.parentElement) {
-        for (const n of leaves(box)) {
-          const t = n.innerText.trim();
-          if (n === label || IGNORE.test(t) || t.length < 4) continue;
+    let best = "", bestFont = 0;
+    for (const anchor of anchors()) {
+      let box = anchor.parentElement;
+      for (let i = 0; i < 4 && box && !best; i++, box = box.parentElement) {
+        let pick = null;
+        for (const n of box.querySelectorAll("*")) {
+          if (HOST.contains(n) || !visible(n)) continue;
+          const t = clip(n);
+          if (t.length < 8 || t.length > 120 || IGNORE.test(t) || n.contains(anchor)) continue;
           const f = fontOf(n);
-          if (f > fontOf(label) && f > bestFont) { best = t; bestFont = f; }
+          // largest font wins; among equals, the tightest element (shortest text) is the prompt itself
+          if (!pick || f > pick.f || (f === pick.f && t.length < pick.t.length)) pick = { f, t };
         }
-        if (best) break;
+        if (pick && pick.f > fontOf(anchor) && pick.f > bestFont) { best = pick.t; bestFont = pick.f; }
       }
     }
-    return best || "";
+    return best;
   }
+
+  // Click the dot (bottom-left) to copy a description of the page; useful when detection misses.
+  const dot = document.createElement("div");
+  dot.title = "Puffer helper is running. Click to copy debug info.";
+  dot.style.cssText = "position:fixed;bottom:6px;left:6px;width:10px;height:10px;border-radius:50%;background:#3cc8ff;opacity:.5;cursor:pointer;z-index:2147483647";
+  dot.onclick = () => {
+    const lines = [location.href, "anchors: " + anchors().length, "prompt: " + detectPrompt(), ""];
+    for (const el of document.body.querySelectorAll("*")) {
+      const t = clip(el);
+      if (HOST.contains(el) || el.dataset?.pufferDot || !t || t.length > 80 || !visible(el)) continue;
+      lines.push(`<${el.tagName.toLowerCase()} children=${el.children.length} font=${fontOf(el)}> ${t}`);
+    }
+    navigator.clipboard.writeText(lines.slice(0, 150).join("\n")).then(() => { dot.style.background = "#4f4"; setTimeout(() => (dot.style.background = "#3cc8ff"), 1500); });
+  };
+  dot.dataset.pufferDot = "1";
+  document.documentElement.appendChild(dot);
 
   // Words already on screen outside the helper (players' answer bubbles, chat) count as used.
   function onScreenText() {
