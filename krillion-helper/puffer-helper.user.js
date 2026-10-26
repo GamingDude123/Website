@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.5.0
+// @version      0.5.1
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -202,7 +202,7 @@ function askAI(prompt) {
     GM_xmlhttpRequest({
       method: "GET",
       url: `https://text.pollinations.ai/${encodeURIComponent(q)}?model=openai&seed=${Math.floor(Math.random() * 1e6)}`,
-      timeout: 12000,
+      timeout: 8000,
       onload: (r) => {
         if (r.status < 200 || r.status >= 300) return reject(new Error(`AI HTTP ${r.status}`));
         const items = r.responseText
@@ -255,7 +255,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b><button id="min">_</button></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.5.1</span><button id="min">_</button></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
@@ -376,7 +376,7 @@ async function suggest(prompt, onPartial) {
     current = p; all = []; clicked = new Set(); seen = new Set();
     onScreenText();
     $("prompt").textContent = p;
-    $("out").textContent = "thinking...";
+    $("out").textContent = "no built-in list, asking free AI (up to 8s)...";
     const res = await suggest(p, (part) => {
       if (p !== current) return;
       all = part.answers; topic = part.topic;
