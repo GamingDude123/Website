@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.3.0
+// @version      0.3.1
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -137,14 +137,12 @@ async function fromListPage(topic) {
 
 // Datamuse (free, no key): words that are kinds of the given word, e.g. "cheese" -> cheddar, brie...
 async function fromDatamuse(word) {
-  const kinds = async (w, max) => {
-    const rows = await getJSON(`https://api.datamuse.com/words?rel_gen=${encodeURIComponent(w)}&max=${max}`);
-    return rows.map((r) => r.word).filter((x) => /^[a-z][a-z' -]{2,}$/i.test(x));
-  };
-  const first = await kinds(word, 300);
-  // Go one level deeper (kinds of kinds) so rarer answers show up too.
-  const deeper = (await Promise.all(first.slice(0, 12).map((w) => kinds(w, 100).catch(() => [])))).flat();
-  return [...new Set([...first, ...deeper])].map((w) => w.replace(/^./, (c) => c.toUpperCase()));
+  const rows = await getJSON(`https://api.datamuse.com/words?rel_gen=${encodeURIComponent(word)}&max=100&md=f`);
+  const freq = (r) => parseFloat((r.tags || []).find((t) => t.startsWith("f:"))?.slice(2)) || 0;
+  return rows
+    .filter((r) => /^[a-z][a-z' -]{2,}$/i.test(r.word))
+    .sort((a, b) => freq(b) - freq(a)) // everyday words first
+    .map((r) => r.word.replace(/^./, (c) => c.toUpperCase()));
 }
 
 // "animal that lives in the ocean" -> ["animal that lives in the ocean", "animal", "ocean", ...]
@@ -165,19 +163,19 @@ async function candidates(topic, onPartial) {
   if (!builtin.length) for (const w of words) if (ALIAS[w]) { builtin = BUNDLED[ALIAS[w]]; break; }
   if (builtin.length) onPartial(builtin);
 
-  const cacheKey = `cache2:${topic}`;
+  const cacheKey = `cache3:${topic}`;
   let web = GM_getValue(cacheKey);
   if (!web) {
-    // Every variant and source runs at once; the best-ranked variant with enough answers wins,
-    // and all of its sources are merged (category pages first, then list pages, then word database).
+    // Every variant and source runs at once. The best-ranked variant wins, and within it the best source
+    // with enough answers (Wikipedia category, then list page, then word database). Sources are not mixed.
     let lastError;
     const runs = variants(topic).map((v) =>
       Promise.all([fromCategory, fromListPage, fromDatamuse].map((src) => src(v).catch((e) => { lastError = e; return []; })))
     );
     web = [];
     for (const run of runs) {
-      const merged = [...new Set((await run).flat())];
-      if (merged.length >= 5) { web = merged; break; }
+      const found = (await run).find((n) => n.length >= 5);
+      if (found) { web = [...new Set(found)]; break; }
     }
     if (!web.length && !builtin.length && lastError) throw lastError;
     web = web.slice(0, 200);
