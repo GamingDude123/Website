@@ -105,6 +105,23 @@ async function fromListPage(topic) {
   return (await byPopularity(titles)).map(clean);
 }
 
+// Datamuse (free, no key): words that are kinds of the given word, e.g. "cheese" -> cheddar, brie...
+async function fromDatamuse(word) {
+  const res = await fetch(`https://api.datamuse.com/words?rel_gen=${encodeURIComponent(word)}&max=60`);
+  if (!res.ok) throw new Error(`Datamuse ${res.status}`);
+  const rows = await res.json();
+  return rows.map((r) => r.word).filter((w) => /^[a-z][a-z' -]{2,}$/i.test(w)).map((w) => w.replace(/^./, (c) => c.toUpperCase()));
+}
+
+// "animal that lives in the ocean" -> ["animal that lives in the ocean", "animal", "ocean", ...]
+function variants(topic) {
+  const words = topic.split(/\s+/).filter((w) => !/^(in|of|the|that|which|who|a|an|and|or|on|at|to|from|with|you|can|find|found|lives?)$/.test(w));
+  const out = [topic, singular(topic)];
+  if (words.length > 1) out.push(words.join(" "), words.slice(-2).join(" "), words[words.length - 1], words[0]);
+  out.push(...words.map(singular));
+  return [...new Set(out.filter(Boolean))];
+}
+
 async function candidates(topic) {
   const words = topic.split(/\s+/);
   const keys = [topic, singular(topic), ...words, ...words.map(singular)];
@@ -115,13 +132,20 @@ async function candidates(topic) {
   const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
   if (cached) return cached;
 
-  let names = [];
-  try {
-    names = await fromCategory(topic);
-    if (names.length < 5) names = names.concat(await fromListPage(topic));
-  } catch (e) {
-    if (!names.length) throw e;
+  let names = [], lastError;
+  for (const v of variants(topic)) {
+    for (const source of [fromCategory, fromListPage, fromDatamuse]) {
+      try {
+        names = await source(v);
+      } catch (e) {
+        lastError = e;
+        names = [];
+      }
+      if (names.length >= 5) break;
+    }
+    if (names.length >= 5) break;
   }
+  if (!names.length && lastError) throw lastError;
   names = [...new Set(names)].slice(0, 40);
   if (names.length) await chrome.storage.local.set({ [cacheKey]: names });
   return names;
@@ -136,4 +160,4 @@ async function suggest(prompt, used) {
   return { answers, topic };
 }
 
-if (typeof module !== "undefined") module.exports = { topicOf, singular, clean, usable };
+if (typeof module !== "undefined") module.exports = { topicOf, singular, clean, usable, variants, suggest };

@@ -9,7 +9,8 @@
   "host_permissions": [
     "https://krillion.io/*",
     "https://*.krillion.io/*",
-    "https://en.wikipedia.org/*"
+    "https://en.wikipedia.org/*",
+    "https://api.datamuse.com/*"
   ],
   "background": {
     "service_worker": "background.js"
