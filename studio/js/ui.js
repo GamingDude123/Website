@@ -12,10 +12,16 @@
   const $ = function (id) { return document.getElementById(id); };
   const STEPS = Patterns.steps;
 
+  /* Colour carries one meaning: a pad is either loaded or it is not. Sixteen
+   * different hues looked lively and told you nothing. */
+  const WAVE_INK = "rgba(27, 59, 77, 0.72)";
+  const GRID_SLOTS = 16;
+
   const ui = {
     keyRoot: 9,          // A
     scale: "minor",
     genre: "garage",
+    tab: "sample",
     selected: null,
     counter: 0,
     saveTimer: null,
@@ -63,12 +69,6 @@
     const mid = height / 2;
     const per = samples.length / width;
 
-    g.strokeStyle = "rgba(255,255,255,0.10)";
-    g.beginPath();
-    g.moveTo(0, mid);
-    g.lineTo(width, mid);
-    g.stroke();
-
     g.fillStyle = colour || "#4dd4ff";
     for (let x = 0; x < width; x++) {
       const from = Math.floor(x * per);
@@ -89,15 +89,16 @@
 
   // ------------------------------------------------------------------ pads
 
+  /* One short line under the name. A pad is small, so this is whichever single
+   * fact is most worth knowing: the note it was tuned to, how many beats it
+   * fills, or failing both, how long it is. */
   function padSubtitle(pad) {
-    const bits = [];
-    if (pad.note) bits.push(pad.note);
-    if (pad.beats) bits.push(pad.beats + (pad.beats === 1 ? " beat" : " beats"));
-    // The length of whatever is actually loaded, not of the take it came from —
-    // trimming can cut a second of dead air off the front.
+    if (pad.note) return pad.note;
+    if (pad.beats) return pad.beats + (pad.beats === 1 ? " beat" : " beats");
+    // The length of what is loaded, not of the take it came from — trimming can
+    // cut a second of dead air off the front.
     const active = pad.usePolished && pad.polished ? pad.polished : pad.raw;
-    bits.push((active.length / pad.sampleRate).toFixed(2) + "s");
-    return bits.join(" · ");
+    return (active.length / pad.sampleRate).toFixed(2) + "s";
   }
 
   function renderPads() {
@@ -114,19 +115,19 @@
 
       const top = document.createElement("div");
       top.className = "pad-top";
-      const name = document.createElement("span");
-      name.className = "pad-name";
-      name.textContent = pad.name;
       const tag = document.createElement("span");
       tag.className = "tag";
       tag.textContent = pad.role;
-      top.appendChild(name);
       top.appendChild(tag);
 
       const canvas = document.createElement("canvas");
-      const sub = document.createElement("div");
-      sub.className = "pad-sub";
-      sub.textContent = padSubtitle(pad);
+      canvas.title = padSubtitle(pad);
+      const foot = document.createElement("div");
+      foot.className = "pad-foot";
+      const name = document.createElement("div");
+      name.className = "pad-name";
+      name.textContent = pad.name;
+      foot.appendChild(name);
 
       const cog = document.createElement("button");
       cog.className = "cog";
@@ -134,12 +135,11 @@
 
       tile.appendChild(top);
       tile.appendChild(canvas);
-      tile.appendChild(sub);
+      tile.appendChild(foot);
       tile.appendChild(cog);
       host.appendChild(tile);
 
-      drawWave(canvas, pad.usePolished && pad.polished ? pad.polished : pad.raw,
-        pad.role === "kick" ? "#ff3b6b" : pad.role === "bass" ? "#ffb03a" : "#4dd4ff");
+      drawWave(canvas, pad.usePolished && pad.polished ? pad.polished : pad.raw, WAVE_INK);
 
       function hit() {
         Engine.tap(pad.id, 1);
@@ -160,6 +160,18 @@
         openSheet(pad.id);
       });
     });
+
+    // Fill the rest of the grid with somewhere to put the next sound.
+    for (let i = pads.length; i < GRID_SLOTS; i++) {
+      const blank = document.createElement("div");
+      blank.className = "pad is-blank";
+      blank.innerHTML = "<span>+</span>";
+      blank.title = "record a sound";
+      blank.addEventListener("click", function () {
+        if (!Recorder.isRecording()) startRecording();
+      });
+      host.appendChild(blank);
+    }
   }
 
   // ------------------------------------------------------------- sequencer
@@ -219,25 +231,38 @@
 
   // --------------------------------------------------------- adding sounds
 
-  function polishOptions(role) {
-    return {
+  function polishOptions(extra) {
+    const opts = {
       sampleRate: Engine.context().sampleRate,
       bpm: Engine.state.bpm,
       keyRoot: ui.keyRoot,
       scale: ui.scale,
-      role: role || null,
     };
+    if (extra) {
+      Object.keys(extra).forEach(function (key) { opts[key] = extra[key]; });
+    }
+    return opts;
   }
 
   /* Turn a recording into a pad. Everything the polish pass decided is kept on
    * the pad so the sheet can show its reasoning and so a later re-polish can
    * start from the raw take again. */
-  function addSample(name, samples, role) {
-    const result = Polish.process(samples, polishOptions(role));
-    if (!result) {
+  function addSample(name, samples, choice) {
+    // `choice` also carries the stage switches, so prepare needs it as well —
+    // otherwise a preset kit's clean synth sounds get de-noised and trimmed on
+    // the way in, which is work at best and damage at worst.
+    const prep = Polish.prepare(samples, polishOptions(choice));
+    if (!prep) {
       toast("that take was silent");
       return null;
     }
+    return addPrepared(name, samples, prep, Polish.finish(prep, polishOptions(choice)));
+  }
+
+  /* Build the pad once the recording, its analysis and the chosen instrument
+   * have all been settled. */
+  function addPrepared(name, samples, prep, result) {
+    if (!result) return null;
     ui.counter++;
     const pad = Engine.addPad({
       id: "pad-" + Date.now().toString(36) + "-" + ui.counter,
@@ -247,6 +272,8 @@
       sampleRate: result.sampleRate,
       usePolished: true,
       role: result.role,
+      instrument: result.instrument,
+      morph: result.morph,
       sends: { reverb: result.sends.reverb, delay: result.sends.delay },
       duck: result.duck,
       beats: result.beats,
@@ -261,6 +288,10 @@
       mute: false,
       choke: result.role !== "chord" && result.role !== "texture",
       version: 1,
+      // Kept in memory only: it saves re-analysing the take every time the
+      // instrument or the strength is nudged. Absent after a reload, which
+      // costs one extra analysis on the first edit and nothing after that.
+      _prep: prep,
     });
 
     // A new pad gets a part straight away, otherwise pressing play does nothing.
@@ -275,16 +306,26 @@
     return pad;
   }
 
-  function repolish(pad, role) {
+  function repolish(pad, choice) {
     const previous = Polish.recipes[pad.role];
     // Only move the fader if it is still where the previous role put it —
-    // a level the user set by hand survives a change of role.
+    // a level the user set by hand survives a change of instrument.
     const untouched = previous && Math.abs(pad.gain - previous.level) < 0.005;
-    const result = Polish.process(pad.raw, polishOptions(role || pad.role));
+
+    if (!pad._prep) pad._prep = Polish.prepare(pad.raw, polishOptions());
+    if (!pad._prep) return;
+    const wanted = { instrument: pad.instrument, morph: pad.morph };
+    if (choice) {
+      Object.keys(choice).forEach(function (key) { wanted[key] = choice[key]; });
+    }
+    const result = Polish.finish(pad._prep, polishOptions(wanted));
     if (!result) return;
+
     if (untouched) pad.gain = result.level;
     pad.polished = result.samples;
     pad.role = result.role;
+    pad.instrument = result.instrument;
+    pad.morph = result.morph;
     pad.sends = { reverb: result.sends.reverb, delay: result.sends.delay };
     pad.duck = result.duck;
     pad.beats = result.beats;
@@ -292,6 +333,97 @@
     pad.shifted = result.shifted;
     pad.report = result.steps;
     pad.version++;
+  }
+
+  // -------------------------------------------------------- instrument picker
+
+  /* Everything about the take currently waiting to be turned into a pad. */
+  let pending = null;
+  let pickTimer = null;
+
+  function openPicker(name, samples, prep) {
+    pending = {
+      name: name,
+      samples: samples,
+      prep: prep,
+      instrument: prep.guess,
+      morph: (Instrument.get(prep.guess) || {}).morph || 0.5,
+      result: null,
+    };
+    renderPickerGrid();
+    $("pick-morph").value = Math.round(pending.morph * 100);
+    $("pick-morph-out").value = $("pick-morph").value;
+    $("pick").hidden = false;
+    drawWave($("pick-wave"), prep.samples, "#d5aab3");
+    $("pick-status").textContent = "sounds like a " +
+      (Instrument.get(prep.guess) || {}).label.toLowerCase() + " to me — change it if not";
+    reshapePending(true);
+  }
+
+  function renderPickerGrid() {
+    const host = $("pick-grid");
+    host.innerHTML = "";
+    Instrument.order.forEach(function (key) {
+      const inst = Instrument.get(key);
+      const button = document.createElement("button");
+      button.className = "pick" + (key === pending.instrument ? " is-on" : "");
+      button.dataset.instrument = key;
+      button.textContent = inst.label;
+      if (key === pending.prep.guess) {
+        const badge = document.createElement("i");
+        badge.textContent = "guess";
+        button.appendChild(badge);
+      }
+      button.addEventListener("click", function () {
+        pending.instrument = key;
+        // Each instrument brings its own sensible strength, so switching from a
+        // hat to a chord does not carry the hat's 75% over to it.
+        pending.morph = inst.morph;
+        $("pick-morph").value = Math.round(inst.morph * 100);
+        $("pick-morph-out").value = $("pick-morph").value;
+        renderPickerGrid();
+        reshapePending(true);
+      });
+      host.appendChild(button);
+    });
+  }
+
+  /* Re-run the cheap half of the pipeline and, if asked, play the result. The
+   * expensive analysis was done once when the picker opened. */
+  function reshapePending(play) {
+    if (!pending) return;
+    const inst = Instrument.get(pending.instrument);
+    $("pick-hint").textContent = inst.hint;
+    $("pick-status").textContent = "shaping…";
+    afterPaint(function () {
+      if (!pending) return;
+      const result = Polish.finish(pending.prep, polishOptions({
+        instrument: pending.instrument,
+        morph: pending.morph,
+      }));
+      if (!result) return;
+      pending.result = result;
+      drawWave($("pick-wave"), result.samples, "#86c8e2");
+      $("pick-status").textContent = result.steps.join(" · ");
+      if (play) Engine.preview(result.samples, result.sampleRate);
+    });
+  }
+
+  function closePicker() {
+    $("pick").hidden = true;
+    pending = null;
+    clearTimeout(pickTimer);
+  }
+
+  function commitPending() {
+    if (!pending || !pending.result) return;
+    const pad = addPrepared(pending.name, pending.samples, pending.prep, pending.result);
+    const label = pending.result.instrumentLabel;
+    closePicker();
+    if (pad) {
+      status(pad.report.join(" · "));
+      toast("added " + pad.name + " as a " + label.toLowerCase());
+    }
   }
 
   // ------------------------------------------------------------- recording
@@ -334,11 +466,13 @@
     }
     status("working out what that was…", true);
     afterPaint(function () {
-      const pad = addSample(null, take, null);
-      if (pad) {
-        status(pad.report.join(" · "));
-        toast("added " + pad.name + " as a " + pad.role);
+      const prep = Polish.prepare(take, polishOptions());
+      if (!prep) {
+        status("that take was silent — nothing to keep");
+        return;
       }
+      status("pick what it should be");
+      openPicker(null, take, prep);
     });
   }
 
@@ -350,7 +484,11 @@
     ui.selected = id;
 
     $("pad-name").value = pad.name;
-    $("pad-role").value = pad.role;
+    $("pad-instrument").value = pad.instrument || "asis";
+    $("p-morph").value = Math.round((pad.morph || 0) * 100);
+    $("p-morph-out").value = $("p-morph").value;
+    const inst = Instrument.get(pad.instrument || "asis");
+    $("pad-hint").textContent = inst ? inst.hint : "";
     $("btn-ab").textContent = pad.usePolished ? "Polished" : "Raw take";
     $("btn-ab").classList.toggle("is-on", pad.usePolished);
     $("p-gain").value = Math.round(pad.gain * 100);
@@ -387,7 +525,7 @@
 
   function drawSheetWave(pad) {
     drawWave($("pad-wave"), pad.usePolished && pad.polished ? pad.polished : pad.raw,
-      pad.usePolished ? "#3ce68a" : "#a49cc4");
+      pad.usePolished ? "#86c8e2" : "#d5aab3");
   }
 
   function closeSheet() {
@@ -415,6 +553,101 @@
       apply(pad, parseFloat(this.value));
       syncOutputs();
       scheduleSave();
+    });
+  }
+
+  // ------------------------------------------------------------------ tabs
+
+  function showTab(name) {
+    ui.tab = name;
+    const tabs = document.querySelectorAll(".tab");
+    for (let i = 0; i < tabs.length; i++) {
+      const on = tabs[i].dataset.tab === name;
+      tabs[i].classList.toggle("is-on", on);
+      tabs[i].setAttribute("aria-selected", String(on));
+    }
+    const panels = document.querySelectorAll("[data-panel]");
+    for (let i = 0; i < panels.length; i++) {
+      panels[i].hidden = panels[i].dataset.panel !== name;
+    }
+    // Canvases sized while hidden come back zero-width.
+    if (name === "sample") renderPads();
+  }
+
+  // ----------------------------------------------------------------- knobs
+
+  /* Turn a range input into a knob.
+   *
+   * The input stays in the DOM and keeps every listener already attached to it;
+   * the knob just drags it and fires the same `input` event a slider would, so
+   * nothing downstream needs to know the difference. Vertical drag only —
+   * a circular gesture is precise on a mouse and hopeless under a thumb.
+   */
+  function makeKnob(input, label) {
+    const wrap = document.createElement("div");
+    wrap.className = "knob";
+    const dial = document.createElement("div");
+    dial.className = "knob-dial";
+    const pointer = document.createElement("i");
+    dial.appendChild(pointer);
+    const name = document.createElement("div");
+    name.className = "knob-name";
+    name.textContent = label;
+    const value = document.createElement("div");
+    value.className = "knob-value";
+
+    wrap.appendChild(dial);
+    wrap.appendChild(name);
+    wrap.appendChild(value);
+
+    const min = parseFloat(input.min);
+    const max = parseFloat(input.max);
+
+    function paint() {
+      const fraction = (parseFloat(input.value) - min) / (max - min || 1);
+      // 270 degrees of travel, centred, the way a knob with end stops behaves.
+      pointer.style.transform = "rotate(" + (-135 + fraction * 270) + "deg)";
+      value.textContent = input.value;
+    }
+
+    let dragging = false;
+    let startY = 0;
+    let startValue = 0;
+    dial.addEventListener("pointerdown", function (event) {
+      dragging = true;
+      startY = event.clientY;
+      startValue = parseFloat(input.value);
+      dial.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    });
+    dial.addEventListener("pointermove", function (event) {
+      if (!dragging) return;
+      // A full sweep in about 150 px of travel.
+      const delta = ((startY - event.clientY) / 150) * (max - min);
+      const next = Math.max(min, Math.min(max, startValue + delta));
+      input.value = String(Math.round(next));
+      paint();
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const stop = function () { dragging = false; };
+    dial.addEventListener("pointerup", stop);
+    dial.addEventListener("pointercancel", stop);
+    input.addEventListener("input", paint);
+
+    paint();
+    return wrap;
+  }
+
+  /* Swap the three controls that want a thumb on them for knobs, and hide the
+   * sliders behind them rather than removing them. */
+  function buildKnobs() {
+    [["p-gain", "Vol"], ["p-pitch", "Pitch"], ["p-pan", "Pan"]].forEach(function (pair) {
+      const input = $(pair[0]);
+      const field = input.closest(".field");
+      if (!field) return;
+      const knob = makeKnob(input, pair[1]);
+      field.parentNode.insertBefore(knob, field);
+      field.hidden = true;
     });
   }
 
@@ -453,6 +686,14 @@
     });
     key.value = ui.keyRoot;
 
+    const instruments = $("pad-instrument");
+    Instrument.order.forEach(function (key) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = Instrument.get(key).label;
+      instruments.appendChild(option);
+    });
+
     const genre = $("genre");
     Object.keys(Patterns.genres).forEach(function (name) {
       const option = document.createElement("option");
@@ -464,6 +705,11 @@
   }
 
   function bind() {
+    const tabs = document.querySelectorAll(".tab");
+    for (let i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener("click", function () { showTab(this.dataset.tab); });
+    }
+
     $("btn-about").addEventListener("click", function () {
       const box = $("about");
       box.hidden = !box.hidden;
@@ -520,13 +766,43 @@
       else startRecording();
     });
 
+    // --- instrument picker
+    $("pick-morph").addEventListener("input", function () {
+      if (!pending) return;
+      pending.morph = parseInt(this.value, 10) / 100;
+      $("pick-morph-out").value = this.value;
+      // Redraw as it moves, but only play once the slider settles — a preview
+      // firing on every pixel of a drag is unlistenable.
+      clearTimeout(pickTimer);
+      pickTimer = setTimeout(function () { reshapePending(true); }, 260);
+    });
+    $("pick-hear").addEventListener("click", function () {
+      if (pending && pending.result) Engine.preview(pending.result.samples, pending.result.sampleRate);
+    });
+    $("pick-add").addEventListener("click", commitPending);
+    $("pick-discard").addEventListener("click", function () {
+      closePicker();
+      status("take discarded. record another.");
+    });
+    $("pick-close").addEventListener("click", function () {
+      closePicker();
+      status("take discarded. record another.");
+    });
+
     $("btn-import").addEventListener("click", function () { $("file").click(); });
     $("file").addEventListener("change", function () {
       importFiles(Array.prototype.slice.call(this.files));
       this.value = "";
     });
 
-    $("btn-demo").addEventListener("click", loadDemoKit);
+    $("btn-kits").addEventListener("click", function () {
+      renderKitList();
+      $("kits").hidden = false;
+    });
+    $("kits-close").addEventListener("click", function () { $("kits").hidden = true; });
+    $("kits").addEventListener("click", function (event) {
+      if (event.target === this) this.hidden = true;
+    });
     $("btn-arrange").addEventListener("click", function () { arrange(true); });
     $("btn-bounce").addEventListener("click", bounce);
 
@@ -557,7 +833,9 @@
       if (event.target === this) closeSheet();
     });
     document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && !$("sheet").hidden) closeSheet();
+      if (event.key !== "Escape") return;
+      if (!$("kits").hidden) $("kits").hidden = true;
+      if (!$("sheet").hidden) closeSheet();
     });
 
     $("pad-name").addEventListener("input", function () {
@@ -587,18 +865,37 @@
       if (pad) Engine.tap(pad.id, 1);
     });
 
-    $("pad-role").addEventListener("change", function () {
+    $("pad-instrument").addEventListener("change", function () {
       const pad = selected();
       if (!pad) return;
-      const role = this.value;
-      status("re-shaping as a " + role + "…", true);
+      const name = this.value;
+      const inst = Instrument.get(name);
+      status("rebuilding as a " + inst.label.toLowerCase() + "…", true);
       afterPaint(function () {
-        repolish(pad, role);
+        // Changing instrument brings that instrument's own strength with it.
+        repolish(pad, { instrument: name, morph: inst.morph });
         openSheet(pad.id);
         renderPads();
-        status("now shaped like a " + role);
+        Engine.tap(pad.id, 1);
+        status(pad.report.join(" · "));
         scheduleSave();
       });
+    });
+
+    let morphTimer = null;
+    $("p-morph").addEventListener("input", function () {
+      const pad = selected();
+      if (!pad) return;
+      const morph = parseInt(this.value, 10) / 100;
+      $("p-morph-out").value = this.value;
+      clearTimeout(morphTimer);
+      morphTimer = setTimeout(function () {
+        repolish(pad, { morph: morph });
+        drawSheetWave(pad);
+        renderPads();
+        Engine.tap(pad.id, 1);
+        scheduleSave();
+      }, 260);
     });
 
     $("btn-repolish").addEventListener("click", function () {
@@ -687,14 +984,15 @@
 
   function retuneKit(what) {
     const pads = Engine.pads().filter(function (pad) {
-      return Polish.recipes[pad.role] && Polish.recipes[pad.role].tune;
+      const inst = Instrument.get(pad.instrument || "asis");
+      return inst && inst.pitched;
     });
     scheduleSave();
     if (!pads.length) return;
     status("re-tuning " + pads.length + " pad" + (pads.length === 1 ? "" : "s") +
       " to " + Polish.noteNames[ui.keyRoot] + " " + ui.scale + "…", true);
     afterPaint(function () {
-      pads.forEach(function (pad) { repolish(pad, pad.role); });
+      pads.forEach(function (pad) { repolish(pad, null); });
       renderPads();
       if (ui.selected) openSheet(ui.selected);
       status("kit is now in " + Polish.noteNames[ui.keyRoot] + " " + ui.scale);
@@ -742,6 +1040,115 @@
       arrange();
       status("six rough takes in. open one to see what was done to it.");
       toast("scratch kit loaded — press play");
+    });
+  }
+
+  // ------------------------------------------------------------------- kits
+
+  function renderKitList() {
+    const host = $("kit-list");
+    host.innerHTML = "";
+
+    Kits.all.forEach(function (kit) {
+      const row = document.createElement("button");
+      row.className = "kit";
+      row.dataset.kit = kit.id;
+
+      const text = document.createElement("div");
+      text.className = "kit-text";
+      const title = document.createElement("b");
+      title.textContent = kit.name;
+      const hint = document.createElement("span");
+      hint.textContent = kit.hint;
+      text.appendChild(title);
+      text.appendChild(hint);
+
+      // A glance at the kick pattern, which is what tells house from garage.
+      const dots = document.createElement("div");
+      dots.className = "kit-dots";
+      const kick = kit.pads[0].steps;
+      for (let i = 0; i < 16; i += 2) {
+        const dot = document.createElement("i");
+        if (kick[i] || kick[i + 1]) dot.className = "on";
+        dots.appendChild(dot);
+      }
+
+      row.appendChild(text);
+      row.appendChild(dots);
+      row.addEventListener("click", function () { loadKit(kit.id); });
+      host.appendChild(row);
+    });
+
+    // The scratch kit stays on the list: it is the one that shows what the
+    // clean-up actually does, because those takes arrive deliberately rough.
+    const scratch = document.createElement("button");
+    scratch.className = "kit";
+    scratch.dataset.kit = "scratch";
+    scratch.innerHTML = '<div class="kit-text"><b>Scratch kit</b>' +
+      '<span>six rough takes with hiss and dead air, to hear the clean-up working</span></div>';
+    scratch.addEventListener("click", function () {
+      $("kits").hidden = true;
+      loadDemoKit();
+    });
+    host.appendChild(scratch);
+  }
+
+  /* Load a preset: replace the pads, take on its tempo, key, swing and FX. */
+  function loadKit(id) {
+    const kit = Kits.byId(id);
+    if (!kit) return;
+    const ctx = Engine.context();
+    $("kits").hidden = true;
+    status("building " + kit.name.toLowerCase() + "…", true);
+
+    afterPaint(function () {
+      Engine.pads().slice().forEach(function (pad) { Engine.removePad(pad.id); });
+      Engine.clearRows();
+
+      ui.keyRoot = kit.keyRoot;
+      ui.scale = kit.scale;
+      ui.genre = kit.genre;
+      Engine.setTempo(kit.bpm);
+      Engine.setSwing(kit.swing);
+      Object.keys(kit.master).forEach(function (key) { Engine.setMaster(key, kit.master[key]); });
+
+      $("bpm").value = kit.bpm;
+      $("swing").value = Math.round(kit.swing * 100);
+      $("key").value = kit.keyRoot;
+      $("scale").value = kit.scale;
+      $("genre").value = kit.genre;
+      $("m-rev").value = Math.round(kit.master.reverb * 100);
+      $("m-dly").value = Math.round(kit.master.delay * 100);
+      $("m-duck").value = Math.round(kit.master.sidechain * 100);
+      syncOutputs();
+
+      Kits.build(kit, ctx.sampleRate).forEach(function (entry) {
+        // These are already the instrument, so nothing gets rebuilt, tuned or
+        // stretched — they only need the role's mix treatment.
+        const pad = addSample(entry.name, entry.samples, {
+          // Every role is also the name of an instrument, so the role is the
+          // whole mapping: a clap is treated as a snare, a shaker as a hat.
+          instrument: entry.role,
+          morph: 0,
+          denoise: false,
+          trim: false,
+          tune: false,
+          fitGrid: false,
+        });
+        if (!pad) return;
+        Engine.setRow(pad.id, entry.steps.slice(), false);
+        if (entry.level !== undefined) pad.gain = entry.level;
+        if (entry.sends) {
+          if (entry.sends.reverb !== undefined) pad.sends.reverb = entry.sends.reverb;
+          if (entry.sends.delay !== undefined) pad.sends.delay = entry.sends.delay;
+        }
+      });
+
+      renderPads();
+      renderGrid();
+      scheduleSave();
+      status(kit.name + " · " + kit.hint);
+      toast(kit.name + " loaded — press play");
     });
   }
 
@@ -837,6 +1244,8 @@
           sampleRate: record.sampleRate || ctx.sampleRate,
           usePolished: record.usePolished !== false,
           role: record.role,
+          instrument: record.instrument || "asis",
+          morph: record.morph || 0,
           sends: record.sends || { reverb: 0, delay: 0 },
           duck: record.duck || 0,
           beats: record.beats || null,
@@ -865,6 +1274,8 @@
   function boot() {
     fillSelects();
     bind();
+    buildKnobs();
+    showTab("sample");
     if (!Recorder.supported()) {
       status("this browser will not give a page the microphone — import a file or load the scratch kit");
     }
@@ -892,6 +1303,8 @@
   // Exposed so the browser test can drive the page without a microphone.
   window.LoopLab = {
     addSample: addSample,
+    loadKit: loadKit,
+    pending: function () { return pending; },
     arrange: arrange,
     pads: function () { return Engine.pads(); },
     ui: ui,

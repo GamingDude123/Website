@@ -31,6 +31,7 @@ var Engine = (function () {
   let ctx = null;
   let live = null;
   let timer = null;
+  let previewSource = null;
   const stepListeners = [];
   const scheduled = [];       // {step, time} waiting for the playhead to reach them
   const voices = {};          // padId -> active sources, for choking
@@ -368,6 +369,28 @@ var Engine = (function () {
     requestAnimationFrame(pump);
   }
 
+  /* Play a bare buffer of samples once, with none of the pad machinery. Used
+   * by the instrument picker, which has to be audible before a pad exists. */
+  function preview(samples, sampleRate) {
+    return resume().then(function () {
+      const c = context();
+      const bus = liveBus();
+      const buffer = c.createBuffer(1, samples.length, sampleRate || c.sampleRate);
+      buffer.copyToChannel(Float32Array.from(samples), 0);
+      if (previewSource) {
+        try { previewSource.stop(); } catch (err) { /* already finished */ }
+      }
+      const src = c.createBufferSource();
+      src.buffer = buffer;
+      const gain = c.createGain();
+      gain.gain.value = 0.9;
+      src.connect(gain);
+      gain.connect(bus.dry);
+      src.start(c.currentTime + 0.005);
+      previewSource = src;
+    });
+  }
+
   function tap(padId, velocity) {
     return resume().then(function () {
       const c = context();
@@ -440,6 +463,7 @@ var Engine = (function () {
     rows: function () { return state.rows; },
     clearRows: function () { state.rows = {}; },
     tap: tap,
+    preview: preview,
     play: play,
     stop: stop,
     toggle: function () { return state.playing ? (stop(), Promise.resolve()) : play(); },

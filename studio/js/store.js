@@ -76,6 +76,8 @@ var Store = (function () {
           order: index,
           name: pad.name,
           role: pad.role,
+          instrument: pad.instrument,
+          morph: pad.morph,
           sampleRate: pad.sampleRate,
           raw: toBlob(pad.raw, pad.sampleRate),
           polished: pad.polished ? toBlob(pad.polished, pad.sampleRate) : null,
