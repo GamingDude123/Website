@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.5.3
+// @version      0.5.4
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -227,12 +227,9 @@ async function suggest(prompt, onPartial) {
     const answers = await askAI(clean);
     GM_setValue(`ai:${clean}`, answers);
     return { answers, topic: clean, source: "free AI" };
-  } catch (_) { /* fall through to the web lookup */ }
-  const topic = topicOf(prompt);
-  if (!topic) throw new Error("No list for this category yet.");
-  const answers = await candidates(topic, () => {}).catch(() => []);
-  if (!answers.length) throw new Error("No list for this category yet.");
-  return { answers, topic, source: "web, may be rough" };
+  } catch (e) {
+    throw new Error(`No built-in list, and the AI lookup failed (${e.message}). Check Tampermonkey allowed text.pollinations.ai.`);
+  }
 }
 
 // Detects the Puffer Party category prompt, asks the background worker for answers, and shows them in a sidebar.
@@ -255,7 +252,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.5.3</span><button id="min">_</button></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.5.4</span><button id="min">_</button></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
