@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.2.2
+// @version      0.3.0
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -137,8 +137,14 @@ async function fromListPage(topic) {
 
 // Datamuse (free, no key): words that are kinds of the given word, e.g. "cheese" -> cheddar, brie...
 async function fromDatamuse(word) {
-  const rows = await getJSON(`https://api.datamuse.com/words?rel_gen=${encodeURIComponent(word)}&max=60`);
-  return rows.map((r) => r.word).filter((w) => /^[a-z][a-z' -]{2,}$/i.test(w)).map((w) => w.replace(/^./, (c) => c.toUpperCase()));
+  const kinds = async (w, max) => {
+    const rows = await getJSON(`https://api.datamuse.com/words?rel_gen=${encodeURIComponent(w)}&max=${max}`);
+    return rows.map((r) => r.word).filter((x) => /^[a-z][a-z' -]{2,}$/i.test(x));
+  };
+  const first = await kinds(word, 300);
+  // Go one level deeper (kinds of kinds) so rarer answers show up too.
+  const deeper = (await Promise.all(first.slice(0, 12).map((w) => kinds(w, 100).catch(() => [])))).flat();
+  return [...new Set([...first, ...deeper])].map((w) => w.replace(/^./, (c) => c.toUpperCase()));
 }
 
 // "animal that lives in the ocean" -> ["animal that lives in the ocean", "animal", "ocean", ...]
@@ -150,41 +156,44 @@ function variants(topic) {
   return [...new Set(out.filter(Boolean))];
 }
 
-async function candidates(topic) {
+// onPartial gets the quick built-in list right away; the return value is built-in + web answers.
+async function candidates(topic, onPartial) {
   const words = topic.split(/\s+/);
   const keys = [topic, singular(topic), ...words, ...words.map(singular)];
-  for (const k of keys) if (BUNDLED[k]) return BUNDLED[k];
-  for (const w of words) if (ALIAS[w]) return BUNDLED[ALIAS[w]];
+  let builtin = [];
+  for (const k of keys) if (BUNDLED[k]) { builtin = BUNDLED[k]; break; }
+  if (!builtin.length) for (const w of words) if (ALIAS[w]) { builtin = BUNDLED[ALIAS[w]]; break; }
+  if (builtin.length) onPartial(builtin);
 
-  const cacheKey = `cache:${topic}`;
-  const cached = GM_getValue(cacheKey);
-  if (cached) return cached;
-
-  // Every variant and source runs at once; the best-ranked variant with enough answers wins.
-  let lastError;
-  const runs = variants(topic).map((v) =>
-    Promise.all([fromCategory, fromListPage, fromDatamuse].map((src) => src(v).catch((e) => { lastError = e; return []; })))
-  );
-  let names = [];
-  for (const run of runs) {
-    const found = (await run).find((n) => n.length >= 5);
-    if (found) { names = found; break; }
+  const cacheKey = `cache2:${topic}`;
+  let web = GM_getValue(cacheKey);
+  if (!web) {
+    // Every variant and source runs at once; the best-ranked variant with enough answers wins,
+    // and all of its sources are merged (category pages first, then list pages, then word database).
+    let lastError;
+    const runs = variants(topic).map((v) =>
+      Promise.all([fromCategory, fromListPage, fromDatamuse].map((src) => src(v).catch((e) => { lastError = e; return []; })))
+    );
+    web = [];
+    for (const run of runs) {
+      const merged = [...new Set((await run).flat())];
+      if (merged.length >= 5) { web = merged; break; }
+    }
+    if (!web.length && !builtin.length && lastError) throw lastError;
+    web = web.slice(0, 200);
+    if (web.length) GM_setValue(cacheKey, web);
   }
-  if (!names.length && lastError) throw lastError;
-  names = [...new Set(names)].slice(0, 40);
-  if (names.length) GM_setValue(cacheKey, names);
-  return names;
+  const have = new Set(builtin.map((n) => n.toLowerCase()));
+  return [...builtin, ...web.filter((n) => !have.has(n.toLowerCase()))];
 }
 
-async function suggest(prompt, used) {
+async function suggest(prompt, onPartial) {
   const topic = topicOf(prompt);
   if (!topic) throw new Error("Couldn't work out the category.");
-  const usedSet = new Set(used.map((u) => u.toLowerCase()));
-  const answers = (await candidates(topic)).filter((n) => !usedSet.has(n.toLowerCase())).slice(0, 8);
+  const answers = await candidates(topic, (a) => onPartial({ answers: a, topic }));
   if (!answers.length) throw new Error(`No answers found for "${topic}".`);
   return { answers, topic };
 }
-
 
 // Detects the Puffer Party category prompt, asks the background worker for answers, and shows them in a sidebar.
 // The sidebar only appears while a "CATEGORY n" prompt is on screen.
@@ -196,7 +205,7 @@ async function suggest(prompt, used) {
   const root = HOST.attachShadow({ mode: "open" });
   root.innerHTML = `
     <style>
-      .box{width:210px;font:13px ui-monospace,monospace;color:#e8f6ff;background:#0a2a45ee;border:1px solid #3cc8ff;border-radius:8px;padding:8px}
+      .box{width:210px;max-height:80vh;overflow:auto;font:13px ui-monospace,monospace;color:#e8f6ff;background:#0a2a45ee;border:1px solid #3cc8ff;border-radius:8px;padding:8px}
       .row{display:flex;justify-content:space-between;align-items:center;gap:6px}
       .p{margin:6px 0;color:#7fd8ff;word-break:break-word}
       button{font:inherit;background:#12466e;color:inherit;border:1px solid #3cc8ff;border-radius:4px;padding:2px 6px;cursor:pointer}
@@ -271,14 +280,29 @@ async function suggest(prompt, used) {
   dot.dataset.pufferDot = "1";
   document.documentElement.appendChild(dot);
 
-  // Words already on screen outside the helper (players' answer bubbles, chat) count as used.
-  function onScreenText() {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let s = "";
-    for (let n; (n = walker.nextNode()); ) if (!HOST.contains(n.parentNode)) s += " " + n.nodeValue;
-    return s.toLowerCase();
+  // Every short piece of text that appears on the page this round (answer bubbles, chat) is remembered,
+  // so an answer still counts as used after its bubble disappears.
+  let seen = new Set();
+  const note = (text) => {
+    const t = (text || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (t && t.length <= 40 && !(current && t.includes(current.toLowerCase()))) seen.add(t);
+  };
+  function noteTree(node) {
+    if (node.nodeType === 3) return note(node.nodeValue);
+    if (node.nodeType !== 1) return;
+    const w = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode()); ) note(n.nodeValue);
   }
-  const isUsed = (a) => new RegExp(`(^|[^a-z])${a.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`).test(onScreenText());
+  function onScreenText() {
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode()); ) note(n.nodeValue);
+  }
+  const esc = (a) => a.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const isUsed = (a) => {
+    const re = new RegExp(`(^|[^a-z])${esc(a)}(e?s)?([^a-z]|$)`);
+    for (const t of seen) if (re.test(t)) return true;
+    return false;
+  };
 
   let current = "";
   let all = [];
@@ -293,7 +317,7 @@ async function suggest(prompt, used) {
     t.className = "t";
     t.textContent = "searched: " + topic;
     out.append(t);
-    const left = all.filter((a) => !clicked.has(a) && !isUsed(a)).slice(0, 8);
+    const left = all.filter((a) => !clicked.has(a) && !isUsed(a)).slice(0, 40);
     left.forEach((a, i) => {
       const b = document.createElement("button");
       b.className = "a" + (i === 0 ? " top" : "");
@@ -309,10 +333,15 @@ async function suggest(prompt, used) {
     HOST.style.display = p ? "" : "none";
     if (!p) { current = ""; return; }
     if (p === current) { if (all.length) render(); return; } // re-filter as new answers appear on screen
-    current = p; all = []; clicked = new Set();
+    current = p; all = []; clicked = new Set(); seen = new Set();
+    onScreenText();
     $("prompt").textContent = p;
     $("out").textContent = "thinking...";
-    const res = await suggest(p, []).catch((e) => ({ error: String(e.message || e) }));
+    const res = await suggest(p, (part) => {
+      if (p !== current) return;
+      all = part.answers; topic = part.topic;
+      render();
+    }).catch((e) => ({ error: String(e.message || e) }));
     if (p !== current) return; // prompt changed while waiting
     if (res.error) return render(res.error);
     all = res.answers; topic = res.topic;
@@ -321,7 +350,11 @@ async function suggest(prompt, used) {
 
   let timer;
   let last = 0;
-  new MutationObserver(() => {
+  new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === "characterData") note(m.target.nodeValue);
+      else m.addedNodes.forEach(noteTree);
+    }
     if (timer) return;
     timer = setTimeout(() => { timer = 0; last = Date.now(); refresh(); }, Math.max(300, 800 - (Date.now() - last)));
   })
