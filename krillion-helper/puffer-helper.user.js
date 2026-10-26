@@ -1,0 +1,294 @@
+// ==UserScript==
+// @name         Krillion Puffer Helper
+// @namespace    https://github.com/GamingDude123/Website
+// @version      0.2.0
+// @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
+// @match        https://krillion.io/*
+// @match        https://*.krillion.io/*
+// @run-at       document-idle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      en.wikipedia.org
+// @connect      api.datamuse.com
+// @updateURL    https://raw.githubusercontent.com/GamingDude123/Website/claude/magical-rubin-okrvsh/krillion-helper/puffer-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/GamingDude123/Website/claude/magical-rubin-okrvsh/krillion-helper/puffer-helper.user.js
+// ==/UserScript==
+
+(() => {
+"use strict";
+
+// Cross-origin GET that works even if the site's CSP blocks fetch().
+function getJSON(url) {
+  return new Promise((resolve, reject) => {
+    GM_xmlhttpRequest({
+      method: "GET",
+      url,
+      onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(JSON.parse(r.responseText)) : reject(new Error(`HTTP ${r.status}`))),
+      onerror: () => reject(new Error("network error")),
+      ontimeout: () => reject(new Error("timeout")),
+      timeout: 10000
+    });
+  });
+}
+
+// Free, keyless answer source: bundled lists first, then Wikipedia categories / list pages.
+// Results are cached per topic so repeat categories need no network at all.
+const WIKI = "https://en.wikipedia.org/w/api.php";
+
+const BUNDLED = {
+  military: ["General", "Colonel", "Major", "Captain", "Lieutenant", "Sergeant", "Corporal", "Private", "Admiral", "Commander", "Ensign", "Brigadier"],
+  cheese: ["Cheddar", "Brie", "Gouda", "Mozzarella", "Parmesan", "Feta", "Swiss", "Camembert", "Provolone", "Havarti"],
+  fruit: ["Apple", "Banana", "Orange", "Grape", "Mango", "Pear", "Peach", "Cherry", "Lemon", "Strawberry", "Plum", "Kiwi"],
+  vegetable: ["Carrot", "Broccoli", "Potato", "Onion", "Spinach", "Celery", "Pepper", "Lettuce", "Corn", "Cabbage", "Pea", "Cucumber"],
+  animal: ["Dog", "Cat", "Horse", "Lion", "Tiger", "Bear", "Wolf", "Fox", "Elephant", "Giraffe", "Monkey", "Zebra"],
+  bird: ["Eagle", "Robin", "Owl", "Sparrow", "Penguin", "Parrot", "Crow", "Hawk", "Duck", "Swan", "Falcon", "Pigeon"],
+  fish: ["Salmon", "Tuna", "Trout", "Bass", "Cod", "Shark", "Goldfish", "Catfish", "Eel", "Carp", "Perch", "Pike"],
+  color: ["Red", "Blue", "Green", "Yellow", "Purple", "Orange", "Pink", "Brown", "Black", "White", "Gray", "Teal"],
+  country: ["France", "Brazil", "Japan", "Canada", "Egypt", "India", "Italy", "Mexico", "Spain", "China", "Germany", "Peru"],
+  state: ["Texas", "Florida", "Ohio", "Maine", "Utah", "Iowa", "Nevada", "Oregon", "Alaska", "Georgia", "Hawaii", "Idaho"],
+  city: ["Paris", "London", "Tokyo", "Rome", "Madrid", "Berlin", "Sydney", "Cairo", "Moscow", "Dallas", "Boston", "Miami"],
+  planet: ["Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"],
+  element: ["Hydrogen", "Oxygen", "Carbon", "Iron", "Gold", "Silver", "Helium", "Neon", "Copper", "Zinc", "Sodium", "Lead"],
+  language: ["English", "Spanish", "French", "German", "Chinese", "Arabic", "Hindi", "Russian", "Italian", "Japanese", "Korean", "Latin"],
+  month: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+  car: ["Toyota", "Ford", "Honda", "BMW", "Tesla", "Audi", "Chevrolet", "Nissan", "Jeep", "Subaru", "Mazda", "Kia"],
+  sport: ["Soccer", "Tennis", "Golf", "Hockey", "Rugby", "Boxing", "Baseball", "Cricket", "Football", "Basketball", "Swimming", "Skiing"],
+  instrument: ["Guitar", "Piano", "Violin", "Drums", "Flute", "Trumpet", "Cello", "Harp", "Saxophone", "Clarinet", "Banjo", "Tuba"],
+  dog: ["Poodle", "Beagle", "Bulldog", "Husky", "Corgi", "Boxer", "Dachshund", "Pug", "Labrador", "Collie", "Terrier", "Chihuahua"],
+  drink: ["Water", "Coffee", "Tea", "Milk", "Juice", "Soda", "Beer", "Wine", "Lemonade", "Cola", "Smoothie", "Cocoa"],
+  tree: ["Oak", "Maple", "Pine", "Birch", "Willow", "Elm", "Cedar", "Palm", "Spruce", "Ash", "Fir", "Redwood"],
+  flower: ["Rose", "Tulip", "Daisy", "Lily", "Orchid", "Sunflower", "Daffodil", "Violet", "Poppy", "Lotus", "Iris", "Lilac"],
+  subject: ["Math", "Science", "History", "English", "Art", "Music", "Biology", "Chemistry", "Physics", "Geography", "Gym", "Algebra"],
+  job: ["Doctor", "Teacher", "Nurse", "Lawyer", "Chef", "Pilot", "Farmer", "Plumber", "Engineer", "Artist", "Police", "Firefighter"]
+};
+
+const ALIAS = { army: "military", navy: "military", rank: "military", ranks: "military", cities: "city", states: "state", breed: "dog", breeds: "dog", cars: "car", brand: "car", beverage: "drink", beverages: "drink", occupation: "job", profession: "job", school: "subject", countries: "country" };
+
+// "Name types of cheese?" -> "cheese"
+function topicOf(prompt) {
+  const lead = /^(please|name|list|say|give me|tell me|famous|some|any|different|popular|types? of|kinds? of|things|which|what are|what is|a|an|the)\s+/;
+  let t = prompt.toLowerCase().replace(/[?!.:]+$/g, "").trim();
+  for (let prev; prev !== t; ) { prev = t; t = t.replace(lead, ""); }
+  return t;
+}
+
+function singular(w) {
+  return w.replace(/ies$/, "y").replace(/(s|x|ch|sh)es$/, "$1").replace(/s$/, "");
+}
+
+function clean(title) {
+  return title.replace(/\s*\(.*?\)\s*/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function usable(title) {
+  return (
+    title &&
+    !/^(list|lists|category|template|portal|wikipedia|help|file|outline|index|glossary|timeline)\b/i.test(title) &&
+    !/\b(list of|lists of)\b/i.test(title) &&
+    !/^\d/.test(title) &&
+    title.length <= 30
+  );
+}
+
+function wiki(params) {
+  return getJSON(`${WIKI}?${new URLSearchParams({ format: "json", origin: "*", ...params })}`);
+}
+
+// Orders titles by recent pageviews, so well-known answers come before obscure ones.
+async function byPopularity(titles) {
+  const views = new Map();
+  for (let i = 0; i < titles.length; i += 50) {
+    const batch = titles.slice(i, i + 50);
+    const r = await wiki({ action: "query", prop: "pageviews", pvipdays: "30", titles: batch.join("|") });
+    for (const p of Object.values(r.query?.pages || {})) {
+      views.set(p.title, Object.values(p.pageviews || {}).reduce((sum, v) => sum + (v || 0), 0));
+    }
+  }
+  return [...titles].sort((a, b) => (views.get(b) || 0) - (views.get(a) || 0));
+}
+
+async function fromCategory(topic) {
+  const s = await wiki({ action: "query", list: "search", srsearch: topic, srnamespace: "14", srlimit: "3" });
+  for (const hit of s.query?.search || []) {
+    const m = await wiki({
+      action: "query", list: "categorymembers", cmtitle: hit.title, cmtype: "page", cmlimit: "150"
+    });
+    const titles = (m.query?.categorymembers || []).map((p) => p.title).filter((t) => usable(clean(t)));
+    if (titles.length >= 5) return (await byPopularity(titles)).map(clean);
+  }
+  return [];
+}
+
+async function fromListPage(topic) {
+  const s = await wiki({ action: "query", list: "search", srsearch: `List of ${topic}`, srlimit: "1" });
+  const page = s.query?.search?.[0]?.title;
+  if (!page) return [];
+  const l = await wiki({ action: "query", prop: "links", titles: page, pllimit: "100", plnamespace: "0" });
+  const pages = Object.values(l.query?.pages || {});
+  const titles = (pages[0]?.links || []).map((x) => x.title).filter((t) => usable(clean(t)));
+  return (await byPopularity(titles)).map(clean);
+}
+
+// Datamuse (free, no key): words that are kinds of the given word, e.g. "cheese" -> cheddar, brie...
+async function fromDatamuse(word) {
+  const rows = await getJSON(`https://api.datamuse.com/words?rel_gen=${encodeURIComponent(word)}&max=60`);
+  return rows.map((r) => r.word).filter((w) => /^[a-z][a-z' -]{2,}$/i.test(w)).map((w) => w.replace(/^./, (c) => c.toUpperCase()));
+}
+
+// "animal that lives in the ocean" -> ["animal that lives in the ocean", "animal", "ocean", ...]
+function variants(topic) {
+  const words = topic.split(/\s+/).filter((w) => !/^(in|of|the|that|which|who|a|an|and|or|on|at|to|from|with|you|can|find|found|lives?)$/.test(w));
+  const out = [topic, singular(topic)];
+  if (words.length > 1) out.push(words.join(" "), words.slice(-2).join(" "), words[words.length - 1], words[0]);
+  out.push(...words.map(singular));
+  return [...new Set(out.filter(Boolean))];
+}
+
+async function candidates(topic) {
+  const words = topic.split(/\s+/);
+  const keys = [topic, singular(topic), ...words, ...words.map(singular)];
+  for (const k of keys) if (BUNDLED[k]) return BUNDLED[k];
+  for (const w of words) if (ALIAS[w]) return BUNDLED[ALIAS[w]];
+
+  const cacheKey = `cache:${topic}`;
+  const cached = GM_getValue(cacheKey);
+  if (cached) return cached;
+
+  let names = [], lastError;
+  for (const v of variants(topic)) {
+    for (const source of [fromCategory, fromListPage, fromDatamuse]) {
+      try {
+        names = await source(v);
+      } catch (e) {
+        lastError = e;
+        names = [];
+      }
+      if (names.length >= 5) break;
+    }
+    if (names.length >= 5) break;
+  }
+  if (!names.length && lastError) throw lastError;
+  names = [...new Set(names)].slice(0, 40);
+  if (names.length) GM_setValue(cacheKey, names);
+  return names;
+}
+
+async function suggest(prompt, used) {
+  const topic = topicOf(prompt);
+  if (!topic) throw new Error("Couldn't work out the category.");
+  const usedSet = new Set(used.map((u) => u.toLowerCase()));
+  const answers = (await candidates(topic)).filter((n) => !usedSet.has(n.toLowerCase())).slice(0, 8);
+  if (!answers.length) throw new Error(`No answers found for "${topic}".`);
+  return { answers, topic };
+}
+
+
+// Detects the Puffer Party category prompt, asks the background worker for answers, and shows them in a sidebar.
+// The sidebar only appears while a "CATEGORY n" prompt is on screen.
+(() => {
+  try { localStorage.removeItem("puffer-helper-selector"); } catch (_) {}
+
+  const HOST = document.createElement("div");
+  HOST.style.cssText = "position:fixed;top:110px;left:12px;z-index:2147483647;display:none;";
+  const root = HOST.attachShadow({ mode: "open" });
+  root.innerHTML = `
+    <style>
+      .box{width:210px;font:13px ui-monospace,monospace;color:#e8f6ff;background:#0a2a45ee;border:1px solid #3cc8ff;border-radius:8px;padding:8px}
+      .row{display:flex;justify-content:space-between;align-items:center;gap:6px}
+      .p{margin:6px 0;color:#7fd8ff;word-break:break-word}
+      button{font:inherit;background:#12466e;color:inherit;border:1px solid #3cc8ff;border-radius:4px;padding:2px 6px;cursor:pointer}
+      .a{display:block;width:100%;text-align:left;margin:3px 0}
+      .a.top{background:#1f7a4d}
+      .t{color:#9bb;font-size:11px;margin-bottom:4px}
+      .err{color:#ff9a9a}
+    </style>
+    <div class="box">
+      <div class="row"><b>Puffer helper</b><button id="min">_</button></div>
+      <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
+    </div>`;
+  document.documentElement.appendChild(HOST);
+  const $ = (id) => root.getElementById(id);
+
+  const LABEL = /^category\s*\d+$/i;
+  const IGNORE = /^(any answer|category|unrated|floating)/i;
+  const fontOf = (el) => parseFloat(getComputedStyle(el).fontSize) || 0;
+  const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const leaves = (el) => [...el.querySelectorAll("*")].filter((n) => n.children.length === 0 && (n.innerText || "").trim() && visible(n));
+
+  // The prompt is the largest text sharing a container (up to 3 levels up) with a "CATEGORY n" label.
+  function detectPrompt() {
+    let best = null, bestFont = 0;
+    for (const label of leaves(document.body)) {
+      if (HOST.contains(label) || !LABEL.test(label.innerText.trim())) continue;
+      let box = label.parentElement;
+      for (let i = 0; i < 3 && box; i++, box = box.parentElement) {
+        for (const n of leaves(box)) {
+          const t = n.innerText.trim();
+          if (n === label || IGNORE.test(t) || t.length < 4) continue;
+          const f = fontOf(n);
+          if (f > fontOf(label) && f > bestFont) { best = t; bestFont = f; }
+        }
+        if (best) break;
+      }
+    }
+    return best || "";
+  }
+
+  // Words already on screen outside the helper (players' answer bubbles, chat) count as used.
+  function onScreenText() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let s = "";
+    for (let n; (n = walker.nextNode()); ) if (!HOST.contains(n.parentNode)) s += " " + n.nodeValue;
+    return s.toLowerCase();
+  }
+  const isUsed = (a) => new RegExp(`(^|[^a-z])${a.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z]|$)`).test(onScreenText());
+
+  let current = "";
+  let all = [];
+  let topic = "";
+  let clicked = new Set();
+
+  function render(error) {
+    const out = $("out");
+    out.textContent = "";
+    if (error) { const d = document.createElement("div"); d.className = "err"; d.textContent = error; out.append(d); return; }
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = "searched: " + topic;
+    out.append(t);
+    const left = all.filter((a) => !clicked.has(a) && !isUsed(a)).slice(0, 8);
+    left.forEach((a, i) => {
+      const b = document.createElement("button");
+      b.className = "a" + (i === 0 ? " top" : "");
+      b.textContent = a;
+      b.onclick = () => { navigator.clipboard?.writeText(a); clicked.add(a); render(); };
+      out.append(b);
+    });
+    if (!left.length) out.append(Object.assign(document.createElement("div"), { className: "err", textContent: "nothing left" }));
+  }
+
+  async function refresh() {
+    const p = detectPrompt();
+    HOST.style.display = p ? "" : "none";
+    if (!p) { current = ""; return; }
+    if (p === current) { if (all.length) render(); return; } // re-filter as new answers appear on screen
+    current = p; all = []; clicked = new Set();
+    $("prompt").textContent = p;
+    $("out").textContent = "thinking...";
+    const res = await suggest(p, []).catch((e) => ({ error: String(e.message || e) }));
+    if (p !== current) return; // prompt changed while waiting
+    if (res.error) return render(res.error);
+    all = res.answers; topic = res.topic;
+    render();
+  }
+
+  let timer;
+  new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(refresh, 250); })
+    .observe(document.body, { childList: true, subtree: true, characterData: true });
+  refresh();
+
+  $("min").onclick = () => { const b = $("body"); b.style.display = b.style.display === "none" ? "" : "none"; };
+})();
+
+})();
