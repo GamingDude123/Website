@@ -11,10 +11,11 @@
       button{font:inherit;background:#12466e;color:inherit;border:1px solid #3cc8ff;border-radius:4px;padding:2px 6px;cursor:pointer}
       .a{display:block;width:100%;text-align:left;margin:3px 0}
       .a.top{background:#1f7a4d}
+      .t{color:#9bb;font-size:11px;margin-bottom:4px}
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b><span><button id="pick">pick</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b><span><button id="pick">pick</button> <button id="dbg">debug</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt">waiting for a prompt...</div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
@@ -47,9 +48,15 @@
     return bestScore >= 4 ? best : "";
   }
 
-  function render(answers, error) {
+  function render(answers, error, topic) {
     const out = $("out");
     out.textContent = "";
+    if (topic) {
+      const t = document.createElement("div");
+      t.className = "t";
+      t.textContent = "searched: " + topic;
+      out.append(t);
+    }
     if (error) {
       const d = document.createElement("div");
       d.className = "err";
@@ -75,13 +82,26 @@
     $("out").textContent = "thinking...";
     const res = await chrome.runtime.sendMessage({ type: "suggest", prompt: p, used });
     if (p !== current) return; // prompt changed while waiting
-    res.error ? render([], res.error) : render(res.answers);
+    res.error ? render([], res.error) : render(res.answers, null, res.topic);
   }
 
   let timer;
   new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(refresh, 250); })
     .observe(document.body, { childList: true, subtree: true, characterData: true });
   refresh();
+
+  // Copies a description of what's on screen so the detection can be tuned to the real page.
+  $("dbg").onclick = () => {
+    const lines = [location.href, ""];
+    for (const el of document.body.querySelectorAll("*")) {
+      if (HOST.contains(el) || el.children.length > 0) continue;
+      const t = (el.innerText || "").trim();
+      const r = el.getBoundingClientRect();
+      if (!t || !r.width || !r.height) continue;
+      lines.push(`<${el.tagName.toLowerCase()} id="${el.id}" class="${el.className}" font=${getComputedStyle(el).fontSize}> ${t.slice(0, 100)}`);
+    }
+    navigator.clipboard.writeText(lines.join("\n")).then(() => { $("prompt").textContent = "copied! paste it to Claude"; });
+  };
 
   $("min").onclick = () => { const b = $("body"); b.style.display = b.style.display === "none" ? "" : "none"; };
 

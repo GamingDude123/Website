@@ -103,7 +103,7 @@ async function suggest(prompt, used) {
   const usedSet = new Set(used.map((u) => u.toLowerCase()));
   const answers = (await candidates(topic)).filter((n) => !usedSet.has(n.toLowerCase())).slice(0, 8);
   if (!answers.length) throw new Error(`No answers found for "${topic}".`);
-  return { answers };
+  return { answers, topic };
 }
 
 if (typeof module !== "undefined") module.exports = { topicOf, singular, clean, usable };
