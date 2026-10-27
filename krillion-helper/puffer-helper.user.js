@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.7.0
+// @version      0.7.1
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -59,35 +59,67 @@ function matchCategory(prompt) {
 }
 
 // Free, fast language model (Groq free tier, needs your own free key). Only the category text is sent.
-function askAI(prompt) {
-  const key = GM_getValue("groqKey");
-  if (!key) return Promise.reject(new Error("no key"));
+const GROQ = "https://api.groq.com/openai/v1";
+
+function groq(method, path, key, body) {
   return new Promise((resolve, reject) => {
     GM_xmlhttpRequest({
-      method: "POST",
-      url: "https://api.groq.com/openai/v1/chat/completions",
+      method,
+      url: GROQ + path,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      data: JSON.stringify({
-        model: "llama-3.1-8b-instant",
-        temperature: 0.3,
-        max_tokens: 400,
-        messages: [
-          { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation." },
-          { role: "user", content: `Category: "${prompt}". Give 40 different valid answers. Put the most obvious, common ones first and the rarer ones later.` }
-        ]
-      }),
+      data: body ? JSON.stringify(body) : undefined,
       timeout: 8000,
       onload: (r) => {
-        if (r.status < 200 || r.status >= 300) return reject(new Error(`HTTP ${r.status}`));
-        let text = "";
-        try { text = JSON.parse(r.responseText).choices[0].message.content; } catch (_) { return reject(new Error("bad reply")); }
-        const items = text.split(/[,\n]/).map((x) => x.replace(/^[\s\-*\d.)"']+|[\s."']+$/g, "").trim()).filter((x) => x && x.length <= 40);
-        items.length >= 5 ? resolve([...new Set(items)]) : reject(new Error("no list returned"));
+        let json = null;
+        try { json = JSON.parse(r.responseText); } catch (_) {}
+        if (r.status >= 200 && r.status < 300 && json) return resolve(json);
+        const why = json?.error?.message || (r.responseText || "").slice(0, 80);
+        reject(Object.assign(new Error(`HTTP ${r.status}${why ? ": " + why.slice(0, 100) : ""}`), { status: r.status }));
       },
       onerror: () => reject(new Error("network error")),
       ontimeout: () => reject(new Error("timeout"))
     });
   });
+}
+
+// Model names change over time, so ask Groq what's available and take the fastest small chat model.
+async function pickModel(key, refresh) {
+  const saved = GM_getValue("groqModel");
+  if (saved && !refresh) return saved;
+  const list = await groq("GET", "/models", key);
+  const ids = (list.data || []).filter((m) => m.active !== false).map((m) => m.id)
+    .filter((id) => !/whisper|guard|tts|playai|orpheus|embed|moderation|safeguard/i.test(id));
+  const prefer = [/instant/i, /(llama|scout).*(8b|17b)/i, /gpt-oss-20b/i, /llama/i, /qwen|gemma|mistral/i, /./];
+  let model = null;
+  for (const re of prefer) { model = ids.find((id) => re.test(id)); if (model) break; }
+  if (!model) throw new Error("no chat model available");
+  GM_setValue("groqModel", model);
+  return model;
+}
+
+async function askAI(prompt, retried) {
+  const key = GM_getValue("groqKey");
+  if (!key) throw new Error("no key");
+  const model = await pickModel(key, retried);
+  let reply;
+  try {
+    reply = await groq("POST", "/chat/completions", key, {
+      model,
+      temperature: 0.3,
+      max_tokens: 400,
+      messages: [
+        { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation." },
+        { role: "user", content: `Category: "${prompt}". Give 40 different valid answers. Put the most obvious, common ones first and the rarer ones later.` }
+      ]
+    });
+  } catch (e) {
+    if (!retried && (e.status === 404 || e.status === 400)) return askAI(prompt, true); // model gone: re-pick once
+    throw e;
+  }
+  const text = reply.choices?.[0]?.message?.content || "";
+  const items = text.split(/[,\n]/).map((x) => x.replace(/^[\s\-*\d.)"']+|[\s."']+$/g, "").trim()).filter((x) => x && x.length <= 40);
+  if (items.length < 5) throw new Error("no list returned");
+  return [...new Set(items)];
 }
 
 // Built-in lists answer instantly. Otherwise show the closest list right away, then upgrade it with the AI's answer.
@@ -133,7 +165,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.0</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.1</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
