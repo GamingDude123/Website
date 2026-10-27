@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.7.1
+// @version      0.7.2
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -165,7 +165,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.1</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.2</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
@@ -173,7 +173,8 @@ async function suggest(prompt, onPartial) {
 
   const LABEL = /^category\s*\d+$/i;
   const HINT = /any answer passes the puffer/i;
-  const IGNORE = /^(any answer|category|unrated|floating)/i;
+  const IGNORE = /^(any answer|category|unrated|rated|floating|chat|players|send|say something)/i;
+  const PROMPTY = /^(name|list|say|give|which|what|who|where|when|how|things?|types?|kinds?|words?|famous|something|tell|pick|choose|an?\s|the\s)/i;
   const clip = (el) => (el.innerText || "").replace(/\s+/g, " ").trim();
   const fontOf = (el) => parseFloat(getComputedStyle(el).fontSize) || 0;
   const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -203,8 +204,12 @@ async function suggest(prompt, onPartial) {
         for (const n of box.querySelectorAll("*")) {
           if (HOST.contains(n) || !visible(n)) continue;
           const t = clip(n);
-          if (t.length < 8 || t.length > 120 || IGNORE.test(t) || n.contains(anchor)) continue;
-          const f = fontOf(n);
+          if (t.length < 8 || t.length > 140 || IGNORE.test(t) || n.contains(anchor)) continue;
+          // Must read like a prompt: starts with a request word, or is at least a 4-word sentence (not a room code or HUD label).
+          const wordsN = t.split(" ").length;
+          const looks = PROMPTY.test(t) || (wordsN >= 4 && /[a-z]/.test(t));
+          if (!looks) continue;
+          const f = fontOf(n) + (PROMPTY.test(t) ? 0.5 : 0);
           // largest font wins; among equals, the tightest element (shortest text) is the prompt itself
           if (!pick || f > pick.f || (f === pick.f && t.length < pick.t.length)) pick = { f, t };
         }
