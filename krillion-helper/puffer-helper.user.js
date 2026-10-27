@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.7.2
+// @version      0.7.3
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -126,21 +126,21 @@ async function askAI(prompt, retried) {
 async function suggest(prompt, onPartial) {
   const { strict, loose } = matchCategory(prompt);
   if (strict) return { answers: strict.items, topic: strict.name, source: "built-in" };
-  const closest = loose && { answers: loose.items, topic: loose.name, source: "closest list, may not fit" };
+  const closest = (why) => loose && { answers: loose.items, topic: loose.name, source: `closest list, may not fit. ${why}` };
   const key = `ai:${prompt}`;
   const cached = GM_getValue(key);
   if (cached) return { answers: cached, topic: prompt, source: "AI" };
   if (!GM_getValue("groqKey")) {
-    if (closest) return closest;
+    if (loose) return closest('NO AI KEY SET: click "key" above and paste your Groq key');
     throw new Error('No list for this category. Click "key" and paste a free Groq key so it can answer anything.');
   }
-  if (closest) onPartial(closest);
+  if (loose) onPartial(closest("asking AI..."));
   try {
     const answers = await askAI(prompt);
     GM_setValue(key, answers);
     return { answers, topic: prompt, source: "AI" };
   } catch (e) {
-    if (closest) return closest;
+    if (loose) return closest(`AI FAILED: ${e.message}`);
     throw new Error(`AI lookup failed (${e.message}).`);
   }
 }
@@ -165,7 +165,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.2</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.3</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
