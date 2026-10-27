@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.7.5
+// @version      0.8.0
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @connect      api.groq.com
+// @connect      text.pollinations.ai
 // @updateURL    https://raw.githubusercontent.com/GamingDude123/Website/claude/magical-rubin-okrvsh/krillion-helper/puffer-helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/GamingDude123/Website/claude/magical-rubin-okrvsh/krillion-helper/puffer-helper.user.js
 // ==/UserScript==
@@ -134,6 +135,47 @@ async function askAI(prompt, retried) {
   return [...new Set(items)];
 }
 
+// Keyless fallback so a missing or rejected Groq key doesn't leave you without answers.
+function askKeyless(prompt) {
+  return new Promise((resolve, reject) => {
+    GM_xmlhttpRequest({
+      method: "POST",
+      url: "https://text.pollinations.ai/openai",
+      headers: { "Content-Type": "application/json" },
+      data: JSON.stringify({
+        model: "openai",
+        messages: [
+          { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation." },
+          { role: "user", content: `Category: "${prompt}". Give 40 different valid answers. Put the most obvious, common ones first and the rarer ones later.` }
+        ]
+      }),
+      timeout: 15000,
+      onload: (r) => {
+        if (r.status < 200 || r.status >= 300) return reject(new Error(`HTTP ${r.status}`));
+        let text = "";
+        try { text = JSON.parse(r.responseText).choices[0].message.content; } catch (_) { text = r.responseText || ""; }
+        const items = text.split(/[,\n]/).map((x) => x.replace(/^[\s\-*\d.)"']+|[\s."']+$/g, "").trim()).filter((x) => x && x.length <= 40 && !/[:{}]/.test(x));
+        items.length >= 5 ? resolve([...new Set(items)]) : reject(new Error("no list returned"));
+      },
+      onerror: () => reject(new Error("network error")),
+      ontimeout: () => reject(new Error("timeout"))
+    });
+  });
+}
+
+// Groq if a key is saved, then the keyless service. Returns the answers or throws with both reasons.
+async function ask(prompt) {
+  const reasons = [];
+  if (GM_getValue("groqKey")) {
+    try { return await askAI(prompt); } catch (e) {
+      reasons.push(`Groq: ${e.message}`);
+      if (/HTTP 401|HTTP 403/.test(e.message)) GM_setValue("groqKey", ""); // dead key: stop sending it
+    }
+  }
+  try { return await withRetry(() => askKeyless(prompt)); } catch (e) { reasons.push(`free service: ${e.message}`); }
+  throw new Error(reasons.join("; "));
+}
+
 // Built-in lists answer instantly. Otherwise show the closest list right away, then upgrade it with the AI's answer.
 async function suggest(prompt, onPartial) {
   const { strict, loose } = matchCategory(prompt);
@@ -142,19 +184,14 @@ async function suggest(prompt, onPartial) {
   const key = `ai:${prompt}`;
   const cached = GM_getValue(key);
   if (cached) return { answers: cached, topic: prompt, source: "AI" };
-  if (!GM_getValue("groqKey")) {
-    if (loose) return closest('NO AI KEY SET: click "key" above and paste your Groq key');
-    throw new Error('No list for this category. Click "key" and paste a free Groq key so it can answer anything.');
-  }
   if (loose) onPartial(closest("asking AI..."));
   try {
-    const answers = await askAI(prompt);
+    const answers = await ask(prompt);
     GM_setValue(key, answers);
     return { answers, topic: prompt, source: "AI" };
   } catch (e) {
-    const hint = /HTTP 40[13]/.test(e.message) ? ' Your Groq key was rejected: make a new key at console.groq.com, then click "key" and paste it.' : "";
-    if (loose) return closest(`AI FAILED: ${e.message}.${hint}`);
-    throw new Error(`AI lookup failed (${e.message}).${hint}`);
+    if (loose) return closest(`AI FAILED (${e.message})`);
+    throw new Error(`AI lookup failed (${e.message}).`);
   }
 }
 
@@ -178,7 +215,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.5</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.0</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
