@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.7.4
+// @version      0.7.5
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -152,8 +152,9 @@ async function suggest(prompt, onPartial) {
     GM_setValue(key, answers);
     return { answers, topic: prompt, source: "AI" };
   } catch (e) {
-    if (loose) return closest(`AI FAILED: ${e.message}`);
-    throw new Error(`AI lookup failed (${e.message}).`);
+    const hint = /HTTP 40[13]/.test(e.message) ? ' Your Groq key was rejected: make a new key at console.groq.com, then click "key" and paste it.' : "";
+    if (loose) return closest(`AI FAILED: ${e.message}.${hint}`);
+    throw new Error(`AI lookup failed (${e.message}).${hint}`);
   }
 }
 
@@ -177,7 +178,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.4</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.5</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
