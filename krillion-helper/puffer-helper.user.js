@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.7.3
+// @version      0.7.4
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -68,7 +68,7 @@ function groq(method, path, key, body) {
       url: GROQ + path,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       data: body ? JSON.stringify(body) : undefined,
-      timeout: 8000,
+      timeout: 12000,
       onload: (r) => {
         let json = null;
         try { json = JSON.parse(r.responseText); } catch (_) {}
@@ -89,12 +89,24 @@ async function pickModel(key, refresh) {
   const list = await groq("GET", "/models", key);
   const ids = (list.data || []).filter((m) => m.active !== false).map((m) => m.id)
     .filter((id) => !/whisper|guard|tts|playai|orpheus|embed|moderation|safeguard/i.test(id));
-  const prefer = [/instant/i, /(llama|scout).*(8b|17b)/i, /gpt-oss-20b/i, /llama/i, /qwen|gemma|mistral/i, /./];
+  const prefer = [/instant/i, /8b/i, /(llama|scout).*17b/i, /gpt-oss-20b/i, /llama/i, /qwen|gemma|mistral/i, /./];
   let model = null;
   for (const re of prefer) { model = ids.find((id) => re.test(id)); if (model) break; }
   if (!model) throw new Error("no chat model available");
   GM_setValue("groqModel", model);
   return model;
+}
+
+// Free tiers rate-limit and occasionally stall: wait a moment and try once more before giving up.
+async function withRetry(fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    const transient = e.status === 429 || e.status >= 500 || /timeout|network/.test(e.message);
+    if (!transient) throw e;
+    await new Promise((r) => setTimeout(r, e.status === 429 ? 2500 : 800));
+    return fn();
+  }
 }
 
 async function askAI(prompt, retried) {
@@ -103,7 +115,7 @@ async function askAI(prompt, retried) {
   const model = await pickModel(key, retried);
   let reply;
   try {
-    reply = await groq("POST", "/chat/completions", key, {
+    reply = await withRetry(() => groq("POST", "/chat/completions", key, {
       model,
       temperature: 0.3,
       max_tokens: 400,
@@ -111,7 +123,7 @@ async function askAI(prompt, retried) {
         { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation." },
         { role: "user", content: `Category: "${prompt}". Give 40 different valid answers. Put the most obvious, common ones first and the rarer ones later.` }
       ]
-    });
+    }));
   } catch (e) {
     if (!retried && (e.status === 404 || e.status === 400)) return askAI(prompt, true); // model gone: re-pick once
     throw e;
@@ -165,7 +177,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.3</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.7.4</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
