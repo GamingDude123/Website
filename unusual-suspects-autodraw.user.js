@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.3.1
+// @version      0.3.2
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -9,6 +9,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_setClipboard
 // @connect      api.anthropic.com
 // ==/UserScript==
 
@@ -61,6 +62,11 @@
       const m = el.textContent.trim().match(/^witness\s*#?\s*(\d+)$/i);
       if (m) return { el, n: Number(m[1]) };
     }
+    // Fallback: anchor on the "Next →" button inside the witness card.
+    for (const el of document.querySelectorAll('body *')) {
+      if (el.closest('#usad-panel') || el.children.length > 1 || el.textContent.length > 12) continue;
+      if (/^next\s*[→>›»]?$/i.test(el.textContent.trim())) return { el, n: 0 };
+    }
     return null;
   }
 
@@ -107,8 +113,8 @@
         if (again === text) break;
         text = again;
       }
-      if (seen.has(label.n) && seen.get(label.n) === text) break; // Next did nothing -> done
-      seen.set(label.n, text);
+      if ([...seen.values()].includes(text)) break; // Next did nothing -> done
+      seen.set(label.n || seen.size + 1, text);
       if (seen.size >= 3) break;
       const next = findNext(card);
       if (!next || next.disabled || /disabled/.test(next.className + (next.getAttribute('aria-disabled') || ''))) break;
@@ -582,6 +588,22 @@
   // ======================================================================
   // UI
   // ======================================================================
+  function debugDump() {
+    const hits = [];
+    for (const el of document.querySelectorAll('body *')) {
+      if (el.closest('#usad-panel') || el.children.length > 2 || el.textContent.length > 120) continue;
+      if (/witness|\bnext\b|case\s+\d+/i.test(el.textContent)) {
+        let up = el;
+        for (let i = 0; i < 3 && up.parentElement && up.parentElement !== document.body; i++) up = up.parentElement;
+        hits.push(up.outerHTML.slice(0, 1800));
+      }
+    }
+    const out = hits.slice(0, 4).join('\n---\n') || 'no elements mention witness/next/case';
+    document.querySelector('#usad-prompt').value = out;
+    try { GM_setClipboard(out); } catch (e) { /* ignore */ }
+    setStatus('Debug HTML copied (and placed in the box above).');
+  }
+
   function setStatus(t) {
     const el = document.querySelector('#usad-status');
     if (el) el.textContent = t;
@@ -601,11 +623,12 @@
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.3.1</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.3.2</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
         <button id="usad-read" style="flex:1">Read now</button>
+        <button id="usad-debug" style="flex:1" title="Copies page structure for troubleshooting">Debug</button>
         <button id="usad-pick" style="flex:1" title="Only needed if witnesses aren't detected">Pick text</button>
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
@@ -615,6 +638,7 @@
     document.body.appendChild(p);
     p.querySelector('#usad-go').onclick = run;
     p.querySelector('#usad-pick').onclick = pickPrompt;
+    p.querySelector('#usad-debug').onclick = debugDump;
     p.querySelector('#usad-read').onclick = () => { lastKey = ''; lastPrompt = ''; gathering = false; autoDetect(); };
     const auto = p.querySelector('#usad-auto');
     auto.checked = store.get('auto', true);
