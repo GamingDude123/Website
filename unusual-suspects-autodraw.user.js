@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.2.1
+// @version      0.3.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -50,6 +50,91 @@
       const el = document.querySelector(sel);
       return el ? el.innerText.trim() : '';
     } catch (e) { return ''; }
+  }
+
+  // ---- witness statements: "Witness #1/#2/#3" cards stepped through with "Next →" ----
+  let gathering = false;
+
+  function findWitnessLabel() {
+    for (const el of document.querySelectorAll('body *')) {
+      if (el.closest('#usad-panel') || el.textContent.length > 20) continue;
+      const m = el.textContent.trim().match(/^witness\s*#?\s*(\d+)$/i);
+      if (m) return { el, n: Number(m[1]) };
+    }
+    return null;
+  }
+
+  // The statement lives in the nearest ancestor of the label that holds real text besides the label.
+  function witnessCard(label) {
+    let el = label.el.parentElement;
+    while (el && el !== document.body) {
+      const extra = el.innerText.replace(/witness\s*#?\s*\d+/i, '').replace(/next\s*[→>]?/i, '').trim();
+      if (extra.length >= 15) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function witnessText(card) {
+    return card.innerText.split('\n').map((l) => l.trim())
+      .filter((l) => l && !/^witness\s*#?\s*\d+$/i.test(l) && !/^(next|back|prev|previous)\b/i.test(l))
+      .join(' ');
+  }
+
+  function findNext(card) {
+    const scan = (root) => [...root.querySelectorAll('button, a, div, span')]
+      .find((e) => !e.closest('#usad-panel') && /^next\b/i.test(e.textContent.trim()) && e.textContent.trim().length < 12);
+    return (card && scan(card)) || scan(document.body);
+  }
+
+  function caseKey() {
+    const m = document.body.innerText.match(/case\s+\d+\s+of\s+\d+/i);
+    return m ? m[0].toLowerCase() : '';
+  }
+
+  // Reads every witness, clicking Next between them, and returns the combined description.
+  async function gatherWitnesses() {
+    const seen = new Map();
+    for (let i = 0; i < 5; i++) {
+      const label = findWitnessLabel();
+      if (!label) break;
+      const card = witnessCard(label);
+      if (!card) break;
+      const text = witnessText(card);
+      if (seen.has(label.n) && seen.get(label.n) === text) break; // Next did nothing -> done
+      seen.set(label.n, text);
+      if (seen.size >= 3) break;
+      const next = findNext(card);
+      if (!next || next.disabled || /disabled/.test(next.className + (next.getAttribute('aria-disabled') || ''))) break;
+      clickEl(next);
+      await sleep(450);
+    }
+    return [...seen.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t).join(' ');
+  }
+
+  let lastKey = '';
+  async function autoDetect() {
+    if (gathering || drawing) return;
+    const label = findWitnessLabel();
+    if (!label) return;
+    const card = witnessCard(label);
+    if (!card) return;
+    const key = caseKey() + '|' + witnessText(card).slice(0, 40) + '|' + label.n;
+    if (key === lastKey) return;
+    gathering = true;
+    try {
+      setStatus('Reading witness statements…');
+      const text = await gatherWitnesses();
+      lastKey = caseKey() + '|' + (findWitnessLabel() && witnessCard(findWitnessLabel()) ? witnessText(witnessCard(findWitnessLabel())).slice(0, 40) : '') + '|' + (findWitnessLabel() || {}).n;
+      if (text && text !== lastPrompt) {
+        lastPrompt = text;
+        document.querySelector('#usad-prompt').value = text;
+        setStatus('Got ' + text.length + ' chars of description.');
+        if (document.querySelector('#usad-auto').checked) { gathering = false; await run(); }
+      }
+    } finally {
+      gathering = false;
+    }
   }
 
   function pickPrompt() {
@@ -182,7 +267,7 @@
 
     const human = has(/\b(man|woman|guy|lady|girl|boy|person|human|gentleman|dude|grandma|grandpa|he's|she's)\b/) && !has(/\b(monster|frog|creature|alien|fella|beast|blob|dragon)\b/);
     const firstColor = (t.match(new RegExp(`\\b(${COLOR_RE})\\b`)) || [])[1];
-    const bodyColor = colorBefore(t, 'creature|monster|frog|fella|guy|man|woman|body|skin|blob|alien|beast|dragon|bird|cat|dog|bear|fellow|thing', null)
+    const bodyColor = colorBefore(t, 'creature|monster|frog|fella|guy|man|woman|body|skin|blob|alien|beast|dragon|bird|cat|dog|bear|fellow|thing|coat|fur|suit|feline|rabbit|bunny|mouse|robot|ghost|fish|fox|wolf', null)
       || (human ? '#f1c27d' : (firstColor ? COLORS[firstColor] : '#6fbf73'));
 
     // body proportions
@@ -191,20 +276,21 @@
     let cy = 0.55;
     if (has(/\b(squat|short|stubby|small|little|tiny|stout)\b/)) { ry = 0.2; cy = 0.58; }
     if (has(/\b(tall|lanky|long|skinny|thin)\b/)) { ry = 0.32; rx = 0.19; cy = 0.5; }
-    if (has(/\b(fat|chubby|round|big|huge|plump|wide)\b/)) { rx = 0.33; }
+    if (has(/\b(fat|chubby|round|plump|stocky|heavy)\b/)) { rx = 0.33; }
     if (human) { rx = 0.2; ry = 0.24; cy = 0.45; }
     const cx = 0.5;
     const top = cy - ry;
     const bot = cy + ry;
 
     // legs (drawn first so the body overlaps their tops)
-    if (has(/\b(legs?|feet|foot|stubby|walks?|standing)\b/) || !human) {
+    if (has(/\b(legs?|feet|foot|stubby|walks?|standing|shoes?|sneakers?|boots?)\b/) || !human) {
       const len = has(/\b(stubby|short|tiny|little)\b/) ? 0.07 : 0.15;
       const lc = colorBefore(t, 'legs?|feet', bodyColor);
+      const sc = colorBefore(t, 'shoes?|sneakers?|boots?|socks?', lc);
       for (const s of [-1, 1]) {
         const x = cx + s * rx * 0.45;
         out.push(line(lc, [x, bot - 0.03], [x, bot + len]));
-        out.push(...blob(x + s * 0.025, bot + len, 0.045, 0.02, lc));
+        out.push(...blob(x + s * 0.025, bot + len, 0.05, 0.025, sc));
       }
     }
 
@@ -245,7 +331,13 @@
         out.push(line(INK, [cx + s * 0.1, top + 0.02], [cx + s * 0.16, top - 0.12], [cx + s * 0.04, top - 0.01]));
       }
     }
-    if (has(/\bears?\b/) && !human) {
+    const catty = has(/\b(feline|cat|kitty|kitten|fox|wolf|bunny|rabbit)\b/);
+    if (catty) {
+      for (const s of [-1, 1]) {
+        out.push(line(bodyColor, [cx + s * rx * 0.75, top + 0.04], [cx + s * rx * 0.8, top - 0.1], [cx + s * rx * 0.35, top - 0.01]));
+        out.push(line(INK, [cx + s * rx * 0.75, top + 0.04], [cx + s * rx * 0.8, top - 0.1], [cx + s * rx * 0.35, top - 0.01]));
+      }
+    } else if (has(/\bears?\b/) && !human) {
       for (const s of [-1, 1]) out.push(...blob(cx + s * (rx * 0.85), top + 0.03, 0.05, 0.07, bodyColor));
     }
     if (has(/\b(spikes?|spiky|mohawk|spines?)\b/)) {
@@ -282,8 +374,12 @@
       out.push(...blob(x, y, eyeR, eyeR, ec === '#ffffff' ? '#ffffff' : ec));
       out.push(fillEllipse(x, y + eyeR * 0.1, eyeR * 0.4, eyeR * 0.4, INK, 0.008));
     }
-    if (has(/\b(glasses|spectacles|monocle)\b/)) {
-      for (const [x, y] of eyes) out.push(outline(x, y, eyeR * 1.35, eyeR * 1.35));
+    if (has(/glasses|spectacles|monocle|shades/)) {
+      const dark = has(/sunglasses|shades/);
+      for (const [x, y] of eyes) {
+        if (dark) out.push(fillEllipse(x, y, eyeR * 1.35, eyeR * 1.35, INK, 0.008));
+        out.push(outline(x, y, eyeR * 1.35, eyeR * 1.35));
+      }
       if (eyes.length > 1) out.push(line(INK, [eyes[0][0] + eyeR * 1.35, eyes[0][1]], [eyes[1][0] - eyeR * 1.35, eyes[1][1]]));
     }
     if (has(/\b(eyebrows?|brows?|angry|mean|grumpy)\b/)) {
@@ -292,7 +388,14 @@
 
     // nose
     if (has(/\b(nose|snout|beak)\b/)) {
-      out.push(line(INK, [cx, eyeY + 0.06], [cx - 0.025, eyeY + 0.12], [cx + 0.025, eyeY + 0.12], [cx, eyeY + 0.06]));
+      const nc = colorBefore(t, 'nose|snout|beak', INK);
+      const nose = [[cx, eyeY + 0.06], [cx - 0.03, eyeY + 0.12], [cx + 0.03, eyeY + 0.12], [cx, eyeY + 0.06]];
+      for (let k = 0; k < 4; k++) out.push(line(nc, [cx - 0.025 + k * 0.017, eyeY + 0.115], [cx, eyeY + 0.065 + k * 0.0]));
+      out.push(line(INK, ...nose));
+    }
+
+    if (catty) {
+      for (const s of [-1, 1]) for (const dy of [-0.02, 0.02]) out.push(line(INK, [cx + s * 0.04, eyeY + 0.12], [cx + s * 0.16, eyeY + 0.12 + dy * 3]));
     }
 
     // mouth
@@ -302,7 +405,7 @@
     if (has(/wider than/)) mw = rx * 0.97;
     const sad = has(/\b(frown|sad|angry|scowl|grumpy|mean)\b/);
     const curve = (sad ? -1 : 1) * (has(/\b(smile|grin|happy|smirk|friendly|sweet)\b/) || !sad ? 0.05 : 0.03);
-    const hasTeeth = has(/\b(teeth|tooth|fangs?|tusks?|jagged|chompers)\b/);
+    const hasTeeth = has(/\b(teeth|tooth|fangs?|tusks?|jagged|chompers|cheesy|toothy)\b/);
     const mouthTop = [];
     const mouthBot = [];
     for (let i = 0; i <= 20; i++) {
@@ -362,7 +465,7 @@
   // Optional: let Claude plan the picture (needs an API key)
   // ======================================================================
   function composeWithClaude(text, key) {
-    const system = 'You turn a short description of a character into a simple line drawing for a drawing game. '
+    const system = 'You turn witness statements about a suspect into a simple line drawing for a drawing game. The statements are chatty; ignore the chatter and merge all the physical details into one character. '
       + 'Reply with ONLY a JSON array of strokes, no prose. Each stroke is {"c":"#rrggbb","pts":[[x,y],...]} '
       + 'with x and y in 0..1 (y down). Use at most 120 strokes and 25 points per stroke. Draw big body parts first, '
       + 'fill large areas with zig-zag hatching in the correct color, then outlines in #111111, then details '
@@ -496,17 +599,17 @@
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
-        <button id="usad-pick" style="flex:1">Pick prompt</button>
+        <button id="usad-pick" style="flex:1" title="Only needed if witnesses aren't detected">Pick text</button>
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
       <input id="usad-key" type="password" placeholder="Optional Anthropic API key (smarter drawings)" style="width:100%;box-sizing:border-box;margin-top:4px">
-      <div id="usad-status" style="margin-top:6px;opacity:.8">Click “Pick prompt”, then the prompt text.</div>`;
+      <div id="usad-status" style="margin-top:6px;opacity:.8">Waiting for witness statements…</div>`;
     document.body.appendChild(p);
     p.querySelector('#usad-go').onclick = run;
     p.querySelector('#usad-pick').onclick = pickPrompt;
     const auto = p.querySelector('#usad-auto');
-    auto.checked = store.get('auto', false);
+    auto.checked = store.get('auto', true);
     auto.onchange = () => store.set('auto', auto.checked);
     const key = p.querySelector('#usad-key');
     key.value = store.get('apiKey', '');
@@ -515,10 +618,11 @@
 
   function init() {
     buildPanel();
-    new MutationObserver(() => refreshPrompt(false)).observe(document.body, {
-      childList: true, subtree: true, characterData: true,
-    });
-    refreshPrompt(false);
+    // Witness cards are found automatically; the picked selector is only a fallback.
+    setInterval(() => {
+      if (findWitnessLabel()) autoDetect();
+      else if (store.get('promptSelector', '')) refreshPrompt(false);
+    }, 800);
   }
 
   if (document.body) init();
