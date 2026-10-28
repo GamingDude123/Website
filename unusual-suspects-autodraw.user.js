@@ -487,7 +487,7 @@
   function buildPanel() {
     const p = document.createElement('div');
     p.id = 'usad-panel';
-    p.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:2147483647;width:250px;padding:10px;'
+    p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
       <b>Auto Draw</b>
