@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.3.2
+// @version      0.3.3
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -55,6 +55,7 @@
 
   // ---- witness statements: "Witness #1/#2/#3" cards stepped through with "Next →" ----
   let gathering = false;
+  let lastCount = 0;
 
   function findWitnessLabel() {
     for (const el of document.querySelectorAll('body *')) {
@@ -63,11 +64,10 @@
       if (m) return { el, n: Number(m[1]) };
     }
     // Fallback: anchor on the "Next →" button inside the witness card.
-    for (const el of document.querySelectorAll('body *')) {
-      if (el.closest('#usad-panel') || el.children.length > 1 || el.textContent.length > 12) continue;
-      if (/^next\s*[→>›»]?$/i.test(el.textContent.trim())) return { el, n: 0 };
-    }
-    return null;
+    const nexts = [...document.querySelectorAll('body *')].filter((el) => !el.closest('#usad-panel')
+      && el.textContent.length <= 12 && /^next\s*[→>›»]?$/i.test(el.textContent.trim()));
+    const deepest = nexts.filter((e) => !nexts.some((o) => o !== e && e.contains(o)))[0];
+    return deepest ? { el: deepest, n: 0 } : null;
   }
 
   // The statement lives in the nearest ancestor of the label that holds real text besides the label.
@@ -87,9 +87,13 @@
       .join(' ');
   }
 
+  // Innermost element whose text is "Next" (clicks bubble up to whatever handler the game attached).
   function findNext(card) {
-    const scan = (root) => [...root.querySelectorAll('button, a, div, span')]
-      .find((e) => !e.closest('#usad-panel') && /^next\b/i.test(e.textContent.trim()) && e.textContent.trim().length < 12);
+    const scan = (root) => {
+      const c = [...root.querySelectorAll('*')]
+        .filter((e) => !e.closest('#usad-panel') && /^next\s*[→>›»]?$/i.test(e.textContent.trim()));
+      return c.filter((e) => !c.some((o) => o !== e && e.contains(o)))[0];
+    };
     return (card && scan(card)) || scan(document.body);
   }
 
@@ -118,9 +122,11 @@
       if (seen.size >= 3) break;
       const next = findNext(card);
       if (!next || next.disabled || /disabled/.test(next.className + (next.getAttribute('aria-disabled') || ''))) break;
+      setStatus('Read witness ' + seen.size + '… clicking Next');
       clickEl(next);
-      await sleep(450);
+      await sleep(600);
     }
+    lastCount = seen.size;
     return [...seen.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t).join(' ');
   }
 
@@ -141,7 +147,7 @@
       if (text && text !== lastPrompt) {
         lastPrompt = text;
         document.querySelector('#usad-prompt').value = text;
-        setStatus('Got ' + text.length + ' chars of description.');
+        setStatus('Read ' + (lastCount) + ' witness statement(s)' + (lastCount < 3 ? ' — Next didn\'t advance to all 3; click Read now after moving to witness #1' : '') + '.');
         if (document.querySelector('#usad-auto').checked) { gathering = false; await run(); }
       }
     } finally {
@@ -197,10 +203,11 @@
   }
 
   function clickEl(el) {
-    for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
       const C = t.startsWith('pointer') ? PointerEvent : MouseEvent;
       el.dispatchEvent(new C(t, { bubbles: true, cancelable: true, composed: true, button: 0 }));
     }
+    el.click();
   }
 
   function selectColor(hex, swatches) {
@@ -623,7 +630,7 @@
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.3.2</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.3.3</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
