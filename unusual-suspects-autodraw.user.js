@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.4.0
+// @version      0.5.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -525,35 +525,214 @@
   }
 
   // ======================================================================
-  // Optional: let Claude plan the picture (needs an API key)
+  // Claude-planned drawings (needs an API key): shapes with fills, then a
+  // second pass where Claude looks at its own render and corrects it.
   // ======================================================================
-  function composeWithClaude(text, key) {
-    const system = 'You turn witness statements about a suspect into a simple line drawing for a drawing game. The statements are chatty; ignore the chatter and merge all the physical details into one character. '
-      + 'Reply with ONLY a JSON array of strokes, no prose. Each stroke is {"c":"#rrggbb","pts":[[x,y],...]} '
-      + 'with x and y in 0..1 (y down). Use at most 120 strokes and 25 points per stroke. Draw big body parts first, '
-      + 'fill large areas with zig-zag hatching in the correct color, then outlines in #111111, then details '
-      + '(eyes, mouth, teeth, accessories). Follow the description exactly: colors, counts, proportions.';
+  const PAL = {
+    black: '#2d2d2d', red: '#e5533d', yellow: '#f5c542', green: '#3aa655', blue: '#4a90e2',
+    purple: '#8a63d2', brown: '#8b5a3c', pink: '#f77fb0', orange: '#f5922b', white: '#ffffff',
+  };
+  const palColor = (c) => PAL[String(c || 'black').toLowerCase()] || (/^#[0-9a-f]{6}$/i.test(c) ? c : PAL.black);
+  const clamp01 = (v) => Math.min(1, Math.max(0, Number(v) || 0));
+  const FILL_GAP = 0.011;
+
+  const SYSTEM_PROMPT = `You are an expert sketch artist playing a police-sketch drawing game. The player reads up to three witness statements about a suspect and must draw the suspect so that an AI judge can recognise every described trait. You will be given the merged witness statements.
+
+HOW TO WORK
+1. Extract EVERY visual trait: what the suspect is (human, animal, monster, creature...), body shape and proportions (tall, thin, squat, round), head/face shape, eyes, nose, mouth, teeth, hair, ears, extra body parts (antennae, tails, wings, legs), the colour of each part, clothing, accessories (hat, glasses, shoes, jewellery), patterns (spots, stripes), expression, held objects. Statements are chatty, vague and sometimes disagree: keep what the witnesses agree on, drop non-visual chatter (questions, emotions about the case).
+2. Draw the whole suspect, centred, filling 70-90% of the canvas, head to toe unless only a face is described. Exaggerate the distinguishing traits and make each one clearly visible (at least ~0.03 units across).
+3. Use plenty of shapes (60-150) so there is real detail: layered body parts, shading blocks, eyebrows, pupils, nostrils, teeth one by one, buttons, patterns.
+
+OUTPUT: ONLY one JSON object, no prose, no code fences:
+{"traits":["short list of every trait you will draw"],"ops":[ ... ]}
+
+CANVAS: unit square, x right 0..1, y down 0..1. Ops are drawn in order, so draw back-to-front (limbs, body, clothes, head, face, small details last) and make sure later shapes do not hide earlier details.
+
+OPS (all coordinates 0..1)
+- {"t":"ellipse","c":"green","cx":0.5,"cy":0.5,"rx":0.2,"ry":0.15,"rot":0}  filled + black outline (rot in degrees, optional)
+- {"t":"poly","c":"red","pts":[[x,y],...],"closed":true}  filled polygon + outline; max 40 points; add "smooth":true to round the corners
+- {"t":"line","c":"black","pts":[[x,y],...],"smooth":false}  an open stroke (mouth, brow, whisker, antenna, limb)
+Optional on ellipse/poly: "fill":false (outline only), "outline":false (no outline), "oc":"brown" (outline colour).
+
+COLOURS: you may only use these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest one (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements exactly.`;
+
+  function callClaude(key, model, system, messages) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'POST',
         url: 'https://api.anthropic.com/v1/messages',
+        timeout: 280000,
         headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-        data: JSON.stringify({
-          model: 'claude-sonnet-5-5', max_tokens: 8000, system,
-          messages: [{ role: 'user', content: text }],
-        }),
+        data: JSON.stringify({ model, max_tokens: 16000, system, messages }),
         onload: (r) => {
           try {
             const body = JSON.parse(r.responseText);
             if (body.error) throw new Error(body.error.message);
-            const raw = body.content.map((b) => b.text || '').join('');
-            const strokes = JSON.parse(raw.slice(raw.indexOf('['), raw.lastIndexOf(']') + 1));
-            resolve(strokes.filter((s) => s && Array.isArray(s.pts) && s.pts.length > 1));
+            resolve(body.content.map((b) => b.text || '').join(''));
           } catch (e) { reject(e); }
         },
         onerror: () => reject(new Error('network error')),
+        ontimeout: () => reject(new Error('timed out')),
       });
     });
+  }
+
+  function parseOps(raw) {
+    const a = raw.indexOf('{');
+    const b = raw.lastIndexOf('}');
+    let obj;
+    if (a !== -1 && b > a) {
+      try { obj = JSON.parse(raw.slice(a, b + 1)); } catch (e) { obj = null; }
+    }
+    if (!obj) {
+      const i = raw.indexOf('[');
+      const j = raw.lastIndexOf(']');
+      obj = { ops: JSON.parse(raw.slice(i, j + 1)) };
+    }
+    const ops = (obj.ops || []).filter((o) => o && ['ellipse', 'poly', 'line'].includes(o.t));
+    if (!ops.length) throw new Error('no drawing ops in reply');
+    return ops;
+  }
+
+  // Catmull-Rom smoothing for rounded polygons / curves.
+  function smoothPts(pts, closed) {
+    if (pts.length < 3) return pts;
+    const P = closed ? pts : [pts[0], ...pts, pts[pts.length - 1]];
+    const out = [];
+    const n = closed ? P.length : P.length - 3;
+    for (let i = 0; i < n; i++) {
+      const p0 = P[(i + (closed ? P.length - 1 : 0)) % P.length];
+      const p1 = P[(i + (closed ? 0 : 1)) % P.length];
+      const p2 = P[(i + (closed ? 1 : 2)) % P.length];
+      const p3 = P[(i + (closed ? 2 : 3)) % P.length];
+      for (let k = 0; k < 8; k++) {
+        const t = k / 8;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        out.push([0, 1].map((d) => 0.5 * ((2 * p1[d]) + (-p0[d] + p2[d]) * t
+          + (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * t2
+          + (-p0[d] + 3 * p1[d] - 3 * p2[d] + p3[d]) * t3)));
+      }
+    }
+    if (!closed) out.push(pts[pts.length - 1]);
+    return out;
+  }
+
+  // Scanline hatching of a polygon, chained into zig-zags where possible.
+  function hatchPolygon(poly, c, gap = FILL_GAP) {
+    const ys = poly.map((p) => p[1]);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const strokes = [];
+    let cur = null;
+    const flush = () => { if (cur && cur.pts.length > 1) strokes.push(cur); cur = null; };
+    for (let y = minY + gap / 2; y < maxY; y += gap) {
+      const xs = [];
+      for (let i = 0; i < poly.length; i++) {
+        const [x0, y0] = poly[i];
+        const [x1, y1] = poly[(i + 1) % poly.length];
+        if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) xs.push(x0 + (y - y0) / (y1 - y0) * (x1 - x0));
+      }
+      xs.sort((a, b) => a - b);
+      const segs = [];
+      for (let i = 0; i + 1 < xs.length; i += 2) if (xs[i + 1] - xs[i] > 0.002) segs.push([xs[i], xs[i + 1]]);
+      if (segs.length === 1) {
+        const [a, b] = segs[0];
+        if (cur) {
+          const last = cur.pts[cur.pts.length - 1];
+          const [first, second] = Math.abs(last[0] - a) <= Math.abs(last[0] - b) ? [a, b] : [b, a];
+          cur.pts.push([first, y], [second, y]);
+        } else cur = { c, pts: [[a, y], [b, y]] };
+      } else {
+        flush();
+        for (const [a, b] of segs) strokes.push({ c, pts: [[a, y], [b, y]] });
+      }
+    }
+    flush();
+    return strokes;
+  }
+
+  function opsToStrokes(ops, gap = FILL_GAP) {
+    const strokes = [];
+    for (const op of ops) {
+      const color = palColor(op.c);
+      const outlineColor = palColor(op.oc || 'black');
+      let pts;
+      let closed = true;
+      if (op.t === 'ellipse') {
+        const rot = (Number(op.rot) || 0) * Math.PI / 180;
+        pts = ellipsePts(0, 0, Number(op.rx) || 0.02, Number(op.ry) || 0.02, 0, Math.PI * 2, 40).map(([x, y]) => [
+          clamp01((Number(op.cx) || 0.5) + x * Math.cos(rot) - y * Math.sin(rot)),
+          clamp01((Number(op.cy) || 0.5) + x * Math.sin(rot) + y * Math.cos(rot)),
+        ]);
+      } else {
+        if (!Array.isArray(op.pts) || op.pts.length < 2) continue;
+        pts = op.pts.map(([x, y]) => [clamp01(x), clamp01(y)]);
+        closed = op.t === 'poly' && op.closed !== false;
+        if (op.smooth) pts = smoothPts(pts, closed);
+      }
+      if (op.t === 'line') { strokes.push({ c: color, pts }); continue; }
+      if (op.fill !== false && pts.length >= 3) strokes.push(...hatchPolygon(pts, color, gap));
+      if (op.outline !== false) strokes.push({ c: outlineColor, pts: closed ? [...pts, pts[0]] : pts });
+    }
+    return strokes;
+  }
+
+  // What the game will roughly show; used for the panel preview and for Claude's self-check.
+  function renderStrokes(strokes, canvas) {
+    const g = canvas.getContext('2d');
+    const S = canvas.width;
+    g.fillStyle = '#fcf3e8';
+    g.fillRect(0, 0, S, S);
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    g.lineWidth = Math.max(1.5, S * 0.012);
+    for (const st of strokes) {
+      g.strokeStyle = st.c;
+      g.beginPath();
+      st.pts.forEach(([x, y], i) => (i ? g.lineTo(x * S, y * S) : g.moveTo(x * S, y * S)));
+      g.stroke();
+    }
+  }
+
+  function showPreview(strokes) {
+    const cv = document.querySelector('#usad-preview');
+    if (!cv) return;
+    cv.style.display = 'block';
+    renderStrokes(strokes, cv);
+  }
+
+  async function planWithClaude(text, key, model, refine) {
+    const user = 'Witness statements:\n' + text;
+    setStatus('Claude is planning the drawing…');
+    const first = await callClaude(key, model, SYSTEM_PROMPT, [{ role: 'user', content: user }]);
+    let ops = parseOps(first);
+    let strokes = opsToStrokes(ops);
+    showPreview(strokes);
+    if (!refine || !drawing) return strokes;
+    try {
+      setStatus('Claude is checking its own drawing…');
+      const shot = document.createElement('canvas');
+      shot.width = shot.height = 512;
+      renderStrokes(strokes, shot);
+      const data = shot.toDataURL('image/png').split(',')[1];
+      const second = await callClaude(key, model, SYSTEM_PROMPT, [
+        { role: 'user', content: user },
+        { role: 'assistant', content: first },
+        { role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
+          { type: 'text', text: 'This is how your ops render (fills are hatched, outlines black). Compare it against every trait in the witness statements. '
+            + 'Find what is missing, too small, wrongly coloured, mis-proportioned or hidden by draw order, then reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff). Add more detail where the drawing is plain.' },
+        ] },
+      ]);
+      ops = parseOps(second);
+      strokes = opsToStrokes(ops);
+      showPreview(strokes);
+    } catch (e) {
+      setStatus('Self-check failed (' + e.message + '); using first drawing.');
+      await sleep(800);
+    }
+    return strokes;
   }
 
   // ======================================================================
@@ -620,10 +799,12 @@
       let strokes = null;
       const key = document.querySelector('#usad-key').value.trim();
       if (key) {
-        setStatus('Asking Claude to plan the drawing…');
-        try { strokes = await composeWithClaude(text, key); } catch (e) { setStatus('Claude failed (' + e.message + '), using built-in drawer…'); }
+        try {
+          strokes = await planWithClaude(text, key, document.querySelector('#usad-model').value,
+            document.querySelector('#usad-refine').checked);
+        } catch (e) { setStatus('Claude failed (' + e.message + '), using built-in drawer…'); await sleep(800); }
       }
-      if (!strokes) strokes = composeProcedural(text);
+      if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
       setStatus(`Drawing ${strokes.length} strokes…`);
       await drawStrokes(strokes, canvas);
       if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
@@ -674,7 +855,7 @@
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.4.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.5.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
@@ -684,7 +865,12 @@
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
-      <input id="usad-key" type="password" placeholder="Optional Anthropic API key (smarter drawings)" style="width:100%;box-sizing:border-box;margin-top:4px">
+      <input id="usad-key" type="password" placeholder="Anthropic API key (detailed, accurate drawings)" style="width:100%;box-sizing:border-box;margin-top:4px">
+      <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
+        <select id="usad-model" style="flex:1"><option value="claude-opus-5-5">Opus 5.5 (best)</option><option value="claude-sonnet-5-5">Sonnet 5.5 (faster)</option></select>
+        <label title="Claude looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> Refine</label>
+      </div>
+      <canvas id="usad-preview" width="240" height="240" style="display:none;width:100%;margin-top:6px;border-radius:6px;background:#fcf3e8"></canvas>
       <div id="usad-status" style="margin-top:6px;opacity:.8">Waiting for witness statements…</div>`;
     document.body.appendChild(p);
     p.querySelector('#usad-go').onclick = run;
@@ -697,6 +883,12 @@
     const key = p.querySelector('#usad-key');
     key.value = store.get('apiKey', '');
     key.onchange = () => store.set('apiKey', key.value.trim());
+    const model = p.querySelector('#usad-model');
+    model.value = store.get('model', 'claude-opus-5-5');
+    model.onchange = () => store.set('model', model.value);
+    const refine = p.querySelector('#usad-refine');
+    refine.checked = store.get('refine', true);
+    refine.onchange = () => store.set('refine', refine.checked);
   }
 
   function init() {
@@ -713,5 +905,5 @@
   else window.addEventListener('DOMContentLoaded', init);
 
   // Exposed for testing outside the browser.
-  if (typeof module !== 'undefined') module.exports = { composeProcedural };
+  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude };
 })();
