@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.3.4
+// @version      0.3.5
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -60,26 +60,29 @@
   // Visible text with whitespace collapsed (templates pad elements with newlines/indentation).
   const norm = (el) => (el.textContent || '').replace(/[\s\u00a0\u200b]+/g, ' ').trim();
 
-  function findWitnessLabel() {
+  function findWitnessLabels() {
+    const out = [];
     for (const el of document.querySelectorAll('body *')) {
       const t = norm(el);
       if (t.length > 25 || el.closest('#usad-panel')) continue;
       const m = t.match(/^witness\s*#?\s*(\d+)$/i);
-      if (m) return { el, n: Number(m[1]) };
+      if (m && !out.some((o) => o.el.contains(el) || el.contains(o.el))) out.push({ el, n: Number(m[1]) });
     }
+    if (out.length) return out;
     // Fallback: anchor on the "Next →" button inside the witness card.
     const nexts = [...document.querySelectorAll('body *')].filter((el) => !el.closest('#usad-panel')
       && norm(el).length <= 12 && /^next\s*[→>›»]?$/i.test(norm(el)));
-    const deepest = nexts.filter((e) => !nexts.some((o) => o !== e && e.contains(o)))[0];
-    return deepest ? { el: deepest, n: 0 } : null;
+    return nexts.filter((e) => !nexts.some((o) => o !== e && e.contains(o))).map((el) => ({ el, n: 0 }));
   }
+
+  function findWitnessLabel() { return findWitnessLabels()[0] || null; }
 
   // The statement lives in the nearest ancestor of the label that holds real text besides the label.
   function witnessCard(label) {
     let el = label.el.parentElement;
     while (el && el !== document.body) {
       const extra = el.innerText.replace(/witness\s*#?\s*\d+/i, '').replace(/next\s*[→>]?/i, '').trim();
-      if (extra.length >= 15) return el;
+      if (extra.length >= 5) return el;
       el = el.parentElement;
     }
     return null;
@@ -106,35 +109,48 @@
     return m ? m[0].toLowerCase() : '';
   }
 
+  // Every witness card currently in the page (during a transition the old and new card can coexist).
+  function visibleWitnesses() {
+    const out = [];
+    for (const label of findWitnessLabels()) {
+      const card = witnessCard(label);
+      if (!card) continue;
+      const text = witnessText(card);
+      if (text && !out.some((o) => o.text === text)) out.push({ n: label.n, text, card });
+    }
+    return out;
+  }
+
   // Reads every witness, clicking Next between them, and returns the combined description.
   async function gatherWitnesses() {
     const seen = new Map();
-    for (let i = 0; i < 5; i++) {
-      const label = findWitnessLabel();
-      if (!label) break;
-      const card = witnessCard(label);
-      if (!card) break;
-      let text = witnessText(card);
-      for (let k = 0; k < 8; k++) { // wait out any typing animation
-        await sleep(250);
-        const again = witnessText(card);
-        if (again === text) break;
-        text = again;
-      }
-      if ([...seen.values()].includes(text)) break; // Next did nothing -> done
-      seen.set(label.n || seen.size + 1, text);
-      if (seen.size >= 3) break;
-      const next = findNext(card);
+    let last = null;
+    const addNew = async () => {
+      let found = visibleWitnesses().filter((w) => ![...seen.values()].includes(w.text));
+      if (!found.length) return false;
+      await sleep(300); // let any typing animation finish
+      found = visibleWitnesses().filter((w) => ![...seen.values()].includes(w.text));
+      for (const w of found) { seen.set(w.n || seen.size + 1, w.text); last = w; }
+      return found.length > 0;
+    };
+    await addNew();
+    for (let i = 0; i < 4 && seen.size < 3 && last; i++) {
+      const next = findNext(last.card);
       if (!next || next.disabled || /disabled/.test(next.className + (next.getAttribute('aria-disabled') || ''))) break;
       setStatus('Read witness ' + seen.size + '… clicking Next');
       clickEl(next);
-      await sleep(600);
+      let ok = false;
+      for (let k = 0; k < 20 && !ok; k++) { // wait up to ~3s for the next statement to appear
+        await sleep(150);
+        ok = await addNew();
+      }
+      if (!ok) break;
     }
     lastCount = seen.size;
     return [...seen.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t).join(' ');
   }
 
-  let lastKey = '';
+  let lastKey = null;
   async function autoDetect() {
     if (gathering || drawing) return;
     const label = findWitnessLabel();
@@ -145,13 +161,14 @@
     }
     const card = witnessCard(label);
     if (!card) { setStatus('Found "' + label.el.textContent.trim() + '" but no statement text near it.'); return; }
-    const key = caseKey() + '|' + witnessText(card).slice(0, 40) + '|' + label.n;
-    if (key === lastKey) return;
+    const key = caseKey();
+    const newSuspect = label.n === 1 && !lastPrompt.includes(witnessText(card));
+    if (key === lastKey && !newSuspect) return;
     gathering = true;
     try {
       setStatus('Reading witness statements…');
       const text = await gatherWitnesses();
-      lastKey = caseKey() + '|' + (findWitnessLabel() && witnessCard(findWitnessLabel()) ? witnessText(witnessCard(findWitnessLabel())).slice(0, 40) : '') + '|' + (findWitnessLabel() || {}).n;
+      lastKey = key;
       if (text && text !== lastPrompt) {
         lastPrompt = text;
         document.querySelector('#usad-prompt').value = text;
@@ -638,7 +655,7 @@
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.3.4</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.3.5</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
@@ -654,7 +671,7 @@
     p.querySelector('#usad-go').onclick = run;
     p.querySelector('#usad-pick').onclick = pickPrompt;
     p.querySelector('#usad-debug').onclick = debugDump;
-    p.querySelector('#usad-read').onclick = () => { lastKey = ''; lastPrompt = ''; gathering = false; autoDetect(); };
+    p.querySelector('#usad-read').onclick = () => { lastKey = null; lastPrompt = ''; gathering = false; autoDetect(); };
     const auto = p.querySelector('#usad-auto');
     auto.checked = store.get('auto', true);
     auto.onchange = () => store.set('auto', auto.checked);
