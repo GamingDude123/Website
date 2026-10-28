@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.3.3
+// @version      0.3.4
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -57,15 +57,19 @@
   let gathering = false;
   let lastCount = 0;
 
+  // Visible text with whitespace collapsed (templates pad elements with newlines/indentation).
+  const norm = (el) => (el.textContent || '').replace(/[\s\u00a0\u200b]+/g, ' ').trim();
+
   function findWitnessLabel() {
     for (const el of document.querySelectorAll('body *')) {
-      if (el.closest('#usad-panel') || el.textContent.length > 20) continue;
-      const m = el.textContent.trim().match(/^witness\s*#?\s*(\d+)$/i);
+      const t = norm(el);
+      if (t.length > 25 || el.closest('#usad-panel')) continue;
+      const m = t.match(/^witness\s*#?\s*(\d+)$/i);
       if (m) return { el, n: Number(m[1]) };
     }
     // Fallback: anchor on the "Next →" button inside the witness card.
     const nexts = [...document.querySelectorAll('body *')].filter((el) => !el.closest('#usad-panel')
-      && el.textContent.length <= 12 && /^next\s*[→>›»]?$/i.test(el.textContent.trim()));
+      && norm(el).length <= 12 && /^next\s*[→>›»]?$/i.test(norm(el)));
     const deepest = nexts.filter((e) => !nexts.some((o) => o !== e && e.contains(o)))[0];
     return deepest ? { el: deepest, n: 0 } : null;
   }
@@ -91,7 +95,7 @@
   function findNext(card) {
     const scan = (root) => {
       const c = [...root.querySelectorAll('*')]
-        .filter((e) => !e.closest('#usad-panel') && /^next\s*[→>›»]?$/i.test(e.textContent.trim()));
+        .filter((e) => !e.closest('#usad-panel') && /^next\s*[→>›»]?$/i.test(norm(e)));
       return c.filter((e) => !c.some((o) => o !== e && e.contains(o)))[0];
     };
     return (card && scan(card)) || scan(document.body);
@@ -134,7 +138,11 @@
   async function autoDetect() {
     if (gathering || drawing) return;
     const label = findWitnessLabel();
-    if (!label) { setStatus('No "Witness #" label found on this page yet.'); return; }
+    if (!label) {
+      const seen = [...document.querySelectorAll('body *')].filter((e) => !e.closest('#usad-panel') && e.children.length === 0 && /witness/i.test(e.textContent)).length;
+      setStatus('No "Witness #" label found (' + seen + ' element(s) mention "witness"). Try Debug.');
+      return;
+    }
     const card = witnessCard(label);
     if (!card) { setStatus('Found "' + label.el.textContent.trim() + '" but no statement text near it.'); return; }
     const key = caseKey() + '|' + witnessText(card).slice(0, 40) + '|' + label.n;
@@ -630,7 +638,7 @@
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.3.3</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.3.4</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
