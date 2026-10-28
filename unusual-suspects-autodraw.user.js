@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.3.5
+// @version      0.4.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -109,9 +109,25 @@
     return m ? m[0].toLowerCase() : '';
   }
 
+  // neal.fun structure: #witness-box > .witness (.who = "Witness #N", .say = statement split into per-letter spans).
+  // Hidden witnesses are display:none but their text is still in the DOM.
+  function boxWitnesses() {
+    const box = document.querySelector('#witness-box');
+    if (!box) return [];
+    return [...box.querySelectorAll('.witness')].map((card) => {
+      const who = card.querySelector('.who');
+      const m = who && norm(who).match(/(\d+)/);
+      const say = card.querySelector('.say, .quote');
+      const text = say ? norm(say).replace(/\s*next\s*[→>›»]?\s*$/i, '') : '';
+      return { n: m ? Number(m[1]) : 0, text, card };
+    }).filter((w) => w.text);
+  }
+
   // Every witness card currently in the page (during a transition the old and new card can coexist).
   function visibleWitnesses() {
     const out = [];
+    for (const w of boxWitnesses()) if (!out.some((o) => o.text === w.text)) out.push(w);
+    if (out.length) return out;
     for (const label of findWitnessLabels()) {
       const card = witnessCard(label);
       if (!card) continue;
@@ -125,11 +141,18 @@
   async function gatherWitnesses() {
     const seen = new Map();
     let last = null;
+    const seenTexts = () => [...seen.values()];
+    const unseen = () => visibleWitnesses().filter((w) => !seenTexts().includes(w.text));
     const addNew = async () => {
-      let found = visibleWitnesses().filter((w) => ![...seen.values()].includes(w.text));
+      let found = unseen();
       if (!found.length) return false;
-      await sleep(300); // let any typing animation finish
-      found = visibleWitnesses().filter((w) => ![...seen.values()].includes(w.text));
+      for (let k = 0; k < 12; k++) { // wait for the typing animation to finish
+        await sleep(200);
+        const again = unseen();
+        if (again.map((w) => w.text).join('|') === found.map((w) => w.text).join('|')) break;
+        found = again;
+        if (!found.length) return false;
+      }
       for (const w of found) { seen.set(w.n || seen.size + 1, w.text); last = w; }
       return found.length > 0;
     };
@@ -153,16 +176,10 @@
   let lastKey = null;
   async function autoDetect() {
     if (gathering || drawing) return;
-    const label = findWitnessLabel();
-    if (!label) {
-      const seen = [...document.querySelectorAll('body *')].filter((e) => !e.closest('#usad-panel') && e.children.length === 0 && /witness/i.test(e.textContent)).length;
-      setStatus('No "Witness #" label found (' + seen + ' element(s) mention "witness"). Try Debug.');
-      return;
-    }
-    const card = witnessCard(label);
-    if (!card) { setStatus('Found "' + label.el.textContent.trim() + '" but no statement text near it.'); return; }
+    const ws = visibleWitnesses();
+    if (!ws.length) { setStatus('No witness statements on screen yet.'); return; }
     const key = caseKey();
-    const newSuspect = label.n === 1 && !lastPrompt.includes(witnessText(card));
+    const newSuspect = ws.some((w) => !lastPrompt.includes(w.text));
     if (key === lastKey && !newSuspect) return;
     gathering = true;
     try {
@@ -172,7 +189,7 @@
       if (text && text !== lastPrompt) {
         lastPrompt = text;
         document.querySelector('#usad-prompt').value = text;
-        setStatus('Read ' + (lastCount) + ' witness statement(s)' + (lastCount < 3 ? ' — Next didn\'t advance to all 3; click Read now after moving to witness #1' : '') + '.');
+        setStatus('Read ' + lastCount + ' witness statement(s)' + (lastCount < 3 ? ' — click Read now once all 3 are visible' : '') + '.');
         if (document.querySelector('#usad-auto').checked) { gathering = false; await run(); }
       }
     } finally {
@@ -198,6 +215,8 @@
   // Canvas + palette
   // ======================================================================
   function findCanvas() {
+    const pad = document.querySelector('#sketchpad');
+    if (pad) return pad;
     const area = (c) => { const r = c.getBoundingClientRect(); return r.width * r.height; };
     const canvases = [...document.querySelectorAll('canvas')].filter((c) => {
       const r = c.getBoundingClientRect();
@@ -655,7 +674,7 @@
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.3.5</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.4.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
@@ -684,8 +703,8 @@
     buildPanel();
     // Witness cards are found automatically; the picked selector is only a fallback.
     setInterval(() => {
-      if (findWitnessLabel()) autoDetect();
-      else if (!store.get('promptSelector', '')) setStatus('Looking for "Witness #1"…');
+      if (visibleWitnesses().length) autoDetect();
+      else if (!store.get('promptSelector', '')) setStatus('Looking for witness statements…');
       else if (store.get('promptSelector', '')) refreshPrompt(false);
     }, 800);
   }
