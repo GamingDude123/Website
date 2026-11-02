@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.7.0
+// @version      0.8.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -138,6 +138,29 @@
     return out;
   }
 
+  // Greyed-out Next = still typing, or last witness.
+  function nextDisabled(el) {
+    if (!el) return true;
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
+    if (/disabled|inactive/i.test(el.className + ' ' + (el.parentElement ? el.parentElement.className : ''))) return true;
+    const cs = getComputedStyle(el);
+    if (cs.pointerEvents === 'none' || Number(cs.opacity) < 0.6) return true;
+    const m = cs.color.match(/\d+/g);
+    return !!m && Math.max(+m[0], +m[1], +m[2]) - Math.min(+m[0], +m[1], +m[2]) < 30 && +m[0] > 110; // grey text
+  }
+
+  // Resolves once getTexts() has stopped changing for `quiet` ms (the game types statements out letter by letter).
+  async function settle(getTexts, quiet = 1100, max = 20000) {
+    let prev = getTexts().join('|');
+    let since = Date.now();
+    const t0 = since;
+    while (Date.now() - since < quiet && Date.now() - t0 < max) {
+      await sleep(250);
+      const cur = getTexts().join('|');
+      if (cur !== prev) { prev = cur; since = Date.now(); }
+    }
+  }
+
   // Reads every witness, clicking Next between them, and returns the combined description.
   async function gatherWitnesses() {
     const seen = new Map();
@@ -145,30 +168,27 @@
     const seenTexts = () => [...seen.values()];
     const unseen = () => visibleWitnesses().filter((w) => !seenTexts().includes(w.text));
     const addNew = async () => {
-      let found = unseen();
-      if (!found.length) return false;
-      for (let k = 0; k < 12; k++) { // wait for the typing animation to finish
-        await sleep(200);
-        const again = unseen();
-        if (again.map((w) => w.text).join('|') === found.map((w) => w.text).join('|')) break;
-        found = again;
-        if (!found.length) return false;
-      }
+      if (!unseen().length) return false;
+      setStatus('Waiting for the witness to finish talking…');
+      await settle(() => unseen().map((w) => w.text));
+      const found = unseen();
       for (const w of found) { seen.set(w.n || seen.size + 1, w.text); last = w; }
       return found.length > 0;
     };
     await addNew();
-    for (let i = 0; i < 4 && seen.size < 3 && last; i++) {
-      const next = findNext(last.card);
-      if (!next || next.disabled || /disabled/.test(next.className + (next.getAttribute('aria-disabled') || ''))) break;
+    for (let i = 0; i < 6 && last; i++) {
+      let next = findNext(last.card);
+      for (let k = 0; k < 10 && nextDisabled(next); k++) { await sleep(250); next = findNext(last.card); } // enabled once typing ends
+      if (nextDisabled(next)) break; // still greyed after the text is done = last witness
       setStatus('Read witness ' + seen.size + '… clicking Next');
       clickEl(next);
       let ok = false;
-      for (let k = 0; k < 20 && !ok; k++) { // wait up to ~3s for the next statement to appear
+      for (let k = 0; k < 20 && !ok; k++) { // up to ~3s for the next statement to appear
         await sleep(150);
-        ok = await addNew();
+        ok = unseen().length > 0;
       }
       if (!ok) break;
+      await addNew();
     }
     lastCount = seen.size;
     return [...seen.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t).join(' ');
@@ -694,22 +714,34 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
 
   async function callLLM(key, model, system, turns) {
     if (model.startsWith('gemini')) {
-      const j = await httpJson(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
-        { 'content-type': 'application/json', 'x-goog-api-key': key },
-        {
-          systemInstruction: { parts: [{ text: system }] },
-          contents: turns.map((t) => ({
-            role: t.role === 'assistant' ? 'model' : 'user',
-            parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
-          })),
-          generationConfig: { maxOutputTokens: 32000, temperature: 0.7 },
-        },
-      );
-      const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
-      const text = parts.map((x) => x.text || '').join('');
-      if (!text) throw new Error('empty reply (' + (((j.candidates || [])[0] || {}).finishReason || j.promptFeedback && j.promptFeedback.blockReason || 'unknown') + ')');
-      return text;
+      const body = {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: turns.map((t) => ({
+          role: t.role === 'assistant' ? 'model' : 'user',
+          parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
+        })),
+        generationConfig: { maxOutputTokens: 32000, temperature: 0.7 },
+      };
+      const go = async (m) => {
+        const j = await httpJson(
+          `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`,
+          { 'content-type': 'application/json', 'x-goog-api-key': key }, body);
+        const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
+        const text = parts.map((x) => x.text || '').join('');
+        if (!text) throw new Error('empty reply (' + (((j.candidates || [])[0] || {}).finishReason || (j.promptFeedback && j.promptFeedback.blockReason) || 'unknown') + ')');
+        return text;
+      };
+      const cached = store.get('geminiModel:' + model, '');
+      try {
+        return await go(cached || model);
+      } catch (e) {
+        if (!/no longer available|not found|not supported|deprecated|404/i.test(e.message)) throw e;
+        const found = await pickGeminiModel(key, /pro/.test(model) ? 'pro' : 'flash');
+        if (!found) throw e;
+        setStatus('Switching to ' + found + '…');
+        store.set('geminiModel:' + model, found);
+        return go(found);
+      }
     }
     const j = await httpJson('https://api.anthropic.com/v1/messages',
       { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
@@ -725,10 +757,34 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     return j.content.map((b) => b.text || '').join('');
   }
 
+  // Ask Google which models this key can use and take the newest Flash/Pro that supports generateContent.
+  function pickGeminiModel(key, kind) {
+    return new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        method: 'GET', timeout: 30000,
+        url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=' + encodeURIComponent(key),
+        headers: { 'x-goog-api-key': key },
+        onload: (r) => {
+          try {
+            const list = (JSON.parse(r.responseText).models || [])
+              .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+              .map((m) => m.name.replace(/^models\//, ''))
+              .filter((n) => new RegExp('^gemini-[\\d.]+-' + kind + '(-\\d+)?(-preview[\\w-]*)?$').test(n));
+            const ver = (n) => parseFloat((n.match(/gemini-([\d.]+)/) || [0, 0])[1]);
+            list.sort((a, b) => ver(b) - ver(a) || (a.includes('preview') ? 1 : -1));
+            resolve(list[0] || null);
+          } catch (e) { resolve(null); }
+        },
+        onerror: () => resolve(null),
+        ontimeout: () => resolve(null),
+      });
+    });
+  }
+
   // Keys identify their provider; fix a mismatched dropdown choice.
   function resolveModel(key, selected) {
     // Anthropic keys start with sk-ant; any other key (AIza…, AQ.…) is treated as a Google Gemini key.
-    if (key && !/^sk-ant/.test(key) && !selected.startsWith('gemini')) return 'gemini-2.5-flash';
+    if (key && !/^sk-ant/.test(key) && !selected.startsWith('gemini')) return 'gemini-flash-latest';
     if (/^sk-ant/.test(key) && selected.startsWith('gemini')) return 'claude-sonnet-5-5';
     return selected;
   }
@@ -941,6 +997,31 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     if (colorMiss) setStatus('Done (couldn\'t find some palette colours).');
   }
 
+  function findClearButton() {
+    const sels = ['#btn-clear', '#btn-trash', '#btn-delete', '#btn-reset', 'button[aria-label*="clear" i]', 'button[title*="clear" i]',
+      'button[aria-label*="trash" i]', 'button[title*="trash" i]', 'button[aria-label*="delete" i]', 'button[title*="delete" i]'];
+    for (const sel of sels) { const el = document.querySelector(sel); if (el && !el.closest('#usad-panel')) return el; }
+    // Fallback: the leftmost button of the bottom-left toolbar (the trash can).
+    const bs = [...document.querySelectorAll('button')].filter((b) => {
+      if (b.closest('#usad-panel')) return false;
+      const r = b.getBoundingClientRect();
+      return r.width > 0 && r.top > innerHeight * 0.75 && r.left < innerWidth * 0.4;
+    });
+    bs.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    return bs[0] || null;
+  }
+
+  async function clearCanvas() {
+    const btn = findClearButton();
+    if (!btn) return;
+    setStatus('Clearing the canvas…');
+    clickEl(btn);
+    await sleep(350);
+    const confirm = [...document.querySelectorAll('button')].find((b) => b !== btn && !b.closest('#usad-panel')
+      && /^(yes|ok|confirm|clear( all)?|delete|erase)\b/i.test(norm(b)));
+    if (confirm) { clickEl(confirm); await sleep(250); }
+  }
+
   async function run() {
     if (drawing) { drawing = false; return; }
     const text = document.querySelector('#usad-prompt').value.trim();
@@ -960,6 +1041,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
         } catch (e) { failNote = e.message; setStatus('AI failed: ' + e.message + ' — using basic drawer…'); await sleep(800); }
       }
       if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
+      if (document.querySelector('#usad-clear').checked) await clearCanvas();
       setStatus(`Drawing ${strokes.length} strokes…`);
       await drawStrokes(strokes, canvas);
       if (drawing && failNote) setStatus('AI FAILED: ' + failNote + ' — drew with the basic drawer.');
@@ -1012,7 +1094,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.7.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.8.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
@@ -1021,10 +1103,11 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
         <button id="usad-pick" style="flex:1" title="Only needed if witnesses aren't detected">Pick text</button>
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
+      <label><input type="checkbox" id="usad-clear"> Clear canvas before drawing</label><br>
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
       <input id="usad-key" type="password" placeholder="API key: Google Gemini (free) or Anthropic" style="width:100%;box-sizing:border-box;margin-top:4px">
       <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
-        <select id="usad-model" style="flex:1"><option value="gemini-2.5-flash">Gemini Flash (free)</option><option value="gemini-2.5-pro">Gemini Pro</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
+        <select id="usad-model" style="flex:1"><option value="gemini-flash-latest">Gemini Flash (free)</option><option value="gemini-pro-latest">Gemini Pro</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
         <label title="Claude looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> Refine</label>
       </div>
       <canvas id="usad-preview" width="240" height="240" style="display:none;width:100%;margin-top:6px;border-radius:6px;background:#fcf3e8"></canvas>
@@ -1044,8 +1127,13 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     key.oninput = flagKey;
     flagKey();
     const model = p.querySelector('#usad-model');
-    model.value = store.get('model', 'gemini-2.5-flash');
+    const saved = store.get('model', 'gemini-flash-latest').replace('gemini-2.5-flash', 'gemini-flash-latest').replace('gemini-2.5-pro', 'gemini-pro-latest');
+    model.value = saved;
+    if (model.value !== saved) model.value = 'gemini-flash-latest';
     model.onchange = () => store.set('model', model.value);
+    const clr = p.querySelector('#usad-clear');
+    clr.checked = store.get('clear', true);
+    clr.onchange = () => store.set('clear', clr.checked);
     const refine = p.querySelector('#usad-refine');
     refine.checked = store.get('refine', true);
     refine.onchange = () => store.set('refine', refine.checked);
