@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.6.0
+// @version      0.6.1
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -579,7 +579,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     if (model.startsWith('gemini')) {
       const j = await httpJson(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
-        { 'content-type': 'application/json' },
+        { 'content-type': 'application/json', 'x-goog-api-key': key },
         {
           systemInstruction: { parts: [{ text: system }] },
           contents: turns.map((t) => ({
@@ -610,7 +610,8 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
 
   // Keys identify their provider; fix a mismatched dropdown choice.
   function resolveModel(key, selected) {
-    if (/^AIza/.test(key) && !selected.startsWith('gemini')) return 'gemini-2.5-flash';
+    // Anthropic keys start with sk-ant; any other key (AIza…, AQ.…) is treated as a Google Gemini key.
+    if (key && !/^sk-ant/.test(key) && !selected.startsWith('gemini')) return 'gemini-2.5-flash';
     if (/^sk-ant/.test(key) && selected.startsWith('gemini')) return 'claude-sonnet-5-5';
     return selected;
   }
@@ -892,7 +893,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.6.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.6.1</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
