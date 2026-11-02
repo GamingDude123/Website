@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.5.1
+// @version      0.6.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -11,6 +11,7 @@
 // @grant        GM_setValue
 // @grant        GM_setClipboard
 // @connect      api.anthropic.com
+// @connect      generativelanguage.googleapis.com
 // ==/UserScript==
 
 (function () {
@@ -556,25 +557,62 @@ Optional on ellipse/poly: "fill":false (outline only), "outline":false (no outli
 
 COLOURS: you may only use these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest one (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements exactly.`;
 
-  function callClaude(key, model, system, messages) {
+  // Turns are provider-neutral: { role: 'user' | 'assistant', text, image?: base64 png }.
+  function httpJson(url, headers, body) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method: 'POST',
-        url: 'https://api.anthropic.com/v1/messages',
-        timeout: 280000,
-        headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-        data: JSON.stringify({ model, max_tokens: 16000, system, messages }),
+        method: 'POST', url, headers, timeout: 280000, data: JSON.stringify(body),
         onload: (r) => {
           try {
-            const body = JSON.parse(r.responseText);
-            if (body.error) throw new Error(body.error.message);
-            resolve(body.content.map((b) => b.text || '').join(''));
+            const j = JSON.parse(r.responseText);
+            if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+            resolve(j);
           } catch (e) { reject(e); }
         },
         onerror: () => reject(new Error('network error')),
         ontimeout: () => reject(new Error('timed out')),
       });
     });
+  }
+
+  async function callLLM(key, model, system, turns) {
+    if (model.startsWith('gemini')) {
+      const j = await httpJson(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+        { 'content-type': 'application/json' },
+        {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: turns.map((t) => ({
+            role: t.role === 'assistant' ? 'model' : 'user',
+            parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
+          })),
+          generationConfig: { maxOutputTokens: 32000, temperature: 0.7 },
+        },
+      );
+      const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
+      const text = parts.map((x) => x.text || '').join('');
+      if (!text) throw new Error('empty reply (' + (((j.candidates || [])[0] || {}).finishReason || j.promptFeedback && j.promptFeedback.blockReason || 'unknown') + ')');
+      return text;
+    }
+    const j = await httpJson('https://api.anthropic.com/v1/messages',
+      { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      {
+        model, max_tokens: 16000, system,
+        messages: turns.map((t) => ({
+          role: t.role,
+          content: t.image
+            ? [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: t.image } }, { type: 'text', text: t.text }]
+            : t.text,
+        })),
+      });
+    return j.content.map((b) => b.text || '').join('');
+  }
+
+  // Keys identify their provider; fix a mismatched dropdown choice.
+  function resolveModel(key, selected) {
+    if (/^AIza/.test(key) && !selected.startsWith('gemini')) return 'gemini-2.5-flash';
+    if (/^sk-ant/.test(key) && selected.startsWith('gemini')) return 'claude-sonnet-5-5';
+    return selected;
   }
 
   function parseOps(raw) {
@@ -703,27 +741,25 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
   }
 
   async function planWithClaude(text, key, model, refine) {
+    model = resolveModel(key, model);
     const user = 'Witness statements:\n' + text;
-    setStatus('Claude is planning the drawing…');
-    const first = await callClaude(key, model, SYSTEM_PROMPT, [{ role: 'user', content: user }]);
+    setStatus('Planning the drawing (' + model + ')…');
+    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: user }]);
     let ops = parseOps(first);
     let strokes = opsToStrokes(ops);
     showPreview(strokes);
     if (!refine || !drawing) return strokes;
     try {
-      setStatus('Claude is checking its own drawing…');
+      setStatus('Checking its own drawing…');
       const shot = document.createElement('canvas');
       shot.width = shot.height = 512;
       renderStrokes(strokes, shot);
       const data = shot.toDataURL('image/png').split(',')[1];
-      const second = await callClaude(key, model, SYSTEM_PROMPT, [
-        { role: 'user', content: user },
-        { role: 'assistant', content: first },
-        { role: 'user', content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data } },
-          { type: 'text', text: 'This is how your ops render (fills are hatched, outlines black). Compare it against every trait in the witness statements. '
-            + 'Find what is missing, too small, wrongly coloured, mis-proportioned or hidden by draw order, then reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff). Add more detail where the drawing is plain.' },
-        ] },
+      const second = await callLLM(key, model, SYSTEM_PROMPT, [
+        { role: 'user', text: user },
+        { role: 'assistant', text: first },
+        { role: 'user', image: data, text: 'This is how your ops render (fills are hatched, outlines black). Compare it against every trait in the witness statements. '
+          + 'Find what is missing, too small, wrongly coloured, mis-proportioned or hidden by draw order, then reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff). Add more detail where the drawing is plain.' },
       ]);
       ops = parseOps(second);
       strokes = opsToStrokes(ops);
@@ -807,7 +843,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
       setStatus(`Drawing ${strokes.length} strokes…`);
       await drawStrokes(strokes, canvas);
-      if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add an Anthropic API key above for detailed drawings.');
+      if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
       else if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
       if (!drawing) setStatus('Stopped.');
     } catch (e) {
@@ -856,7 +892,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.5.1</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.6.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
@@ -866,9 +902,9 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
-      <input id="usad-key" type="password" placeholder="Anthropic API key (detailed, accurate drawings)" style="width:100%;box-sizing:border-box;margin-top:4px">
+      <input id="usad-key" type="password" placeholder="API key: Google Gemini (free) or Anthropic" style="width:100%;box-sizing:border-box;margin-top:4px">
       <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
-        <select id="usad-model" style="flex:1"><option value="claude-opus-5-5">Opus 5.5 (best)</option><option value="claude-sonnet-5-5">Sonnet 5.5 (faster)</option></select>
+        <select id="usad-model" style="flex:1"><option value="gemini-2.5-flash">Gemini Flash (free)</option><option value="gemini-2.5-pro">Gemini Pro</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
         <label title="Claude looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> Refine</label>
       </div>
       <canvas id="usad-preview" width="240" height="240" style="display:none;width:100%;margin-top:6px;border-radius:6px;background:#fcf3e8"></canvas>
@@ -888,7 +924,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     key.oninput = flagKey;
     flagKey();
     const model = p.querySelector('#usad-model');
-    model.value = store.get('model', 'claude-opus-5-5');
+    model.value = store.get('model', 'gemini-2.5-flash');
     model.onchange = () => store.set('model', model.value);
     const refine = p.querySelector('#usad-refine');
     refine.checked = store.get('refine', true);
