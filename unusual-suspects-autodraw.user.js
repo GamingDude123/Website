@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.8.0
+// @version      0.9.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -712,7 +712,26 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     });
   }
 
-  async function callLLM(key, model, system, turns) {
+  let RETRY_DELAYS = [2000, 4000, 8000, 15000, 25000]; // waits between attempts when the provider is busy
+  const BUSY = /high demand|overload|unavailable|try again|busy|rate.?limit|resource.?exhausted|\b429\b|\b503\b|\b529\b|temporar|timed out|network error/i;
+
+  async function withRetry(fn) {
+    for (let attempt = 0; ; attempt++) {
+      try { return await fn(); } catch (e) {
+        if (attempt >= RETRY_DELAYS.length || !BUSY.test(e.message) || !drawing) throw e;
+        const hint = e.message.match(/retry in (\d+(?:\.\d+)?)s/i);
+        const wait = hint ? Math.min(60000, Number(hint[1]) * 1000 + 500) : RETRY_DELAYS[attempt];
+        setStatus('Provider is busy, retrying in ' + Math.round(wait / 1000) + 's (attempt ' + (attempt + 2) + '/' + (RETRY_DELAYS.length + 1) + ')…');
+        await sleep(wait);
+      }
+    }
+  }
+
+  function callLLM(key, model, system, turns) {
+    return withRetry(() => callLLMOnce(key, model, system, turns));
+  }
+
+  async function callLLMOnce(key, model, system, turns) {
     if (model.startsWith('gemini')) {
       const body = {
         systemInstruction: { parts: [{ text: system }] },
@@ -1022,7 +1041,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     if (confirm) { clickEl(confirm); await sleep(250); }
   }
 
-  async function run() {
+  async function run(forceBasic = false) {
     if (drawing) { drawing = false; return; }
     const text = document.querySelector('#usad-prompt').value.trim();
     if (!text) { setStatus('No prompt text.'); return; }
@@ -1032,19 +1051,21 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     document.querySelector('#usad-go').textContent = 'Stop';
     try {
       let strokes = null;
-      let failNote = '';
       const key = document.querySelector('#usad-key').value.trim();
-      if (key) {
+      if (key && !forceBasic) {
         try {
           strokes = await planWithClaude(text, key, document.querySelector('#usad-model').value,
             document.querySelector('#usad-refine').checked);
-        } catch (e) { failNote = e.message; setStatus('AI failed: ' + e.message + ' — using basic drawer…'); await sleep(800); }
+        } catch (e) {
+          setStatus('AI FAILED: ' + e.message + ' — nothing drawn. Click Draw to retry, or Basic for the keyword drawer.');
+          return;
+        }
       }
       if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
       if (document.querySelector('#usad-clear').checked) await clearCanvas();
       setStatus(`Drawing ${strokes.length} strokes…`);
       await drawStrokes(strokes, canvas);
-      if (drawing && failNote) setStatus('AI FAILED: ' + failNote + ' — drew with the basic drawer.');
+      if (drawing && forceBasic && key) setStatus('Done — drew with the BASIC drawer (no AI).');
       else if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
       else if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
       if (!drawing) setStatus('Stopped.');
@@ -1094,13 +1115,14 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.8.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.9.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
-      <div style="display:flex;gap:6px;margin-bottom:6px">
-        <button id="usad-go" style="flex:1">Draw</button>
-        <button id="usad-read" style="flex:1">Read now</button>
-        <button id="usad-debug" style="flex:1" title="Copies page structure for troubleshooting">Debug</button>
-        <button id="usad-pick" style="flex:1" title="Only needed if witnesses aren't detected">Pick text</button>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+        <button id="usad-go" style="flex:1 1 28%">Draw</button>
+        <button id="usad-read" style="flex:1 1 28%">Read now</button>
+        <button id="usad-basic" style="flex:1 1 28%" title="Draw with the built-in keyword drawer (no AI)">Basic</button>
+        <button id="usad-debug" style="flex:1 1 28%" title="Copies page structure for troubleshooting">Debug</button>
+        <button id="usad-pick" style="flex:1 1 28%" title="Only needed if witnesses aren't detected">Pick text</button>
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
       <label><input type="checkbox" id="usad-clear"> Clear canvas before drawing</label><br>
@@ -1113,7 +1135,8 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       <canvas id="usad-preview" width="240" height="240" style="display:none;width:100%;margin-top:6px;border-radius:6px;background:#fcf3e8"></canvas>
       <div id="usad-status" style="margin-top:6px;opacity:.8">Waiting for witness statements…</div>`;
     document.body.appendChild(p);
-    p.querySelector('#usad-go').onclick = run;
+    p.querySelector('#usad-go').onclick = () => run();
+    p.querySelector('#usad-basic').onclick = () => run(true);
     p.querySelector('#usad-pick').onclick = pickPrompt;
     p.querySelector('#usad-debug').onclick = debugDump;
     p.querySelector('#usad-read').onclick = () => { lastKey = null; lastPrompt = ''; gathering = false; autoDetect(); };
@@ -1153,5 +1176,5 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
   else window.addEventListener('DOMContentLoaded', init);
 
   // Exposed for testing outside the browser.
-  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude };
+  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, setRetryDelays: (a) => { RETRY_DELAYS = a; } };
 })();
