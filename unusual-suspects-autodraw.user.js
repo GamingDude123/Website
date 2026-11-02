@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.5.0
+// @version      0.5.1
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -807,7 +807,8 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
       setStatus(`Drawing ${strokes.length} strokes…`);
       await drawStrokes(strokes, canvas);
-      if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
+      if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add an Anthropic API key above for detailed drawings.');
+      else if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
       if (!drawing) setStatus('Stopped.');
     } catch (e) {
       setStatus('Error: ' + e.message);
@@ -855,7 +856,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.5.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.5.1</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
@@ -882,7 +883,10 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     auto.onchange = () => store.set('auto', auto.checked);
     const key = p.querySelector('#usad-key');
     key.value = store.get('apiKey', '');
-    key.onchange = () => store.set('apiKey', key.value.trim());
+    const flagKey = () => { key.style.outline = key.value.trim() ? '' : '2px solid #f5c542'; };
+    key.onchange = () => { store.set('apiKey', key.value.trim()); flagKey(); };
+    key.oninput = flagKey;
+    flagKey();
     const model = p.querySelector('#usad-model');
     model.value = store.get('model', 'claude-opus-5-5');
     model.onchange = () => store.set('model', model.value);
