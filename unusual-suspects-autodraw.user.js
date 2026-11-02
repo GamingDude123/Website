@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.0.0
+// @version      1.1.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -311,7 +311,7 @@
   }
 
   // Zig-zag hatching inside an ellipse so the fill colour actually shows.
-  function fillEllipse(cx, cy, rx, ry, c, gap = 0.014) {
+  function fillEllipse(cx, cy, rx, ry, c, gap = fillGap()) {
     const pts = [];
     let dir = 1;
     for (let y = cy - ry + gap; y < cy + ry; y += gap) {
@@ -672,27 +672,40 @@
   };
   const palColor = (c) => PAL[String(c || 'black').toLowerCase()] || (/^#[0-9a-f]{6}$/i.test(c) ? c : PAL.black);
   const clamp01 = (v) => Math.min(1, Math.max(0, Number(v) || 0));
-  const FILL_GAP = 0.011;
+  // Brush thickness as a fraction of the drawing square. Measured from the game (see measureBrush) so fills cover solidly.
+  let brushUnit = Number(store.get('brushUnit', 0.006)) || 0.006;
+  const fillGap = () => Math.min(0.02, Math.max(0.003, brushUnit * 0.85));
+  const deadModels = new Set(); // models that answered "quota 0" / "gone" this session
 
-  const SYSTEM_PROMPT = `You are an expert sketch artist playing a police-sketch drawing game. The player reads up to three witness statements about a suspect and must draw the suspect so that an AI judge can recognise every described trait. You will be given the merged witness statements.
+  const SYSTEM_PROMPT = `You are an expert cartoon sketch artist playing a police-sketch drawing game. The player reads up to three witness statements about a "suspect" and draws it; an AI judge then compares the sketch with a lineup of about 70 suspects, so your sketch must be INSTANTLY RECOGNISABLE as the right one.
 
-HOW TO WORK
-1. Extract EVERY visual trait: what the suspect is (human, animal, monster, creature...), body shape and proportions (tall, thin, squat, round), head/face shape, eyes, nose, mouth, teeth, hair, ears, extra body parts (antennae, tails, wings, legs), the colour of each part, clothing, accessories (hat, glasses, shoes, jewellery), patterns (spots, stripes), expression, held objects. Statements are chatty, vague and sometimes disagree: keep what the witnesses agree on, drop non-visual chatter (questions, emotions about the case).
-2. Draw the whole suspect, centred, filling 70-90% of the canvas, head to toe unless only a face is described. Exaggerate the distinguishing traits and make each one clearly visible (at least ~0.03 units across).
-3. Use plenty of shapes (60-150) so there is real detail: layered body parts, shading blocks, eyebrows, pupils, nostrils, teeth one by one, buttons, patterns.
+KEY INSIGHT: suspects are almost always famous characters or personalities (mascots, cartoon / anime / video-game characters, celebrities, mythical creatures, historical figures, brand icons), described vaguely and often as a joke ("a man's body with black stripes over it"). Work out WHO it most likely is from all the clues together. If you recognise them, draw their ICONIC look (signature colours, costume, hair, props, silhouette, proportions) in addition to everything the witnesses said. If you are not sure, rely on the witness details only. Never write the name or any text on the drawing.
+
+THINK FIRST, then answer:
+1. Identify the suspect (best guess + confidence) and list its iconic visual traits.
+2. List every trait the witnesses mention: what it is, body shape and proportions (tall, thin, squat), head/face, eyes, nose, mouth, teeth, hair, ears, extra parts (tail, wings, antennae), the colour of each part, clothes, accessories, patterns (stripes, spots), expression, held props. Statements are chatty and may disagree: keep what most agree on, drop non-visual chatter.
+3. Plan the layout, then output the drawing.
 
 OUTPUT: ONLY one JSON object, no prose, no code fences:
-{"traits":["short list of every trait you will draw"],"ops":[ ... ]}
+{"identity":"best guess and confidence","traits":["every trait you will draw"],"ops":[ ... ]}
 
-CANVAS: unit square, x right 0..1, y down 0..1. Ops are drawn in order, so draw back-to-front (limbs, body, clothes, head, face, small details last) and make sure later shapes do not hide earlier details.
+CANVAS: unit square, x right 0..1, y down 0..1. Ops are drawn in order, so draw back-to-front (tail and far limbs, body, clothes, head, face, small details last) and make sure later shapes never hide earlier details by accident.
+
+LAYOUT TEMPLATES (adapt to the character)
+- Standing figure: head centre about (0.5, 0.2) with radius 0.12-0.15; shoulders y 0.33; torso y 0.33-0.65; arms start at the shoulders (y about 0.36) and hang to y 0.62; legs y 0.65-0.92; feet y 0.93. Stretch the torso and legs for tall or thin characters, shrink them for squat ones. Arms and legs must visibly attach to the body.
+- Four-legged animal: body is a horizontal ellipse near (0.5, 0.55), head at one end, four legs below, tail behind.
+- Face: eyes around the middle of the head, nose below them, mouth in the lower third INSIDE the head outline. Ears and hair belong on the head, never on the body. Never draw two heads or duplicate shapes.
+- The figure should fill 80-95% of the canvas height. Show the whole body from head to feet unless only a face is described.
+
+STYLE: bold, simplified, high-contrast cartoon. Big clear shapes beat tiny details. Use real silhouettes (polygons with "smooth":true) for hands, feet, ears, hair, tails, hats and clothes instead of plain ellipses. Patterns such as stripes or spots are separate filled shapes drawn ON TOP of the body fill with "outline":false and kept inside the body outline. Aim for 80-200 ops.
 
 OPS (all coordinates 0..1)
-- {"t":"ellipse","c":"green","cx":0.5,"cy":0.5,"rx":0.2,"ry":0.15,"rot":0}  filled + black outline (rot in degrees, optional)
-- {"t":"poly","c":"red","pts":[[x,y],...],"closed":true}  filled polygon + outline; max 40 points; add "smooth":true to round the corners
-- {"t":"line","c":"black","pts":[[x,y],...],"smooth":false}  an open stroke (mouth, brow, whisker, antenna, limb)
+- {"t":"ellipse","c":"orange","cx":0.5,"cy":0.5,"rx":0.2,"ry":0.15,"rot":0}  filled + black outline (rot in degrees, optional)
+- {"t":"poly","c":"red","pts":[[x,y],...],"closed":true,"smooth":true}  filled polygon + outline; max 40 points; "smooth" rounds the corners
+- {"t":"line","c":"black","pts":[[x,y],...],"smooth":true,"w":0.02}  an open stroke; "w" is its thickness (0.012 is a normal pen; use 0.02-0.05 for tails, limbs, scarves, antennae); for mouths and whiskers a thin line is fine
 Optional on ellipse/poly: "fill":false (outline only), "outline":false (no outline), "oc":"brown" (outline colour).
 
-COLOURS: you may only use these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest one (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements exactly.`;
+COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with a black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements and to the character's iconic colours.`;
 
   // Turns are provider-neutral: { role: 'user' | 'assistant', text, image?: base64 png }.
   function httpJson(url, headers, body) {
@@ -789,7 +802,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
             role: t.role === 'assistant' ? 'model' : 'user',
             parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
           })),
-          generationConfig: { maxOutputTokens: 32000, temperature: 0.7 },
+          generationConfig: { maxOutputTokens: 32000, temperature: 0.7, responseMimeType: 'application/json' },
         });
       const cand = (j.candidates || [])[0] || {};
       const text = ((cand.content || {}).parts || []).map((x) => x.text || '').join('');
@@ -820,7 +833,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       let busy = false;
       for (const c of cands) {
         if (!drawing) throw new Error('stopped');
-        if (dead.has(c.id)) continue;
+        if (dead.has(c.id) || deadModels.has(c.id)) continue;
         setStatus('Asking ' + c.model + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
         try {
           const text = await callOne(c, system, turns);
@@ -829,7 +842,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
         } catch (e) {
           lastErr = e;
           if (KEY_BAD.test(e.message) && !BUSY.test(e.message)) { for (const d of cands) if (d.key === c.key) dead.add(d.id); }
-          else if (MODEL_GONE.test(e.message)) dead.add(c.id);
+          else if (MODEL_GONE.test(e.message) || /limit:\s*0\b/.test(e.message)) { dead.add(c.id); deadModels.add(c.id); }
           else if (BUSY.test(e.message)) { busy = true; setStatus(c.model + ' is busy — trying the next model…'); await sleep(700); }
         }
       }
@@ -855,6 +868,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     }
     const ops = (obj.ops || []).filter((o) => o && ['ellipse', 'poly', 'line'].includes(o.t));
     if (!ops.length) throw new Error('no drawing ops in reply');
+    ops.identity = obj.identity ? String(obj.identity) : '';
     return ops;
   }
 
@@ -883,7 +897,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
   }
 
   // Scanline hatching of a polygon, chained into zig-zags where possible.
-  function hatchPolygon(poly, c, gap = FILL_GAP) {
+  function hatchPolygon(poly, c, gap = fillGap()) {
     const ys = poly.map((p) => p[1]);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
@@ -916,7 +930,28 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     return strokes;
   }
 
-  function opsToStrokes(ops, gap = FILL_GAP) {
+  // A line wider than the brush becomes several parallel passes, offset along the line's normal.
+  function thickLine(pts, c, w) {
+    const step = brushUnit * 0.85;
+    const spread = Math.max(0, w - brushUnit);
+    const k = Math.max(2, Math.ceil(spread / step) + 1);
+    const out = [];
+    for (let i = 0; i < k; i++) {
+      const off = -spread / 2 + (spread * i) / (k - 1);
+      out.push({
+        c,
+        pts: pts.map((p, j) => {
+          const a = pts[Math.max(0, j - 1)];
+          const b = pts[Math.min(pts.length - 1, j + 1)];
+          const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+          return [clamp01(p[0] - ((b[1] - a[1]) / len) * off), clamp01(p[1] + ((b[0] - a[0]) / len) * off)];
+        }),
+      });
+    }
+    return out;
+  }
+
+  function opsToStrokes(ops, gap = fillGap()) {
     const strokes = [];
     for (const op of ops) {
       const color = palColor(op.c);
@@ -935,7 +970,12 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
         closed = op.t === 'poly' && op.closed !== false;
         if (op.smooth) pts = smoothPts(pts, closed);
       }
-      if (op.t === 'line') { strokes.push({ c: color, pts }); continue; }
+      if (op.t === 'line') {
+        const w = Number(op.w) || 0;
+        if (w > brushUnit * 1.6) strokes.push(...thickLine(pts, color, Math.min(w, 0.08)));
+        else strokes.push({ c: color, pts });
+        continue;
+      }
       if (op.fill !== false && pts.length >= 3) strokes.push(...hatchPolygon(pts, color, gap));
       if (op.outline !== false) strokes.push({ c: outlineColor, pts: closed ? [...pts, pts[0]] : pts });
     }
@@ -950,7 +990,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     g.fillRect(0, 0, S, S);
     g.lineCap = 'round';
     g.lineJoin = 'round';
-    g.lineWidth = Math.max(1.5, S * 0.012);
+    g.lineWidth = Math.max(1.2, S * brushUnit);
     for (const st of strokes) {
       g.strokeStyle = st.c;
       g.beginPath();
@@ -971,29 +1011,31 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     setStatus('Planning the drawing…');
     const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: user }], parseOps);
     let ops = parseOps(first);
-    let strokes = opsToStrokes(ops);
-    showPreview(strokes);
-    if (!refine || !drawing) return strokes;
+    showPreview(opsToStrokes(ops));
+    if (!refine || !drawing) return ops;
     try {
       setStatus('Checking its own drawing…');
       const shot = document.createElement('canvas');
       shot.width = shot.height = 512;
-      renderStrokes(strokes, shot);
+      renderStrokes(opsToStrokes(ops), shot);
       const data = shot.toDataURL('image/png').split(',')[1];
       const second = await callLLM(key, model, SYSTEM_PROMPT, [
         { role: 'user', text: user },
         { role: 'assistant', text: first },
-        { role: 'user', image: data, text: 'This is how your ops render (fills are hatched, outlines black). Compare it against every trait in the witness statements. '
-          + 'Find what is missing, too small, wrongly coloured, mis-proportioned or hidden by draw order, then reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff). Add more detail where the drawing is plain.' },
+        { role: 'user', image: data, text: 'This is how your ops render (fills are hatched, outlines black). Review it critically against the witness statements AND the character you identified: '
+          + '(1) would it be instantly recognisable as that character? (2) are the proportions and layout right: head size, tall enough body, limbs attached, face features inside the head, mouth in the lower face? '
+          + '(3) is every witness trait visible, large enough and the right colour? (4) remove duplicate or overlapping shapes that make a mess, and add the iconic details that are missing. '
+          + 'Reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff).' },
       ], parseOps);
-      ops = parseOps(second);
-      strokes = opsToStrokes(ops);
-      showPreview(strokes);
+      const better = parseOps(second);
+      better.identity = better.identity || ops.identity;
+      ops = better;
+      showPreview(opsToStrokes(ops));
     } catch (e) {
       setStatus('Self-check failed (' + e.message + '); using first drawing.');
       await sleep(800);
     }
-    return strokes;
+    return ops;
   }
 
   // ======================================================================
@@ -1073,6 +1115,38 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     if (confirm) { clickEl(confirm); await sleep(250); }
   }
 
+  // Draws a short test stroke in the game (on a freshly cleared canvas) and measures how thick it came out,
+  // so hatch fills can be spaced to cover solidly. The caller clears the canvas again afterwards.
+  async function measureBrush(canvas) {
+    try {
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      const r = canvas.getBoundingClientRect();
+      const side = Math.min(r.width, r.height) * 0.9;
+      const scale = canvas.width / r.width;
+      const x = r.left + r.width / 2;
+      const y0 = r.top + r.height / 2 - 30;
+      fire(canvas, 'down', x, y0, 1);
+      for (let i = 1; i <= 12; i++) fire(canvas, 'move', x, y0 + i * 5, 1);
+      fire(canvas, 'up', x, y0 + 60, 0);
+      await sleep(200);
+      const cx = Math.round((x - r.left) * scale);
+      const x0 = Math.max(0, cx - 40);
+      const n = Math.min(80, canvas.width - x0);
+      const row = ctx.getImageData(x0, Math.round((y0 + 30 - r.top) * scale), n, 1).data;
+      const d = (i) => Math.abs(row[i * 4] - row[0]) + Math.abs(row[i * 4 + 1] - row[1]) + Math.abs(row[i * 4 + 2] - row[2]) + Math.abs(row[i * 4 + 3] - row[3]);
+      let maxd = 0;
+      for (let i = 1; i < n; i++) maxd = Math.max(maxd, d(i));
+      if (maxd < 60) return; // nothing was drawn
+      let width = 0;
+      for (let i = 1; i < n; i++) width += Math.min(1, d(i) / maxd);
+      const css = width / scale;
+      if (css < 0.8 || css > 80) return;
+      brushUnit = Math.min(0.03, Math.max(0.002, css / side));
+      store.set('brushUnit', brushUnit);
+    } catch (e) { /* keep the previous estimate */ }
+  }
+
   async function run(forceBasic = false) {
     if (drawing) { drawing = false; return; }
     const text = document.querySelector('#usad-prompt').value.trim();
@@ -1083,23 +1157,29 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     document.querySelector('#usad-go').textContent = 'Stop';
     try {
       let strokes = null;
+      let ops = null;
       const key = document.querySelector('#usad-key').value.trim();
       if (key && !forceBasic) {
         try {
-          strokes = await planWithClaude(text, key, document.querySelector('#usad-model').value,
+          ops = await planWithClaude(text, key, document.querySelector('#usad-model').value,
             document.querySelector('#usad-refine').checked);
         } catch (e) {
           setStatus('AI FAILED: ' + e.message + ' — nothing drawn. Click Draw to retry, or Basic for the keyword drawer.');
           return;
         }
       }
-      if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
-      if (document.querySelector('#usad-clear').checked) await clearCanvas();
-      setStatus(`Drawing ${strokes.length} strokes…`);
+      const clear = document.querySelector('#usad-clear').checked;
+      if (ops) {
+        if (clear && drawing) { await clearCanvas(); await measureBrush(canvas); } // the clear below removes the test stroke
+        strokes = opsToStrokes(ops);
+        showPreview(strokes);
+      } else { strokes = composeProcedural(text); showPreview(strokes); }
+      if (clear) await clearCanvas();
+      setStatus(`Drawing ${strokes.length} strokes…` + (ops && ops.identity ? ' Looks like: ' + ops.identity : ''));
       await drawStrokes(strokes, canvas);
       if (drawing && forceBasic && key) setStatus('Done — drew with the BASIC drawer (no AI).');
       else if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
-      else if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
+      else if (drawing) setStatus('Done.' + (ops && ops.identity ? ' Guess: ' + ops.identity : ''));
       if (!drawing) setStatus('Stopped.');
     } catch (e) {
       setStatus('Error: ' + e.message);
@@ -1147,7 +1227,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v1.0.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v1.1.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1 1 28%">Draw</button>
@@ -1161,7 +1241,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
       <input id="usad-key" type="password" placeholder="API key(s): Gemini and/or Anthropic, comma-separated" style="width:100%;box-sizing:border-box;margin-top:4px">
       <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
-        <select id="usad-model" style="flex:1"><option value="gemini-flash-latest">Gemini Flash (free)</option><option value="gemini-pro-latest">Gemini Pro</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
+        <select id="usad-model" style="flex:1"><option value="gemini-pro-latest">Gemini Pro (best, free)</option><option value="gemini-flash-latest">Gemini Flash (faster)</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
         <label title="Claude looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> Refine</label>
       </div>
       <canvas id="usad-preview" width="240" height="240" style="display:none;width:100%;margin-top:6px;border-radius:6px;background:#fcf3e8"></canvas>
@@ -1182,9 +1262,9 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     key.oninput = flagKey;
     flagKey();
     const model = p.querySelector('#usad-model');
-    const saved = store.get('model', 'gemini-flash-latest').replace('gemini-2.5-flash', 'gemini-flash-latest').replace('gemini-2.5-pro', 'gemini-pro-latest');
+    const saved = store.get('model', 'gemini-pro-latest').replace('gemini-2.5-flash', 'gemini-flash-latest').replace('gemini-2.5-pro', 'gemini-pro-latest');
     model.value = saved;
-    if (model.value !== saved) model.value = 'gemini-flash-latest';
+    if (model.value !== saved) model.value = 'gemini-pro-latest';
     model.onchange = () => store.set('model', model.value);
     const clr = p.querySelector('#usad-clear');
     clr.checked = store.get('clear', true);
