@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.9.0
+// @version      1.0.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -701,6 +701,11 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
         method: 'POST', url, headers, timeout: 280000, data: JSON.stringify(body),
         onload: (r) => {
           try {
+            if (r.status === 429 || r.status >= 500) {
+              let msg = '';
+              try { msg = (JSON.parse(r.responseText).error || {}).message || ''; } catch (e) { /* not JSON */ }
+              throw new Error('HTTP ' + r.status + ' busy ' + msg);
+            }
             const j = JSON.parse(r.responseText);
             if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
             resolve(j);
@@ -712,60 +717,89 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     });
   }
 
-  let RETRY_DELAYS = [2000, 4000, 8000, 15000, 25000]; // waits between attempts when the provider is busy
-  const BUSY = /high demand|overload|unavailable|try again|busy|rate.?limit|resource.?exhausted|\b429\b|\b503\b|\b529\b|temporar|timed out|network error/i;
+  // ---- Provider chain: every usable model of every key is tried in turn until one answers. ----
+  let ROUND_DELAYS = [4000, 8000, 15000]; // pauses between full rounds when everything is busy
+  const BUSY = /high demand|overload|unavailable|try again|busy|rate.?limit|resource.?exhausted|quota|\b429\b|\b503\b|\b529\b|temporar|timed out|network error/i;
+  const KEY_BAD = /api key|api_key|invalid.*key|permission|unauthori[sz]ed|forbidden|\b40[13]\b|credit balance|billing/i;
+  const MODEL_GONE = /no longer available|not found|not supported|deprecated|does not exist|\b404\b|unknown model/i;
+  const splitKeys = (raw) => raw.split(/[\s,;]+/).filter(Boolean);
+  const geminiListCache = new Map();
 
-  async function withRetry(fn) {
-    for (let attempt = 0; ; attempt++) {
-      try { return await fn(); } catch (e) {
-        if (attempt >= RETRY_DELAYS.length || !BUSY.test(e.message) || !drawing) throw e;
-        const hint = e.message.match(/retry in (\d+(?:\.\d+)?)s/i);
-        const wait = hint ? Math.min(60000, Number(hint[1]) * 1000 + 500) : RETRY_DELAYS[attempt];
-        setStatus('Provider is busy, retrying in ' + Math.round(wait / 1000) + 's (attempt ' + (attempt + 2) + '/' + (RETRY_DELAYS.length + 1) + ')…');
-        await sleep(wait);
+  // Names of the Gemini models this key may call (text + images), newest information from Google itself.
+  function listGeminiModels(key) {
+    if (geminiListCache.has(key)) return geminiListCache.get(key);
+    const pr = new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        method: 'GET', timeout: 30000,
+        url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=' + encodeURIComponent(key),
+        headers: { 'x-goog-api-key': key },
+        onload: (r) => {
+          try {
+            resolve((JSON.parse(r.responseText).models || [])
+              .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+              .map((m) => m.name.replace(/^models\//, ''))
+              .filter((n) => /^gemini-/.test(n) && !/image|tts|live|embed|aqa|robotics|computer|audio|learnlm|customtools|vision/i.test(n)));
+          } catch (e) { resolve([]); }
+        },
+        onerror: () => resolve([]),
+        ontimeout: () => resolve([]),
+      });
+    });
+    geminiListCache.set(key, pr);
+    return pr;
+  }
+
+  // Preferred family first, then the others; newest versions first; "-latest" aliases lead each family.
+  function rankGemini(names, preferPro) {
+    const kind = (n) => (/lite/.test(n) ? 'lite' : /pro/.test(n) ? 'pro' : /flash/.test(n) ? 'flash' : 'other');
+    const ver = (n) => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [0, 0])[1]);
+    const order = preferPro ? ['pro', 'flash', 'lite'] : ['flash', 'lite', 'pro'];
+    const out = [];
+    for (const k of order) {
+      const fam = names.filter((n) => kind(n) === k)
+        .sort((a, b) => (/latest/.test(b) - /latest/.test(a)) || (ver(b) - ver(a)) || (/preview|exp/.test(a) - /preview|exp/.test(b)));
+      out.push(...fam.slice(0, 3));
+    }
+    return out;
+  }
+
+  async function buildCandidates(keysRaw, selected) {
+    const cands = [];
+    for (const key of splitKeys(keysRaw)) {
+      if (/^sk-ant/.test(key)) {
+        const model = selected.startsWith('claude') ? selected : 'claude-sonnet-5-5';
+        cands.push({ key, provider: 'anthropic', model, id: key.slice(-6) + model });
+      } else {
+        let names = rankGemini(await listGeminiModels(key), /pro/.test(selected));
+        if (!names.length) names = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
+        for (const model of names) cands.push({ key, provider: 'gemini', model, id: key.slice(-6) + model });
       }
     }
+    return cands;
   }
 
-  function callLLM(key, model, system, turns) {
-    return withRetry(() => callLLMOnce(key, model, system, turns));
-  }
-
-  async function callLLMOnce(key, model, system, turns) {
-    if (model.startsWith('gemini')) {
-      const body = {
-        systemInstruction: { parts: [{ text: system }] },
-        contents: turns.map((t) => ({
-          role: t.role === 'assistant' ? 'model' : 'user',
-          parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
-        })),
-        generationConfig: { maxOutputTokens: 32000, temperature: 0.7 },
-      };
-      const go = async (m) => {
-        const j = await httpJson(
-          `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`,
-          { 'content-type': 'application/json', 'x-goog-api-key': key }, body);
-        const parts = (((j.candidates || [])[0] || {}).content || {}).parts || [];
-        const text = parts.map((x) => x.text || '').join('');
-        if (!text) throw new Error('empty reply (' + (((j.candidates || [])[0] || {}).finishReason || (j.promptFeedback && j.promptFeedback.blockReason) || 'unknown') + ')');
-        return text;
-      };
-      const cached = store.get('geminiModel:' + model, '');
-      try {
-        return await go(cached || model);
-      } catch (e) {
-        if (!/no longer available|not found|not supported|deprecated|404/i.test(e.message)) throw e;
-        const found = await pickGeminiModel(key, /pro/.test(model) ? 'pro' : 'flash');
-        if (!found) throw e;
-        setStatus('Switching to ' + found + '…');
-        store.set('geminiModel:' + model, found);
-        return go(found);
-      }
+  async function callOne(c, system, turns) {
+    if (c.provider === 'gemini') {
+      const j = await httpJson(
+        `https://generativelanguage.googleapis.com/v1beta/models/${c.model}:generateContent?key=${encodeURIComponent(c.key)}`,
+        { 'content-type': 'application/json', 'x-goog-api-key': c.key },
+        {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: turns.map((t) => ({
+            role: t.role === 'assistant' ? 'model' : 'user',
+            parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
+          })),
+          generationConfig: { maxOutputTokens: 32000, temperature: 0.7 },
+        });
+      const cand = (j.candidates || [])[0] || {};
+      const text = ((cand.content || {}).parts || []).map((x) => x.text || '').join('');
+      if (!text) throw new Error('empty reply (' + (cand.finishReason || (j.promptFeedback && j.promptFeedback.blockReason) || 'unknown') + ')');
+      return text;
     }
     const j = await httpJson('https://api.anthropic.com/v1/messages',
-      { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      { 'content-type': 'application/json', 'x-api-key': c.key, 'anthropic-version': '2023-06-01' },
       {
-        model, max_tokens: 16000, system,
+        model: c.model, max_tokens: 16000, system,
         messages: turns.map((t) => ({
           role: t.role,
           content: t.image
@@ -776,36 +810,35 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     return j.content.map((b) => b.text || '').join('');
   }
 
-  // Ask Google which models this key can use and take the newest Flash/Pro that supports generateContent.
-  function pickGeminiModel(key, kind) {
-    return new Promise((resolve) => {
-      GM_xmlhttpRequest({
-        method: 'GET', timeout: 30000,
-        url: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=' + encodeURIComponent(key),
-        headers: { 'x-goog-api-key': key },
-        onload: (r) => {
-          try {
-            const list = (JSON.parse(r.responseText).models || [])
-              .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-              .map((m) => m.name.replace(/^models\//, ''))
-              .filter((n) => new RegExp('^gemini-[\\d.]+-' + kind + '(-\\d+)?(-preview[\\w-]*)?$').test(n));
-            const ver = (n) => parseFloat((n.match(/gemini-([\d.]+)/) || [0, 0])[1]);
-            list.sort((a, b) => ver(b) - ver(a) || (a.includes('preview') ? 1 : -1));
-            resolve(list[0] || null);
-          } catch (e) { resolve(null); }
-        },
-        onerror: () => resolve(null),
-        ontimeout: () => resolve(null),
-      });
-    });
-  }
-
-  // Keys identify their provider; fix a mismatched dropdown choice.
-  function resolveModel(key, selected) {
-    // Anthropic keys start with sk-ant; any other key (AIza…, AQ.…) is treated as a Google Gemini key.
-    if (key && !/^sk-ant/.test(key) && !selected.startsWith('gemini')) return 'gemini-flash-latest';
-    if (/^sk-ant/.test(key) && selected.startsWith('gemini')) return 'claude-sonnet-5-5';
-    return selected;
+  // Tries every candidate; a busy/failed/garbled answer just moves on to the next model. Gives up only after several full rounds.
+  async function callLLM(keysRaw, selected, system, turns, validate) {
+    const cands = await buildCandidates(keysRaw, selected);
+    if (!cands.length) throw new Error('no API key');
+    const dead = new Set();
+    let lastErr = new Error('no model answered');
+    for (let round = 0; ; round++) {
+      let busy = false;
+      for (const c of cands) {
+        if (!drawing) throw new Error('stopped');
+        if (dead.has(c.id)) continue;
+        setStatus('Asking ' + c.model + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
+        try {
+          const text = await callOne(c, system, turns);
+          if (validate) validate(text);
+          return text;
+        } catch (e) {
+          lastErr = e;
+          if (KEY_BAD.test(e.message) && !BUSY.test(e.message)) { for (const d of cands) if (d.key === c.key) dead.add(d.id); }
+          else if (MODEL_GONE.test(e.message)) dead.add(c.id);
+          else if (BUSY.test(e.message)) { busy = true; setStatus(c.model + ' is busy — trying the next model…'); await sleep(700); }
+        }
+      }
+      if (!busy || round >= ROUND_DELAYS.length) break;
+      const wait = ROUND_DELAYS[round];
+      setStatus('Every model is busy — retrying in ' + Math.round(wait / 1000) + 's (round ' + (round + 2) + '/' + (ROUND_DELAYS.length + 1) + ')…');
+      await sleep(wait);
+    }
+    throw new Error(lastErr.message);
   }
 
   function parseOps(raw) {
@@ -934,10 +967,9 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
   }
 
   async function planWithClaude(text, key, model, refine) {
-    model = resolveModel(key, model);
     const user = 'Witness statements:\n' + text;
-    setStatus('Planning the drawing (' + model + ')…');
-    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: user }]);
+    setStatus('Planning the drawing…');
+    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: user }], parseOps);
     let ops = parseOps(first);
     let strokes = opsToStrokes(ops);
     showPreview(strokes);
@@ -953,7 +985,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
         { role: 'assistant', text: first },
         { role: 'user', image: data, text: 'This is how your ops render (fills are hatched, outlines black). Compare it against every trait in the witness statements. '
           + 'Find what is missing, too small, wrongly coloured, mis-proportioned or hidden by draw order, then reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff). Add more detail where the drawing is plain.' },
-      ]);
+      ], parseOps);
       ops = parseOps(second);
       strokes = opsToStrokes(ops);
       showPreview(strokes);
@@ -1115,7 +1147,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.9.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v1.0.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1 1 28%">Draw</button>
@@ -1127,7 +1159,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
       <label><input type="checkbox" id="usad-clear"> Clear canvas before drawing</label><br>
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
-      <input id="usad-key" type="password" placeholder="API key: Google Gemini (free) or Anthropic" style="width:100%;box-sizing:border-box;margin-top:4px">
+      <input id="usad-key" type="password" placeholder="API key(s): Gemini and/or Anthropic, comma-separated" style="width:100%;box-sizing:border-box;margin-top:4px">
       <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
         <select id="usad-model" style="flex:1"><option value="gemini-flash-latest">Gemini Flash (free)</option><option value="gemini-pro-latest">Gemini Pro</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
         <label title="Claude looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> Refine</label>
@@ -1176,5 +1208,5 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
   else window.addEventListener('DOMContentLoaded', init);
 
   // Exposed for testing outside the browser.
-  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, setRetryDelays: (a) => { RETRY_DELAYS = a; } };
+  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, setRetryDelays: (a) => { ROUND_DELAYS = a; } };
 })();
