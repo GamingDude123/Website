@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      0.6.1
+// @version      0.7.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -324,12 +324,128 @@
     return 0;
   }
 
+  // Full-figure person from a description, built from the same ops the AI planner uses.
+  function composeHumanOps(text) {
+    const t = text.toLowerCase();
+    const has = (re) => re.test(t);
+    const ops = [];
+    const E = (c, cx, cy, rx, ry, o = {}) => ops.push({ t: 'ellipse', c, cx, cy, rx, ry, ...o });
+    const P = (c, pts, o = {}) => ops.push({ t: 'poly', c, pts, ...o });
+    const L = (c, pts, o = {}) => ops.push({ t: 'line', c, pts, ...o });
+
+    const skinWord = (t.match(/\b(pale|fair|light|tan|tanned|dark|brown|black)[- ]skin/) || [])[1];
+    const skin = { pale: '#fbe3d0', fair: '#fbe3d0', light: '#f8d9c0', tan: '#e0a878', tanned: '#e0a878', dark: '#8b5a3c', brown: '#8b5a3c', black: '#8b5a3c' }[skinWord] || '#f6c8a4';
+    const shirtC = colorBefore(t, 'shirt|t-shirt|top|hoodie|sweater|jacket|coat|uniform|dress|vest|blouse|jersey|robe', '#888888');
+    const shorts = has(/\b(shorts|skirt)\b/);
+    const pantsC = colorBefore(t, 'shorts|pants|jeans|trousers|skirt|leggings|slacks', '#3b4a8a');
+    const hairC = colorBefore(t, 'hair|mohawk|ponytail|curls|bangs|afro|bun|braids?', '#6b4423');
+    const shoeC = colorBefore(t, 'shoes?|sneakers?|boots?|sandals?', '#2d2d2d');
+
+    // legs, shoes
+    for (const x of [0.44, 0.56]) {
+      if (shorts) {
+        E(skin, x, 0.84, 0.028, 0.07);
+        P(pantsC, [[x - 0.05, 0.66], [x + 0.05, 0.66], [x + 0.045, 0.78], [x - 0.045, 0.78]]);
+      } else {
+        P(pantsC, [[x - 0.05, 0.66], [x + 0.05, 0.66], [x + 0.04, 0.9], [x - 0.04, 0.9]]);
+      }
+      E(shoeC, x + (x < 0.5 ? -0.01 : 0.01), 0.925, 0.055, 0.028);
+    }
+    // arms (sleeve, forearm, hand)
+    for (const s of [-1, 1]) {
+      E(shirtC, 0.5 + s * 0.15, 0.45, 0.036, 0.085, { rot: -s * 6 });
+      E(skin, 0.5 + s * 0.165, 0.6, 0.028, 0.07, { rot: -s * 4 });
+      E(skin, 0.5 + s * 0.17, 0.68, 0.03, 0.03);
+    }
+    if (has(/\b(backpack|bag|satchel)\b/)) P(colorBefore(t, 'backpack|bag|satchel', '#8b5a3c'), [[0.34, 0.4], [0.66, 0.4], [0.67, 0.64], [0.33, 0.64]], { smooth: true });
+    // torso + shirt pattern
+    P(shirtC, [[0.38, 0.36], [0.62, 0.36], [0.635, 0.68], [0.365, 0.68]]);
+    if (has(/\bstripe/)) {
+      const stripeC = colorBefore(t, 'stripes?|striped', shirtC === '#ffffff' ? '#2d2d2d' : '#ffffff');
+      for (const y of [0.405, 0.475, 0.545, 0.615]) {
+        const w = 0.012 * (y - 0.36) / 0.3;
+        P(stripeC, [[0.38 - w - 0.002, y], [0.62 + w + 0.002, y], [0.622 + w, y + 0.03], [0.378 - w, y + 0.03]], { outline: false });
+      }
+    }
+    if (has(/\b(belt)\b/)) P(colorBefore(t, 'belt', '#2d2d2d'), [[0.365, 0.655], [0.635, 0.655], [0.636, 0.68], [0.364, 0.68]]);
+    if (has(/\b(tie|necktie)\b/)) P(colorBefore(t, 'tie|necktie', '#e5533d'), [[0.5, 0.37], [0.475, 0.41], [0.5, 0.58], [0.525, 0.41]]);
+    if (has(/\b(scarf)\b/)) P(colorBefore(t, 'scarf', '#e5533d'), [[0.4, 0.34], [0.6, 0.34], [0.6, 0.4], [0.4, 0.4]], { smooth: true });
+    if (has(/\b(badge|medal|ribbon|pin|brooch|star)\b/)) {
+      const bc = colorBefore(t, 'ribbon|badge|medal|pin|brooch|star', '#f5c542');
+      E(bc, 0.43, 0.46, 0.03, 0.03);
+      if (has(/ribbon/)) P(bc, [[0.42, 0.48], [0.4, 0.55], [0.43, 0.53], [0.45, 0.56], [0.44, 0.48]]);
+    }
+    // neck
+    P(skin, [[0.46, 0.3], [0.54, 0.3], [0.54, 0.37], [0.46, 0.37]]);
+
+    // hair behind the head
+    const longHair = has(/\b(long|flowing)\b[^.]*hair|hair[^.]*\b(long|flowing)\b|ponytail|braids?/);
+    if (longHair) E(hairC, 0.5, 0.24, 0.17, 0.2);
+    // head
+    const tri = has(/triang|pointy head|cone[- ]shaped/);
+    const box = has(/\b(square|boxy|blocky|rectang\w*)\b[^.]*(head|face|jaw)|(head|face|jaw)[^.]*\b(square|boxy|blocky)\b/);
+    const tall = has(/\b(long|oval|oblong|elongated)\b[^.]*(face|head)/);
+    let headTop = 0.07;
+    if (tri) { P(skin, [[0.5, 0.03], [0.34, 0.35], [0.66, 0.35]]); headTop = 0.03; }
+    else if (box) P(skin, [[0.37, 0.07], [0.63, 0.07], [0.63, 0.33], [0.37, 0.33]], { smooth: true });
+    else if (tall) E(skin, 0.5, 0.2, 0.11, 0.17);
+    else E(skin, 0.5, 0.2, 0.135, 0.145);
+    if (has(/\bears?\b/) || !tri) for (const s of [-1, 1]) E(skin, 0.5 + s * (tri ? 0.12 : 0.14), 0.22, 0.02, 0.03);
+
+    // hair on top
+    if (!has(/\bbald\b/) && (has(/\bhair|mohawk|bangs|curls|afro|bun\b/) || true)) {
+      if (has(/\b(spiky|spikes|spiked|mohawk|punk)\b/)) {
+        const x0 = tri ? 0.42 : 0.37;
+        const x1 = tri ? 0.58 : 0.63;
+        const yb = tri ? 0.15 : 0.17;
+        const pts = [[x0, yb]];
+        for (let i = 0; i <= 6; i++) pts.push([x0 + i * (x1 - x0) / 6, i % 2 ? yb - 0.045 : Math.max(0.0, headTop - 0.05) + (i === 3 ? 0 : 0.025)]);
+        pts.push([x1, yb]);
+        P(hairC, pts);
+      } else if (has(/\b(curly|curls|afro)\b/)) {
+        for (let i = 0; i < 5; i++) E(hairC, 0.39 + i * 0.055, 0.09 + (i % 2 ? 0 : 0.015), 0.04, 0.04);
+      } else if (has(/\bhair\b/) || longHair) {
+        E(hairC, 0.5, 0.1, 0.14, 0.06);
+      }
+    }
+    if (has(/\b(hat|cap|helmet|beanie|crown)\b/)) {
+      const hc = colorBefore(t, 'hat|cap|helmet|beanie|crown', '#e5533d');
+      E(hc, 0.5, 0.09, 0.15, 0.025);
+      E(hc, 0.5, 0.055, 0.095, 0.05);
+    }
+
+    // face
+    const eyeR = has(/\b(big|huge|large|round|bulging)\b[^.]*eyes?/) ? 0.035 : 0.025;
+    const eyeY = tri ? 0.21 : 0.19;
+    const gap = has(/\b(squished|close together|close-set)\b/) ? 0.045 : 0.07;
+    for (const s of [-1, 1]) {
+      E('white', 0.5 + s * gap, eyeY, eyeR, eyeR);
+      E('black', 0.5 + s * gap + s * 0.004, eyeY + 0.004, eyeR * 0.45, eyeR * 0.45, { outline: false });
+    }
+    if (has(/glasses|spectacles|shades/)) {
+      const dark = has(/sunglasses|shades/);
+      for (const s of [-1, 1]) E('black', 0.5 + s * gap, eyeY, eyeR * 1.4, eyeR * 1.4, { fill: dark });
+      L('black', [[0.5 - gap + eyeR * 1.4, eyeY], [0.5 + gap - eyeR * 1.4, eyeY]]);
+    }
+    if (has(/\b(freckles?)\b/)) for (const [x, y] of [[-0.05, 0.245], [-0.03, 0.255], [0.03, 0.255], [0.05, 0.245]]) E('brown', 0.5 + x, y, 0.007, 0.007, { outline: false });
+    const bigNose = has(/\b(big|long|large|huge|pointy|pointed|hooked)\b[^.]*nose/);
+    L('black', bigNose ? [[0.5, 0.2], [0.47, 0.275], [0.52, 0.275]] : [[0.5, 0.22], [0.485, 0.255], [0.515, 0.255]], { smooth: bigNose });
+    if (has(/\b(frown|sad|angry|scowl)\b/)) L('black', [[0.45, 0.305], [0.5, 0.285], [0.55, 0.305]], { smooth: true });
+    else if (has(/\b(teeth|grin|cheesy|toothy)\b/)) {
+      P('white', [[0.44, 0.285], [0.56, 0.285], [0.54, 0.315], [0.46, 0.315]], { smooth: true });
+    } else L('black', [[0.45, 0.285], [0.5, 0.31], [0.55, 0.285]], { smooth: true });
+    if (has(/\b(mustache|moustache)\b/)) { E(hairC, 0.475, 0.272, 0.028, 0.012); E(hairC, 0.525, 0.272, 0.028, 0.012); }
+    if (has(/\bbeard\b/)) P(hairC, [[0.4, 0.28], [0.5, 0.36], [0.6, 0.28], [0.57, 0.33], [0.5, 0.38], [0.43, 0.33]], { smooth: true });
+    return ops;
+  }
+
   function composeProcedural(text) {
     const t = text.toLowerCase();
     const has = (re) => re.test(t);
     const out = [];
 
-    const human = has(/\b(man|woman|guy|lady|girl|boy|person|human|gentleman|dude|grandma|grandpa|he's|she's)\b/) && !has(/\b(monster|frog|creature|alien|fella|beast|blob|dragon)\b/);
+    const human = has(/\b(man|woman|guy|lady|girl|boy|kid|child|teen\w*|person|human|gentleman|dude|grandma|grandpa|he's|she's|years? old|captain|officer|clerk|waiter|student|doctor|nurse|chef|pirate)\b/) && !has(/\b(monster|frog|creature|alien|fella|beast|blob|dragon|feline|cat|dog|bird|robot|ghost)\b/);
+    if (human) return opsToStrokes(composeHumanOps(text));
     const firstColor = (t.match(new RegExp(`\\b(${COLOR_RE})\\b`)) || [])[1];
     const bodyColor = colorBefore(t, 'creature|monster|frog|fella|guy|man|woman|body|skin|blob|alien|beast|dragon|bird|cat|dog|bear|fellow|thing|coat|fur|suit|feline|rabbit|bunny|mouse|robot|ghost|fish|fox|wolf', null)
       || (human ? '#f1c27d' : (firstColor ? COLORS[firstColor] : '#6fbf73'));
@@ -510,6 +626,7 @@
     }
 
     // markings
+    if (has(/\b(badge|medal|ribbon)\b/)) out.push(...blob(cx - rx * 0.35, cy + ry * 0.1, 0.03, 0.03, colorBefore(t, 'ribbon|badge|medal', '#e5533d')));
     if (has(/\b(spots?|spotted|dots?|polka)\b/)) {
       for (const [x, y] of [[-0.12, 0.08], [0.12, 0.1], [0.0, 0.14], [-0.2, 0.02], [0.2, 0.02]]) {
         out.push(...blob(cx + x * (rx / 0.28), cy + y, 0.025, 0.025, colorBefore(t, 'spots?|dots?', '#33693a')));
@@ -834,17 +951,19 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     document.querySelector('#usad-go').textContent = 'Stop';
     try {
       let strokes = null;
+      let failNote = '';
       const key = document.querySelector('#usad-key').value.trim();
       if (key) {
         try {
           strokes = await planWithClaude(text, key, document.querySelector('#usad-model').value,
             document.querySelector('#usad-refine').checked);
-        } catch (e) { setStatus('Claude failed (' + e.message + '), using built-in drawer…'); await sleep(800); }
+        } catch (e) { failNote = e.message; setStatus('AI failed: ' + e.message + ' — using basic drawer…'); await sleep(800); }
       }
       if (!strokes) { strokes = composeProcedural(text); showPreview(strokes); }
       setStatus(`Drawing ${strokes.length} strokes…`);
       await drawStrokes(strokes, canvas);
-      if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
+      if (drawing && failNote) setStatus('AI FAILED: ' + failNote + ' — drew with the basic drawer.');
+      else if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
       else if (drawing && !/palette/.test(document.querySelector('#usad-status').textContent)) setStatus('Done.');
       if (!drawing) setStatus('Stopped.');
     } catch (e) {
@@ -893,7 +1012,7 @@ COLOURS: you may only use these names: black, red, yellow, green, blue, purple, 
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v0.6.1</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v0.7.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1">Draw</button>
