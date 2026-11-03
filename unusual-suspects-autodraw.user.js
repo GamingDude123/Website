@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.3.0
+// @version      1.4.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -696,6 +696,10 @@ Be honest: if you are not fairly sure, say low.`;
     };
   }
 
+  // Worked examples (good proportions, layout and style) shown to the AI.
+  const EX_MAN = JSON.stringify([{"t":"ellipse","c":"pink","cx":0.385,"cy":0.2,"rx":0.02,"ry":0.03},{"t":"ellipse","c":"pink","cx":0.615,"cy":0.2,"rx":0.02,"ry":0.03},{"t":"line","c":"blue","pts":[[0.44,0.6],[0.43,0.9]],"w":0.08},{"t":"line","c":"blue","pts":[[0.56,0.6],[0.57,0.9]],"w":0.08},{"t":"poly","c":"black","pts":[[0.37,0.9],[0.47,0.9],[0.48,0.95],[0.35,0.95]],"smooth":true},{"t":"poly","c":"black","pts":[[0.53,0.9],[0.63,0.9],[0.65,0.95],[0.52,0.95]],"smooth":true},{"t":"line","c":"pink","pts":[[0.31,0.4],[0.24,0.52],[0.27,0.63]],"smooth":true,"w":0.06},{"t":"line","c":"pink","pts":[[0.69,0.4],[0.76,0.52],[0.73,0.63]],"smooth":true,"w":0.06},{"t":"ellipse","c":"pink","cx":0.27,"cy":0.65,"rx":0.035,"ry":0.035},{"t":"ellipse","c":"pink","cx":0.73,"cy":0.65,"rx":0.035,"ry":0.035},{"t":"poly","c":"black","pts":[[0.3,0.34],[0.7,0.34],[0.65,0.5],[0.6,0.66],[0.4,0.66],[0.35,0.5]],"smooth":true},{"t":"line","c":"black","pts":[[0.31,0.38],[0.27,0.45]],"w":0.085},{"t":"line","c":"black","pts":[[0.69,0.38],[0.73,0.45]],"w":0.085},{"t":"poly","c":"pink","pts":[[0.46,0.28],[0.54,0.28],[0.54,0.35],[0.46,0.35]],"outline":false},{"t":"poly","c":"pink","pts":[[0.39,0.13],[0.61,0.13],[0.61,0.22],[0.56,0.3],[0.44,0.3],[0.39,0.22]],"smooth":true},{"t":"poly","c":"yellow","pts":[[0.4,0.15],[0.37,0.06],[0.44,0.02],[0.56,0.02],[0.63,0.06],[0.6,0.15],[0.5,0.1]],"smooth":true},{"t":"poly","c":"black","pts":[[0.41,0.17],[0.59,0.17],[0.58,0.215],[0.52,0.215],[0.5,0.19],[0.48,0.215],[0.42,0.215]]},{"t":"line","c":"black","pts":[[0.5,0.215],[0.49,0.25],[0.52,0.25]]},{"t":"line","c":"black","pts":[[0.45,0.275],[0.5,0.29],[0.56,0.27]],"smooth":true}]);
+  const EX_TIGER = JSON.stringify([{"t":"line","c":"orange","pts":[[0.64,0.6],[0.82,0.64],[0.9,0.52],[0.86,0.36]],"smooth":true,"w":0.045},{"t":"poly","c":"orange","pts":[[0.4,0.62],[0.49,0.62],[0.48,0.9],[0.36,0.9]]},{"t":"poly","c":"orange","pts":[[0.51,0.62],[0.6,0.62],[0.64,0.9],[0.52,0.9]]},{"t":"ellipse","c":"orange","cx":0.41,"cy":0.925,"rx":0.085,"ry":0.035},{"t":"ellipse","c":"orange","cx":0.59,"cy":0.925,"rx":0.085,"ry":0.035},{"t":"line","c":"orange","pts":[[0.36,0.4],[0.27,0.5],[0.3,0.62]],"smooth":true,"w":0.055},{"t":"line","c":"orange","pts":[[0.64,0.4],[0.73,0.3],[0.71,0.17]],"smooth":true,"w":0.055},{"t":"ellipse","c":"orange","cx":0.3,"cy":0.64,"rx":0.04,"ry":0.035},{"t":"ellipse","c":"orange","cx":0.71,"cy":0.15,"rx":0.04,"ry":0.04},{"t":"poly","c":"orange","pts":[[0.36,0.33],[0.64,0.33],[0.69,0.5],[0.62,0.68],[0.38,0.68],[0.31,0.5]],"smooth":true},{"t":"ellipse","c":"white","cx":0.5,"cy":0.52,"rx":0.1,"ry":0.14},{"t":"poly","c":"black","pts":[[0.32,0.42],[0.4,0.45],[0.4,0.49],[0.32,0.47]],"outline":false},{"t":"poly","c":"black","pts":[[0.68,0.42],[0.6,0.45],[0.6,0.49],[0.68,0.47]],"outline":false},{"t":"poly","c":"red","pts":[[0.4,0.32],[0.6,0.32],[0.5,0.46]],"smooth":true},{"t":"ellipse","c":"orange","cx":0.37,"cy":0.09,"rx":0.045,"ry":0.045},{"t":"ellipse","c":"orange","cx":0.63,"cy":0.09,"rx":0.045,"ry":0.045},{"t":"ellipse","c":"orange","cx":0.5,"cy":0.2,"rx":0.15,"ry":0.13},{"t":"ellipse","c":"white","cx":0.5,"cy":0.255,"rx":0.095,"ry":0.06},{"t":"ellipse","c":"blue","cx":0.5,"cy":0.215,"rx":0.032,"ry":0.02},{"t":"ellipse","c":"white","cx":0.45,"cy":0.15,"rx":0.032,"ry":0.036},{"t":"ellipse","c":"white","cx":0.55,"cy":0.15,"rx":0.032,"ry":0.036},{"t":"ellipse","c":"black","cx":0.452,"cy":0.155,"rx":0.012,"ry":0.016},{"t":"ellipse","c":"black","cx":0.552,"cy":0.155,"rx":0.012,"ry":0.016},{"t":"line","c":"black","pts":[[0.41,0.265],[0.5,0.3],[0.59,0.265]],"smooth":true},{"t":"line","c":"black","pts":[[0.44,0.08],[0.46,0.11]],"w":0.015},{"t":"line","c":"black","pts":[[0.56,0.08],[0.54,0.11]],"w":0.015},{"t":"line","c":"black","pts":[[0.5,0.07],[0.5,0.11]],"w":0.015}]);
+
   const SYSTEM_PROMPT = `You are an expert cartoon sketch artist playing a police-sketch drawing game. The player reads up to three witness statements about a "suspect" and draws it; an AI judge then compares the sketch with a lineup of about 70 suspects, so your sketch must be INSTANTLY RECOGNISABLE as the right one.
 
 KEY INSIGHT: suspects are almost always famous characters or personalities (mascots, cartoon / anime / video-game characters, celebrities, mythical creatures, historical figures, brand icons), described vaguely and often as a joke ("a man's body with black stripes over it"). Work out WHO it most likely is from all the clues together. If you recognise them, draw their ICONIC look (signature colours, costume, hair, props, silhouette, proportions) in addition to everything the witnesses said. If you are not sure, rely on the witness details only. Loose witness wording ("slime", "melting", "fluffy") must not override the character's known colours and shape: a recognised character keeps its real colours. Never write the name or any text on the drawing.
@@ -723,6 +727,10 @@ OPS (all coordinates 0..1)
 - {"t":"poly","c":"red","pts":[[x,y],...],"closed":true,"smooth":true}  filled polygon + outline; max 40 points; "smooth" rounds the corners
 - {"t":"line","c":"black","pts":[[x,y],...],"smooth":true,"w":0.02}  an open stroke; "w" is its thickness (0.012 is a normal pen; use 0.02-0.05 for tails, limbs, scarves, antennae); for mouths and whiskers a thin line is fine
 Optional on ellipse/poly: "fill":false (outline only), "outline":false (no outline), "oc":"brown" (outline colour).
+
+EXAMPLES (they only show good proportions, layout and drawing style: draw the real suspect, never copy these)
+Example 1, a generic standing man: ${EX_MAN}
+Example 2, an upright animal with a tail: ${EX_TIGER}
 
 COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with a black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements and to the character's iconic colours.`;
 
@@ -1110,19 +1118,23 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const useRef = document.querySelector('#usad-trace').checked;
     let hint = null;
     let ref = null;
+    if (!useRef) note('picture tracing is off');
     if (useRef) {
       // Step 1: a short call just to work out who the suspect is
       setStatus('Working out who the suspect is…');
       hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId));
       setStatus('Suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ' confidence)');
+      note('suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ')');
       if (/^(high|medium)/i.test(hint.confidence) && drawing) {
         ref = await getReference(hint);
         if (ref && referenceIsIllustration(ref.bmp)) {
+          note('picture: ' + ref.title + ' → traced');
           // clean character art: trace it directly, no drawing call needed
           return Object.assign([], { reference: ref.bmp, referenceTitle: ref.title, identity: hint.identity, wiki: hint.wiki, confidence: hint.confidence });
         }
       }
-      if (!/^(high|medium)/i.test(hint.confidence)) hint = null; // not sure who it is: let the drawing call decide
+      if (ref) note('picture: ' + ref.title + ' is a photo → used as AI reference');
+      if (!/^(high|medium)/i.test(hint.confidence)) { note('not sure who it is → drawing from the description'); hint = null; }
     }
     // Step 2: the AI plans the drawing (guided by the reference photo when there is one)
     let userMsg = user;
@@ -1180,6 +1192,17 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     });
   }
 
+  // Tampermonkey's request first; if it is blocked (permission denied), try a normal CORS fetch from the page.
+  async function httpGet(url, type = 'text') {
+    try { return await gmGet(url, type); } catch (e) {
+      try {
+        const r = await fetch(/api\.php/.test(url) ? url + '&origin=*' : url, { mode: 'cors', credentials: 'omit' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return type === 'arraybuffer' ? { response: await r.arrayBuffer() } : { responseText: await r.text() };
+      } catch (e2) { throw e; }
+    }
+  }
+
   // Main picture of the first Wikipedia article that has one: exact title first, then a search.
   async function findReferenceImage(titles) {
     const pick = (j, byRank) => {
@@ -1191,9 +1214,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const base = 'https://en.wikipedia.org/w/api.php?action=query&format=json&prop=pageimages&piprop=thumbnail&pithumbsize=900';
     for (const t of titles.filter(Boolean)) {
       try {
-        let hit = pick(JSON.parse((await gmGet(base + '&redirects=1&titles=' + encodeURIComponent(t))).responseText), false);
+        let hit = pick(JSON.parse((await httpGet(base + '&redirects=1&titles=' + encodeURIComponent(t))).responseText), false);
         if (hit) return hit;
-        hit = pick(JSON.parse((await gmGet(base + '&generator=search&gsrlimit=3&gsrsearch=' + encodeURIComponent(t))).responseText), true);
+        hit = pick(JSON.parse((await httpGet(base + '&generator=search&gsrlimit=3&gsrsearch=' + encodeURIComponent(t))).responseText), true);
         if (hit) return hit;
       } catch (e) {
         if (/network error/.test(e.message)) throw e; // permission / connectivity problem: no point trying more titles
@@ -1208,11 +1231,12 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     try {
       setStatus('Looking up a picture of ' + name + '…');
       const hit = await findReferenceImage([hint.wiki, (hint.identity || '').split(/[,(—–]/)[0].trim()]);
-      if (!hit) { setStatus('No Wikipedia picture found for ' + name + ' — drawing from the description.'); await sleep(900); return null; }
+      if (!hit) { note('no Wikipedia picture for "' + name + '"'); setStatus('No Wikipedia picture found for ' + name + ' — drawing from the description.'); await sleep(900); return null; }
       setStatus('Downloading the picture of ' + hit.title + '…');
-      const r = await gmGet(hit.url, 'arraybuffer');
+      const r = await httpGet(hit.url, 'arraybuffer');
       return { bmp: await createImageBitmap(new Blob([r.response])), title: hit.title };
     } catch (e) {
+      note('picture lookup failed: ' + e.message);
       setStatus('Picture lookup failed (' + e.message + ') — drawing from the description.');
       await sleep(1200);
       return null;
@@ -1517,6 +1541,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const canvas = findCanvas();
     if (!canvas) { setStatus('Could not find a drawing canvas.'); return; }
     drawing = true;
+    clearNotes();
     document.querySelector('#usad-go').textContent = 'Stop';
     try {
       let strokes = null;
@@ -1571,6 +1596,15 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     setStatus('Debug HTML copied (and placed in the box above).');
   }
 
+  // Short facts about how the last drawing was made (suspect, picture used or why not); they stay on screen.
+  const notes = [];
+  function note(msg) {
+    if (msg) notes.push(msg);
+    const el = document.querySelector('#usad-note');
+    if (el) el.textContent = notes.join(' · ');
+  }
+  function clearNotes() { notes.length = 0; note(''); }
+
   function setStatus(t) {
     const el = document.querySelector('#usad-status');
     if (el) el.textContent = t;
@@ -1585,32 +1619,71 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   }
 
   function buildPanel() {
+    const css = document.createElement('style');
+    css.textContent = `
+      #usad-panel{position:fixed;right:8px;top:8px;z-index:2147483647;width:178px;padding:5px 7px 6px;background:#111d;color:#fff;font:11px/1.3 system-ui,sans-serif;border-radius:8px;backdrop-filter:blur(6px);box-shadow:0 2px 10px #0006}
+      #usad-panel *{box-sizing:border-box}
+      #usad-panel button{font:11px system-ui,sans-serif;padding:2px 5px;border-radius:5px;border:1px solid #555;background:#2b2b2b;color:#fff;cursor:pointer}
+      #usad-panel button:hover{background:#3b3b3b}
+      #usad-panel input[type=password],#usad-panel select,#usad-panel textarea{font:11px system-ui,sans-serif;width:100%;margin:2px 0;background:#1c1c1c;color:#fff;border:1px solid #555;border-radius:4px;padding:2px 4px}
+      #usad-panel label{display:flex;align-items:center;gap:4px;margin:1px 0;cursor:pointer}
+      #usad-panel input[type=checkbox]{margin:0;width:12px;height:12px}
+      #usad-bar{display:flex;align-items:center;gap:4px}
+      #usad-bar .t{font-weight:600}
+      #usad-bar .v{opacity:.5;font-size:10px}
+      #usad-bar .g{flex:1}
+      #usad-bar button{padding:0 5px;line-height:15px}
+      #usad-row{display:flex;gap:4px;margin:4px 0 3px}
+      #usad-row button{flex:1}
+      #usad-status{opacity:.9;max-height:4.2em;overflow:auto;word-break:break-word}
+      #usad-note{opacity:.55;font-size:10px;max-height:3.9em;overflow:auto;word-break:break-word}
+      #usad-more{display:none;margin-top:5px;padding-top:5px;border-top:1px solid #444}
+      #usad-row2{display:flex;gap:4px;margin-top:4px}
+      #usad-row2 button{flex:1}
+      #usad-preview{display:none;width:100%;margin-top:4px;border-radius:5px;background:#fcf3e8}
+    `;
+    document.head.appendChild(css);
     const p = document.createElement('div');
     p.id = 'usad-panel';
-    p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
-      + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v1.3.0</span>
-      <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
-        <button id="usad-go" style="flex:1 1 28%">Draw</button>
-        <button id="usad-read" style="flex:1 1 28%">Read now</button>
-        <button id="usad-basic" style="flex:1 1 28%" title="Draw with the built-in keyword drawer (no AI)">Basic</button>
-        <button id="usad-debug" style="flex:1 1 28%" title="Copies page structure for troubleshooting">Debug</button>
-        <button id="usad-pick" style="flex:1 1 28%" title="Only needed if witnesses aren't detected">Pick text</button>
-      </div>
-      <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
-      <label><input type="checkbox" id="usad-clear"> Clear canvas before drawing</label><br>
-      <label title="When the character is recognised, fetch its Wikipedia picture and trace it in the game's colours"><input type="checkbox" id="usad-trace"> Trace the real picture when recognised</label><br>
-      <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
-      <input id="usad-key" type="password" placeholder="API key(s): Gemini and/or Anthropic, comma-separated" style="width:100%;box-sizing:border-box;margin-top:4px">
-      <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
-        <select id="usad-model" style="flex:1"><option value="gemini-pro-latest">Gemini Pro (best, free)</option><option value="gemini-flash-latest">Gemini Flash (faster)</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
-        <label title="Claude looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> Refine</label>
-      </div>
-      <canvas id="usad-preview" width="240" height="240" style="display:none;width:100%;margin-top:6px;border-radius:6px;background:#fcf3e8"></canvas>
-      <div id="usad-status" style="margin-top:6px;opacity:.8">Waiting for witness statements…</div>`;
+      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.4.0</span><span class="g"></span>
+        <button id="usad-gear" title="Settings">⚙</button><button id="usad-min" title="Minimise">–</button></div>
+      <div id="usad-body">
+        <div id="usad-row">
+          <button id="usad-go">Draw</button>
+          <button id="usad-read" title="Re-read the witness statements">Read</button>
+          <button id="usad-basic" title="Draw with the built-in keyword drawer (no AI)">Basic</button>
+        </div>
+        <div id="usad-status">Waiting for witness statements…</div>
+        <div id="usad-note"></div>
+        <div id="usad-more">
+          <textarea id="usad-prompt" rows="3" placeholder="Witness text (auto-filled, or type it)"></textarea>
+          <label><input type="checkbox" id="usad-auto"> Draw automatically</label>
+          <label><input type="checkbox" id="usad-clear"> Clear canvas first</label>
+          <label title="When the character is recognised, fetch its Wikipedia picture and trace it in the game's colours"><input type="checkbox" id="usad-trace"> Trace the real picture</label>
+          <label title="The AI looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> AI self-check</label>
+          <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="flex:1;min-width:0"></label>
+          <input id="usad-key" type="password" placeholder="API key(s), comma-separated">
+          <select id="usad-model"><option value="gemini-pro-latest">Gemini Pro (best)</option><option value="gemini-flash-latest">Gemini Flash (fast)</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
+          <canvas id="usad-preview" width="240" height="240"></canvas>
+          <div id="usad-row2"><button id="usad-debug" title="Copies page structure for troubleshooting">Debug</button><button id="usad-pick" title="Only needed if witnesses aren't detected">Pick text</button></div>
+        </div>
+      </div>`;
     document.body.appendChild(p);
+
+    // minimise / settings state (settings start open until an API key has been entered)
+    const ui = Object.assign({ min: false, more: false }, store.get('ui', {}) || {});
+    let more = ui.more || !store.get('apiKey', '');
+    const apply = () => {
+      p.querySelector('#usad-body').style.display = ui.min ? 'none' : '';
+      p.querySelector('#usad-more').style.display = more ? 'block' : 'none';
+      p.querySelector('#usad-min').textContent = ui.min ? '+' : '–';
+      p.querySelector('#usad-gear').style.display = ui.min ? 'none' : '';
+    };
+    p.querySelector('#usad-gear').onclick = () => { more = !more; ui.more = more; store.set('ui', ui); apply(); };
+    p.querySelector('#usad-min').onclick = () => { ui.min = !ui.min; store.set('ui', ui); apply(); };
+    apply();
+
     p.querySelector('#usad-go').onclick = () => run();
     p.querySelector('#usad-basic').onclick = () => run(true);
     p.querySelector('#usad-pick').onclick = pickPrompt;
