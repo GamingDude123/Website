@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.1.0
+// @version      1.3.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -12,6 +12,8 @@
 // @grant        GM_setClipboard
 // @connect      api.anthropic.com
 // @connect      generativelanguage.googleapis.com
+// @connect      en.wikipedia.org
+// @connect      upload.wikimedia.org
 // ==/UserScript==
 
 (function () {
@@ -677,9 +679,26 @@
   const fillGap = () => Math.min(0.02, Math.max(0.003, brushUnit * 0.85));
   const deadModels = new Set(); // models that answered "quota 0" / "gone" this session
 
+  const ID_PROMPT = `You identify the "suspect" in a police-sketch guessing game. Players read up to three witness statements about a suspect, which is almost always a famous character or personality (mascot, cartoon / anime / video-game character, celebrity, mythical creature, historical figure, brand icon) described vaguely, jokingly and with chatter. Work out who it most likely is from ALL the clues together.
+Reply ONLY with JSON: {"identity":"the name","wikipedia_title":"exact English Wikipedia article title, or empty string","confidence":"high | medium | low","colors":"the character's iconic colours and look in one sentence","why":"max 25 words"}
+Be honest: if you are not fairly sure, say low.`;
+
+  function parseId(raw) {
+    const a = raw.indexOf('{');
+    const b = raw.lastIndexOf('}');
+    const o = JSON.parse(raw.slice(a, b + 1));
+    if (!o.identity) throw new Error('no identification in reply');
+    return {
+      identity: String(o.identity),
+      wiki: o.wikipedia_title ? String(o.wikipedia_title) : '',
+      confidence: String(o.confidence || ''),
+      colors: o.colors ? String(o.colors) : '',
+    };
+  }
+
   const SYSTEM_PROMPT = `You are an expert cartoon sketch artist playing a police-sketch drawing game. The player reads up to three witness statements about a "suspect" and draws it; an AI judge then compares the sketch with a lineup of about 70 suspects, so your sketch must be INSTANTLY RECOGNISABLE as the right one.
 
-KEY INSIGHT: suspects are almost always famous characters or personalities (mascots, cartoon / anime / video-game characters, celebrities, mythical creatures, historical figures, brand icons), described vaguely and often as a joke ("a man's body with black stripes over it"). Work out WHO it most likely is from all the clues together. If you recognise them, draw their ICONIC look (signature colours, costume, hair, props, silhouette, proportions) in addition to everything the witnesses said. If you are not sure, rely on the witness details only. Never write the name or any text on the drawing.
+KEY INSIGHT: suspects are almost always famous characters or personalities (mascots, cartoon / anime / video-game characters, celebrities, mythical creatures, historical figures, brand icons), described vaguely and often as a joke ("a man's body with black stripes over it"). Work out WHO it most likely is from all the clues together. If you recognise them, draw their ICONIC look (signature colours, costume, hair, props, silhouette, proportions) in addition to everything the witnesses said. If you are not sure, rely on the witness details only. Loose witness wording ("slime", "melting", "fluffy") must not override the character's known colours and shape: a recognised character keeps its real colours. Never write the name or any text on the drawing.
 
 THINK FIRST, then answer:
 1. Identify the suspect (best guess + confidence) and list its iconic visual traits.
@@ -687,7 +706,7 @@ THINK FIRST, then answer:
 3. Plan the layout, then output the drawing.
 
 OUTPUT: ONLY one JSON object, no prose, no code fences:
-{"identity":"best guess and confidence","traits":["every trait you will draw"],"ops":[ ... ]}
+{"identity":"the character's name","wikipedia_title":"exact English Wikipedia article title of that character/person, or empty string if unsure","confidence":"high | medium | low","traits":["every trait you will draw"],"ops":[ ... ]}
 
 CANVAS: unit square, x right 0..1, y down 0..1. Ops are drawn in order, so draw back-to-front (tail and far limbs, body, clothes, head, face, small details last) and make sure later shapes never hide earlier details by accident.
 
@@ -800,7 +819,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           systemInstruction: { parts: [{ text: system }] },
           contents: turns.map((t) => ({
             role: t.role === 'assistant' ? 'model' : 'user',
-            parts: [...(t.image ? [{ inline_data: { mime_type: 'image/png', data: t.image } }] : []), { text: t.text }],
+            parts: [...t.images.map((im) => ({ inline_data: { mime_type: im.mime, data: im.data } })), { text: t.text }],
           })),
           generationConfig: { maxOutputTokens: 32000, temperature: 0.7, responseMimeType: 'application/json' },
         });
@@ -815,8 +834,8 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
         model: c.model, max_tokens: 16000, system,
         messages: turns.map((t) => ({
           role: t.role,
-          content: t.image
-            ? [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: t.image } }, { type: 'text', text: t.text }]
+          content: t.images.length
+            ? [...t.images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.data } })), { type: 'text', text: t.text }]
             : t.text,
         })),
       });
@@ -825,6 +844,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
 
   // Tries every candidate; a busy/failed/garbled answer just moves on to the next model. Gives up only after several full rounds.
   async function callLLM(keysRaw, selected, system, turns, validate) {
+    turns = turns.map((t) => ({ ...t, images: t.images || (t.image ? [{ data: t.image, mime: 'image/png' }] : []) }));
     const cands = await buildCandidates(keysRaw, selected);
     if (!cands.length) throw new Error('no API key');
     const dead = new Set();
@@ -869,6 +889,8 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const ops = (obj.ops || []).filter((o) => o && ['ellipse', 'poly', 'line'].includes(o.t));
     if (!ops.length) throw new Error('no drawing ops in reply');
     ops.identity = obj.identity ? String(obj.identity) : '';
+    ops.wiki = obj.wikipedia_title ? String(obj.wikipedia_title) : '';
+    ops.confidence = obj.confidence ? String(obj.confidence) : ((ops.identity.match(/\b(high|medium|low)\b/i) || [])[1] || '');
     return ops;
   }
 
@@ -896,31 +918,98 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     return out;
   }
 
-  // Scanline hatching of a polygon, chained into zig-zags where possible.
-  function hatchPolygon(poly, c, gap = fillGap()) {
-    const ys = poly.map((p) => p[1]);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
+  // ---- geometry helpers (hidden-surface removal: never paint where a later shape will cover) ----
+  const bboxOf = (pts) => {
+    let x0 = 1; let y0 = 1; let x1 = 0; let y1 = 0;
+    for (const [x, y] of pts) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    return [x0, y0, x1, y1];
+  };
+  const bbOverlap = (a, b) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+
+  function inPoly(poly, x, y) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i];
+      const [xj, yj] = poly[j];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+
+  // x-intervals covered by a polygon along the horizontal line y
+  function scanSpans(poly, y) {
+    const xs = [];
+    for (let i = 0; i < poly.length; i++) {
+      const [x0, y0] = poly[i];
+      const [x1, y1] = poly[(i + 1) % poly.length];
+      if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) xs.push(x0 + ((y - y0) / (y1 - y0)) * (x1 - x0));
+    }
+    xs.sort((a, b) => a - b);
+    const out = [];
+    for (let i = 0; i + 1 < xs.length; i += 2) out.push([xs[i], xs[i + 1]]);
+    return out;
+  }
+
+  function subtractSpans(spans, cuts) {
+    if (!cuts.length) return spans;
+    const sorted = cuts.slice().sort((p, q) => p[0] - q[0]);
+    const out = [];
+    for (const [a, b] of spans) {
+      let cur = a;
+      for (const [c0, c1] of sorted) {
+        if (c1 <= cur) continue;
+        if (c0 >= b) break;
+        if (c0 > cur) out.push([cur, c0]);
+        cur = Math.max(cur, c1);
+        if (cur >= b) break;
+      }
+      if (cur < b) out.push([cur, b]);
+    }
+    return out;
+  }
+
+  // Pieces of a polyline that lie outside every occluder.
+  function clipPolyline(pts, occ, closed) {
+    const src = closed ? [...pts, pts[0]] : pts;
+    if (!occ.length) return [src];
+    const dense = densify(src, 0.004);
+    const runs = [];
+    let cur = [];
+    for (const p of dense) {
+      let hidden = false;
+      for (const o of occ) {
+        if (p[0] < o.bb[0] || p[0] > o.bb[2] || p[1] < o.bb[1] || p[1] > o.bb[3]) continue;
+        if (inPoly(o.pts, p[0], p[1])) { hidden = true; break; }
+      }
+      if (hidden) { if (cur.length > 1) runs.push(cur); cur = []; } else cur.push(p);
+    }
+    if (cur.length > 1) runs.push(cur);
+    return runs;
+  }
+
+  // Scanline hatching of a polygon, minus the areas later shapes will cover, chained into zig-zags where possible.
+  function hatchPolygon(poly, c, gap = fillGap(), occ = []) {
+    const [, minY, , maxY] = bboxOf(poly);
+    const inset = brushUnit * 0.4;
     const strokes = [];
     let cur = null;
     const flush = () => { if (cur && cur.pts.length > 1) strokes.push(cur); cur = null; };
     for (let y = minY + gap / 2; y < maxY; y += gap) {
-      const xs = [];
-      for (let i = 0; i < poly.length; i++) {
-        const [x0, y0] = poly[i];
-        const [x1, y1] = poly[(i + 1) % poly.length];
-        if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) xs.push(x0 + (y - y0) / (y1 - y0) * (x1 - x0));
+      let segs = scanSpans(poly, y).filter(([a, b]) => b - a > 0.002);
+      if (occ.length) {
+        const cuts = [];
+        for (const o of occ) {
+          if (y < o.bb[1] || y > o.bb[3]) continue;
+          for (const [a, b] of scanSpans(o.pts, y)) if (b - a > inset * 2) cuts.push([a + inset, b - inset]);
+        }
+        segs = subtractSpans(segs, cuts).filter(([a, b]) => b - a > 0.002);
       }
-      xs.sort((a, b) => a - b);
-      const segs = [];
-      for (let i = 0; i + 1 < xs.length; i += 2) if (xs[i + 1] - xs[i] > 0.002) segs.push([xs[i], xs[i + 1]]);
       if (segs.length === 1) {
         const [a, b] = segs[0];
-        if (cur) {
-          const last = cur.pts[cur.pts.length - 1];
-          const [first, second] = Math.abs(last[0] - a) <= Math.abs(last[0] - b) ? [a, b] : [b, a];
-          cur.pts.push([first, y], [second, y]);
-        } else cur = { c, pts: [[a, y], [b, y]] };
+        const last = cur && cur.pts[cur.pts.length - 1];
+        const [first, second] = last && Math.abs(last[0] - a) <= Math.abs(last[0] - b) ? [a, b] : [b, a];
+        if (last && Math.abs(last[0] - first) < gap * 3 && Math.abs(last[1] - y) < gap * 1.5) cur.pts.push([first, y], [second, y]);
+        else { flush(); cur = { c, pts: [[a, y], [b, y]] }; }
       } else {
         flush();
         for (const [a, b] of segs) strokes.push({ c, pts: [[a, y], [b, y]] });
@@ -951,11 +1040,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     return out;
   }
 
-  function opsToStrokes(ops, gap = fillGap()) {
-    const strokes = [];
+  function opsToStrokes(ops, gap = fillGap(), occlude = true) {
+    const shapes = [];
     for (const op of ops) {
-      const color = palColor(op.c);
-      const outlineColor = palColor(op.oc || 'black');
       let pts;
       let closed = true;
       if (op.t === 'ellipse') {
@@ -970,15 +1057,27 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
         closed = op.t === 'poly' && op.closed !== false;
         if (op.smooth) pts = smoothPts(pts, closed);
       }
-      if (op.t === 'line') {
-        const w = Number(op.w) || 0;
-        if (w > brushUnit * 1.6) strokes.push(...thickLine(pts, color, Math.min(w, 0.08)));
-        else strokes.push({ c: color, pts });
-        continue;
-      }
-      if (op.fill !== false && pts.length >= 3) strokes.push(...hatchPolygon(pts, color, gap));
-      if (op.outline !== false) strokes.push({ c: outlineColor, pts: closed ? [...pts, pts[0]] : pts });
+      const isLine = op.t === 'line';
+      shapes.push({
+        op, pts, closed, isLine, bb: bboxOf(pts),
+        color: palColor(op.c), outlineColor: palColor(op.oc || 'black'),
+        filled: !isLine && op.fill !== false && pts.length >= 3,
+        outlined: !isLine && op.outline !== false,
+      });
     }
+    const strokes = [];
+    shapes.forEach((sh, i) => {
+      // later filled shapes hide what is under them, so skip painting there (the game's brush is slightly see-through)
+      const occ = occlude ? shapes.slice(i + 1).filter((o) => o.filled && (sh.isLine || bbOverlap(o.bb, sh.bb))) : [];
+      if (sh.isLine) {
+        const w = Number(sh.op.w) || 0;
+        const lines = w > brushUnit * 1.6 ? thickLine(sh.pts, sh.color, Math.min(w, 0.08)) : [{ c: sh.color, pts: sh.pts }];
+        for (const l of lines) for (const run of clipPolyline(l.pts, occ, false)) strokes.push({ c: l.c, pts: run });
+        return;
+      }
+      if (sh.filled) strokes.push(...hatchPolygon(sh.pts, sh.color, gap, occ));
+      if (sh.outlined) for (const run of clipPolyline(sh.pts, occ, sh.closed)) strokes.push({ c: sh.outlineColor, pts: run });
+    });
     return strokes;
   }
 
@@ -1008,9 +1107,34 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
 
   async function planWithClaude(text, key, model, refine) {
     const user = 'Witness statements:\n' + text;
+    const useRef = document.querySelector('#usad-trace').checked;
+    let hint = null;
+    let ref = null;
+    if (useRef) {
+      // Step 1: a short call just to work out who the suspect is
+      setStatus('Working out who the suspect is…');
+      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId));
+      setStatus('Suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ' confidence)');
+      if (/^(high|medium)/i.test(hint.confidence) && drawing) {
+        ref = await getReference(hint);
+        if (ref && referenceIsIllustration(ref.bmp)) {
+          // clean character art: trace it directly, no drawing call needed
+          return Object.assign([], { reference: ref.bmp, referenceTitle: ref.title, identity: hint.identity, wiki: hint.wiki, confidence: hint.confidence });
+        }
+      }
+      if (!/^(high|medium)/i.test(hint.confidence)) hint = null; // not sure who it is: let the drawing call decide
+    }
+    // Step 2: the AI plans the drawing (guided by the reference photo when there is one)
+    let userMsg = user;
+    if (hint) {
+      userMsg += '\n\nIdentification (already worked out): ' + hint.identity + ' (' + hint.confidence + ' confidence). Its look: ' + hint.colors
+        + (ref ? '\nA reference picture of ' + ref.title + ' is attached. Match its real shapes, proportions and colours, simplified into a bold cartoon sketch.' : '');
+    }
+    const refImg = ref ? bitmapToImage(ref.bmp) : null;
     setStatus('Planning the drawing…');
-    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: user }], parseOps);
+    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps);
     let ops = parseOps(first);
+    if (hint) { ops.identity = ops.identity || hint.identity; ops.wiki = ops.wiki || hint.wiki; ops.confidence = ops.confidence || hint.confidence; }
     showPreview(opsToStrokes(ops));
     if (!refine || !drawing) return ops;
     try {
@@ -1018,17 +1142,20 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       const shot = document.createElement('canvas');
       shot.width = shot.height = 512;
       renderStrokes(opsToStrokes(ops), shot);
-      const data = shot.toDataURL('image/png').split(',')[1];
+      const mine = { data: shot.toDataURL('image/png').split(',')[1], mime: 'image/png' };
       const second = await callLLM(key, model, SYSTEM_PROMPT, [
-        { role: 'user', text: user },
+        { role: 'user', text: userMsg, images: refImg ? [refImg] : [] },
         { role: 'assistant', text: first },
-        { role: 'user', image: data, text: 'This is how your ops render (fills are hatched, outlines black). Review it critically against the witness statements AND the character you identified: '
-          + '(1) would it be instantly recognisable as that character? (2) are the proportions and layout right: head size, tall enough body, limbs attached, face features inside the head, mouth in the lower face? '
+        { role: 'user', images: refImg ? [mine, refImg] : [mine], text: (refImg ? 'The first picture is how your ops render (fills are hatched, outlines black); the second is the reference picture. ' : 'This is how your ops render (fills are hatched, outlines black). ')
+          + 'Review it critically against the witness statements AND the character you identified: '
+          + '(1) would it be instantly recognisable as that character' + (refImg ? ' (compare it with the reference)' : '') + '? (2) are the proportions and layout right: head size, tall enough body, limbs attached, face features inside the head, mouth in the lower face? '
           + '(3) is every witness trait visible, large enough and the right colour? (4) remove duplicate or overlapping shapes that make a mess, and add the iconic details that are missing. '
           + 'Reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff).' },
       ], parseOps);
       const better = parseOps(second);
       better.identity = better.identity || ops.identity;
+      better.wiki = better.wiki || ops.wiki;
+      better.confidence = better.confidence || ops.confidence;
       ops = better;
       showPreview(opsToStrokes(ops));
     } catch (e) {
@@ -1036,6 +1163,240 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       await sleep(800);
     }
     return ops;
+  }
+
+  // ======================================================================
+  // Reference tracing: once the character is recognised, fetch its Wikipedia picture and trace it
+  // into the game's colours (row by row, like a printer).
+  // ======================================================================
+  function gmGet(url, responseType = 'text') {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET', url, responseType, timeout: 45000,
+        onload: (r) => (r.status >= 200 && r.status < 300 ? resolve(r) : reject(new Error('HTTP ' + r.status))),
+        onerror: () => reject(new Error('network error (allow the connection in Tampermonkey if it asks)')),
+        ontimeout: () => reject(new Error('timed out')),
+      });
+    });
+  }
+
+  // Main picture of the first Wikipedia article that has one: exact title first, then a search.
+  async function findReferenceImage(titles) {
+    const pick = (j, byRank) => {
+      const pages = Object.values((j.query || {}).pages || {});
+      if (byRank) pages.sort((a, b) => (a.index || 0) - (b.index || 0));
+      const hit = pages.find((pg) => pg.thumbnail && pg.thumbnail.source);
+      return hit ? { url: hit.thumbnail.source, title: hit.title } : null;
+    };
+    const base = 'https://en.wikipedia.org/w/api.php?action=query&format=json&prop=pageimages&piprop=thumbnail&pithumbsize=900';
+    for (const t of titles.filter(Boolean)) {
+      try {
+        let hit = pick(JSON.parse((await gmGet(base + '&redirects=1&titles=' + encodeURIComponent(t))).responseText), false);
+        if (hit) return hit;
+        hit = pick(JSON.parse((await gmGet(base + '&generator=search&gsrlimit=3&gsrsearch=' + encodeURIComponent(t))).responseText), true);
+        if (hit) return hit;
+      } catch (e) {
+        if (/network error/.test(e.message)) throw e; // permission / connectivity problem: no point trying more titles
+      }
+    }
+    return null;
+  }
+
+  async function getReference(hint) {
+    const name = (hint.wiki || hint.identity || '').trim();
+    if (!name) return null;
+    try {
+      setStatus('Looking up a picture of ' + name + '…');
+      const hit = await findReferenceImage([hint.wiki, (hint.identity || '').split(/[,(—–]/)[0].trim()]);
+      if (!hit) { setStatus('No Wikipedia picture found for ' + name + ' — drawing from the description.'); await sleep(900); return null; }
+      setStatus('Downloading the picture of ' + hit.title + '…');
+      const r = await gmGet(hit.url, 'arraybuffer');
+      return { bmp: await createImageBitmap(new Blob([r.response])), title: hit.title };
+    } catch (e) {
+      setStatus('Picture lookup failed (' + e.message + ') — drawing from the description.');
+      await sleep(1200);
+      return null;
+    }
+  }
+
+  function srgbToLab(r, g, b) {
+    const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const R = lin(r); const G = lin(g); const B = lin(b);
+    const f = (v) => (v > 0.008856 ? Math.cbrt(v) : 7.787 * v + 16 / 116);
+    const fx = f((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047);
+    const fy = f(R * 0.2126 + G * 0.7152 + B * 0.0722);
+    const fz = f((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  }
+
+  // Background = transparent cells plus the colour connected to the picture border.
+  function floodBackground(px, cols, rows, tol = 40) {
+    const N = cols * rows;
+    const bg = new Uint8Array(N);
+    for (let i = 0; i < N; i++) if (px[i * 4 + 3] < 40) bg[i] = 1;
+    const border = [];
+    for (let x = 0; x < cols; x++) border.push(x, (rows - 1) * cols + x);
+    for (let y = 0; y < rows; y++) border.push(y * cols, y * cols + cols - 1);
+    const ref = [0, 1, 2].map((c) => {
+      const v = border.filter((i) => px[i * 4 + 3] >= 40).map((i) => px[i * 4 + c]).sort((a, b) => a - b);
+      return v.length ? v[Math.floor(v.length / 2)] : 255;
+    });
+    const near = (i) => Math.hypot(px[i * 4] - ref[0], px[i * 4 + 1] - ref[1], px[i * 4 + 2] - ref[2]) < tol;
+    const stack = border.filter((i) => near(i) && !bg[i]);
+    stack.forEach((i) => { bg[i] = 1; });
+    while (stack.length) {
+      const i = stack.pop();
+      const x = i % cols;
+      const y = (i - x) / cols;
+      for (const j of [x > 0 ? i - 1 : -1, x < cols - 1 ? i + 1 : -1, y > 0 ? i - cols : -1, y < rows - 1 ? i + cols : -1]) {
+        if (j >= 0 && !bg[j] && near(j)) { bg[j] = 1; stack.push(j); }
+      }
+    }
+    let count = 0;
+    for (let i = 0; i < N; i++) count += bg[i];
+    return { bg, count };
+  }
+
+  // Clean character art on a plain background traces well; busy photographs do not.
+  function referenceIsIllustration(bmp) {
+    const sc = 80 / Math.max(bmp.width, bmp.height);
+    const w = Math.max(8, Math.round(bmp.width * sc));
+    const h = Math.max(8, Math.round(bmp.height * sc));
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0, w, h);
+    const { count } = floodBackground(g.getImageData(0, 0, w, h).data, w, h, 14); // strict: only a truly uniform backdrop counts
+    return count / (w * h) >= 0.2;
+  }
+
+  // JPEG for sending a reference picture to the AI (transparent areas become white).
+  function bitmapToImage(bmp, max = 768) {
+    const sc = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * sc); cv.height = Math.round(bmp.height * sc);
+    const g = cv.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, cv.width, cv.height);
+    g.drawImage(bmp, 0, 0, cv.width, cv.height);
+    return { data: cv.toDataURL('image/jpeg', 0.85).split(',')[1], mime: 'image/jpeg' };
+  }
+
+  // Turns a picture into strokes: background removed, every cell snapped to the nearest palette colour,
+  // runs of equal colour drawn as horizontal strokes, one swatch at a time.
+  function traceToStrokes(bmp) {
+    const iw = bmp.width;
+    const ih = bmp.height;
+    const sc = 0.96 / Math.max(iw, ih);
+    const dw = iw * sc;
+    const dh = ih * sc;
+    const names = Object.keys(PAL);
+    const palLab = names.map((n) => srgbToLab(...hexToRgb(PAL[n])));
+    const WHITE = names.indexOf('white');
+    const BLACK = names.indexOf('black');
+
+    let cell = Math.max(fillGap(), Math.max(dw, dh) / 200);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const cols = Math.max(8, Math.round(dw / cell));
+      const rows = Math.max(8, Math.round(dh / cell));
+      // downscale in halving steps so thin lines are not lost to aliasing
+      let cv = document.createElement('canvas');
+      cv.width = iw; cv.height = ih;
+      let g = cv.getContext('2d', { willReadFrequently: true });
+      g.drawImage(bmp, 0, 0);
+      while (cv.width / 2 >= cols && cv.height / 2 >= rows) {
+        const n = document.createElement('canvas');
+        n.width = Math.ceil(cv.width / 2); n.height = Math.ceil(cv.height / 2);
+        const ng = n.getContext('2d', { willReadFrequently: true });
+        ng.imageSmoothingQuality = 'high';
+        ng.drawImage(cv, 0, 0, n.width, n.height);
+        cv = n; g = ng;
+      }
+      const fin = document.createElement('canvas');
+      fin.width = cols; fin.height = rows;
+      const fg = fin.getContext('2d', { willReadFrequently: true });
+      fg.imageSmoothingQuality = 'high';
+      fg.drawImage(cv, 0, 0, cols, rows);
+      const px = fg.getImageData(0, 0, cols, rows).data;
+      const N = cols * rows;
+
+      const flood = floodBackground(px, cols, rows);
+      const bg = flood.bg;
+      if (flood.count > N * 0.97) bg.fill(0); // the "background" swallowed the subject: keep everything
+
+      // snap every cell to the nearest palette colour (-1 = leave blank paper)
+      const q = new Int8Array(N).fill(-1);
+      for (let i = 0; i < N; i++) {
+        if (bg[i]) continue;
+        const lab = srgbToLab(px[i * 4], px[i * 4 + 1], px[i * 4 + 2]);
+        let best = 0; let bd = Infinity;
+        for (let k = 0; k < names.length; k++) {
+          const d = (lab[0] - palLab[k][0]) ** 2 + (lab[1] - palLab[k][1]) ** 2 + (lab[2] - palLab[k][2]) ** 2;
+          if (d < bd) { bd = d; best = k; }
+        }
+        q[i] = best === WHITE ? -1 : best;
+      }
+      // majority filter: edge anti-aliasing leaves stray fringe colours; snap a cell to its neighbourhood's majority
+      {
+        const next = q.slice();
+        const cnt = new Int16Array(names.length + 1);
+        for (let y = 1; y < rows - 1; y++) {
+          for (let x = 1; x < cols - 1; x++) {
+            const i = y * cols + x;
+            if (q[i] === BLACK) continue; // keep thin dark outlines
+            cnt.fill(0);
+            for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) cnt[q[i + dy * cols + dx] + 1]++;
+            let best = q[i] + 1;
+            for (let k = 0; k < cnt.length; k++) if (cnt[k] > cnt[best]) best = k;
+            if (cnt[best] >= 5 && best - 1 !== BLACK) next[i] = best - 1;
+          }
+        }
+        q.set(next);
+      }
+      // remove isolated speckles (a cell whose 8 neighbours all agree on another colour)
+      for (let pass = 0; pass < 2; pass++) {
+        const next = q.slice();
+        for (let y = 1; y < rows - 1; y++) {
+          for (let x = 1; x < cols - 1; x++) {
+            const i = y * cols + x;
+            const v = q[i - 1];
+            if (v === q[i]) continue;
+            if (q[i + 1] === v && q[i - cols] === v && q[i + cols] === v && q[i - cols - 1] === v && q[i - cols + 1] === v && q[i + cols - 1] === v && q[i + cols + 1] === v) next[i] = v;
+          }
+        }
+        q.set(next);
+      }
+
+      // runs -> strokes, grouped per colour (largest area first, black last so outlines end up on top)
+      const ox = (1 - cols * cell) / 2;
+      const oy = (1 - rows * cell) / 2;
+      const passes = Math.max(1, Math.ceil(cell / (brushUnit * 0.9)));
+      const groups = new Map();
+      let total = 0;
+      for (let y = 0; y < rows; y++) {
+        let x = 0;
+        while (x < cols) {
+          const id = q[y * cols + x];
+          if (id < 0) { x++; continue; }
+          let x1 = x;
+          while (x1 + 1 < cols && q[y * cols + x1 + 1] === id) x1++;
+          let a = ox + x * cell + brushUnit / 2;
+          let b = ox + (x1 + 1) * cell - brushUnit / 2;
+          if (b <= a) { const m = (a + b) / 2; a = m - 0.0004; b = m + 0.0004; }
+          if (!groups.has(id)) groups.set(id, []);
+          for (let k = 0; k < passes; k++) {
+            const yy = oy + (y + (k + 0.5) / passes) * cell;
+            groups.get(id).push({ c: PAL[names[id]], pts: [[a, yy], [b, yy]] });
+            total++;
+          }
+          x = x1 + 1;
+        }
+      }
+      if (total > 6000 && attempt < 3) { cell *= 1.35; continue; } // too many strokes: trace more coarsely
+      const order = [...groups.keys()].sort((m, n) => (m === BLACK) - (n === BLACK) || groups.get(n).length - groups.get(m).length);
+      return order.flatMap((id) => groups.get(id));
+    }
+    return [];
   }
 
   // ======================================================================
@@ -1071,7 +1432,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const swatches = findSwatches();
     let current = null;
     let colorMiss = false;
-    for (const s of strokes) {
+    const every = strokes.length > 800 ? 8 : 1; // with thousands of tiny strokes, pause less often
+    for (let si = 0; si < strokes.length; si++) {
+      const s = strokes[si];
       if (!drawing) return;
       if (s.c && s.c !== current) {
         if (!selectColor(s.c, swatches)) colorMiss = true;
@@ -1085,7 +1448,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
         if (i % 6 === 0) await sleep(delay);
       }
       fire(canvas, 'up', pts[pts.length - 1][0], pts[pts.length - 1][1], 0);
-      await sleep(delay);
+      if (si % every === 0) await sleep(delay);
     }
     if (colorMiss) setStatus('Done (couldn\'t find some palette colours).');
   }
@@ -1171,15 +1534,15 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       const clear = document.querySelector('#usad-clear').checked;
       if (ops) {
         if (clear && drawing) { await clearCanvas(); await measureBrush(canvas); } // the clear below removes the test stroke
-        strokes = opsToStrokes(ops);
+        strokes = ops.reference ? traceToStrokes(ops.reference) : opsToStrokes(ops);
         showPreview(strokes);
       } else { strokes = composeProcedural(text); showPreview(strokes); }
       if (clear) await clearCanvas();
-      setStatus(`Drawing ${strokes.length} strokes…` + (ops && ops.identity ? ' Looks like: ' + ops.identity : ''));
+      setStatus(`Drawing ${strokes.length} strokes…` + (ops && ops.reference ? ' Tracing the picture of ' + ops.referenceTitle + '.' : ops && ops.identity ? ' Looks like: ' + ops.identity : ''));
       await drawStrokes(strokes, canvas);
       if (drawing && forceBasic && key) setStatus('Done — drew with the BASIC drawer (no AI).');
       else if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
-      else if (drawing) setStatus('Done.' + (ops && ops.identity ? ' Guess: ' + ops.identity : ''));
+      else if (drawing) setStatus('Done.' + (ops && ops.reference ? ' Traced: ' + ops.referenceTitle : ops && ops.identity ? ' Guess: ' + ops.identity : ''));
       if (!drawing) setStatus('Stopped.');
     } catch (e) {
       setStatus('Error: ' + e.message);
@@ -1227,7 +1590,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     p.style.cssText = 'position:fixed;right:12px;top:12px;z-index:2147483647;width:250px;padding:10px;'
       + 'background:#111c;color:#fff;font:13px sans-serif;border-radius:10px;backdrop-filter:blur(6px)';
     p.innerHTML = `
-      <b>Auto Draw</b> <span style="opacity:.6">v1.1.0</span>
+      <b>Auto Draw</b> <span style="opacity:.6">v1.3.0</span>
       <textarea id="usad-prompt" rows="4" style="width:100%;margin:6px 0;box-sizing:border-box" placeholder="Prompt (auto-detected or type it)"></textarea>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
         <button id="usad-go" style="flex:1 1 28%">Draw</button>
@@ -1238,6 +1601,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       </div>
       <label><input type="checkbox" id="usad-auto"> Draw automatically</label><br>
       <label><input type="checkbox" id="usad-clear"> Clear canvas before drawing</label><br>
+      <label title="When the character is recognised, fetch its Wikipedia picture and trace it in the game's colours"><input type="checkbox" id="usad-trace"> Trace the real picture when recognised</label><br>
       <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="width:130px"></label><br>
       <input id="usad-key" type="password" placeholder="API key(s): Gemini and/or Anthropic, comma-separated" style="width:100%;box-sizing:border-box;margin-top:4px">
       <div style="display:flex;gap:6px;margin-top:4px;align-items:center">
@@ -1266,6 +1630,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     model.value = saved;
     if (model.value !== saved) model.value = 'gemini-pro-latest';
     model.onchange = () => store.set('model', model.value);
+    const trc = p.querySelector('#usad-trace');
+    trc.checked = store.get('trace', true);
+    trc.onchange = () => store.set('trace', trc.checked);
     const clr = p.querySelector('#usad-clear');
     clr.checked = store.get('clear', true);
     clr.onchange = () => store.set('clear', clr.checked);
@@ -1288,5 +1655,5 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   else window.addEventListener('DOMContentLoaded', init);
 
   // Exposed for testing outside the browser.
-  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, setRetryDelays: (a) => { ROUND_DELAYS = a; } };
+  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, traceToStrokes, setRetryDelays: (a) => { ROUND_DELAYS = a; } };
 })();
