@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Krillion Puffer Helper",
+  "version": "0.1.0",
+  "description": "Detects the current Puffer Party category and suggests answers in a mini sidebar.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://krillion.io/*",
+    "https://*.krillion.io/*",
+    "https://en.wikipedia.org/*",
+    "https://api.datamuse.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://krillion.io/*",
+        "https://*.krillion.io/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
