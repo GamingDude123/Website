@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.8.1
+// @version      0.8.2
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -89,8 +89,8 @@ async function listModels(key) {
   const ids = (list.data || []).filter((m) => m.active !== false).map((m) => m.id)
     .filter((id) => !/whisper|guard|tts|playai|orpheus|embed|moderation|safeguard/i.test(id));
   const rank = (id) => {
-    if (/instant/i.test(id)) return 0;
-    if (/llama/i.test(id) && /8b/i.test(id)) return 1;
+    if (/llama.*70b|70b.*versatile/i.test(id)) return 0; // follows conditions like "before 1500" far better
+    if (/instant/i.test(id) || (/llama/i.test(id) && /8b/i.test(id))) return 1;
     if (/llama|gemma|mistral/i.test(id)) return 2;
     if (/gpt-oss|qwen|deepseek|r1|kimi/i.test(id)) return 4;
     return 3;
@@ -120,11 +120,11 @@ function parseList(text) {
 async function askModel(key, model, prompt) {
   const reply = await withRetry(() => groq("POST", "/chat/completions", key, {
     model,
-    temperature: 0.3,
+    temperature: 0.2,
     max_tokens: 1500,
     messages: [
-      { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation." },
-      { role: "user", content: `Category: "${prompt}". Give 40 different valid answers. Put the most obvious, common ones first and the rarer ones later.` }
+      { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation. Categories often contain conditions (dates, places, people, counts, spelling); every answer must satisfy ALL of them. Before including an answer, check it against each condition and leave it out if you are not sure." },
+      { role: "user", content: `Category: "${prompt}". Give up to 30 different valid answers. Put the most obvious, certain ones first and the rarer ones later.` }
     ]
   }));
   const items = parseList(reply.choices?.[0]?.message?.content);
@@ -136,7 +136,7 @@ async function askModel(key, model, prompt) {
 async function ask(prompt) {
   const key = GM_getValue("groqKey");
   if (!key) throw new Error("no Groq key");
-  const saved = GM_getValue("groqModel");
+  const saved = GM_getValue("groqModel2");
   const tried = [];
   let models = saved ? [saved] : [];
   let listed = false;
@@ -150,7 +150,7 @@ async function ask(prompt) {
     const model = models[i];
     try {
       const items = await askModel(key, model, prompt);
-      GM_setValue("groqModel", model);
+      GM_setValue("groqModel2", model);
       return items;
     } catch (e) {
       tried.push(`${model.split("/").pop()}: ${e.message}`);
@@ -204,7 +204,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.1</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.2</span><span><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
