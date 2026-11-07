@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.8.2
+// @version      0.8.3
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -194,8 +194,8 @@ async function suggest(prompt, onPartial) {
   const root = HOST.attachShadow({ mode: "open" });
   root.innerHTML = `
     <style>
-      .box{width:210px;max-height:80vh;overflow:auto;font:13px ui-monospace,monospace;color:#e8f6ff;background:#0a2a45ee;border:1px solid #3cc8ff;border-radius:8px;padding:8px}
-      .row{display:flex;justify-content:space-between;align-items:center;gap:6px}
+      .box{width:236px;max-height:calc(100vh - 150px);overflow:auto;box-sizing:border-box;font:13px ui-monospace,monospace;color:#e8f6ff;background:#0a2a45ee;border:1px solid #3cc8ff;border-radius:8px;padding:8px}
+      .row{display:flex;justify-content:space-between;align-items:center;gap:6px;position:sticky;top:-8px;margin:-8px -8px 0;padding:8px;background:#0a2a45;z-index:1}
       .p{margin:6px 0;color:#7fd8ff;word-break:break-word}
       button{font:inherit;background:#12466e;color:inherit;border:1px solid #3cc8ff;border-radius:4px;padding:2px 6px;cursor:pointer}
       .a{display:block;width:100%;text-align:left;margin:3px 0}
@@ -204,7 +204,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.2</span><span><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><span style="white-space:nowrap"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.3</span></span><span style="white-space:nowrap"><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
@@ -291,10 +291,20 @@ async function suggest(prompt, onPartial) {
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     for (let n; (n = w.nextNode()); ) note(n.nodeValue);
   }
-  const esc = (a) => a.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // "São Paulo" == "sao paulo"; "Rio" used removes "Rio de Janeiro"; "new york city" used removes "New York".
+  const fold = (t) => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\b(the|a|an)\b/g, " ").replace(/\b([a-z]{3,})s\b/g, "$1").replace(/\s+/g, " ").trim();
   const isUsed = (a) => {
-    const re = new RegExp(`(^|[^a-z])${esc(a)}(e?s)?([^a-z]|$)`);
-    for (const t of seen) if (re.test(t)) return true;
+    const na = " " + fold(a) + " ";
+    if (na.trim().length < 2) return false;
+    for (const t of seen) {
+      const ns = fold(t);
+      if (!ns) continue;
+      const padded = " " + ns + " ";
+      if (padded === na) return true;
+      // a short bubble naming the same place/thing in more or fewer words (chat lines are longer, so they don't count)
+      const shortBubble = ns.split(" ").length <= 3;
+      if (shortBubble && ns.length >= 3 && (na.includes(padded) || padded.includes(na))) return true;
+    }
     return false;
   };
 
@@ -309,7 +319,7 @@ async function suggest(prompt, onPartial) {
     if (error) { const d = document.createElement("div"); d.className = "err"; d.textContent = error; out.append(d); return; }
     const t = document.createElement("div");
     t.className = "t";
-    t.textContent = "searched: " + topic;
+    t.textContent = topic;
     out.append(t);
     const left = all.filter((a) => !clicked.has(a) && !isUsed(a)).slice(0, 40);
     left.forEach((a, i) => {
@@ -333,12 +343,12 @@ async function suggest(prompt, onPartial) {
     $("out").textContent = "";
     const res = await suggest(p, (part) => {
       if (p !== current) return;
-      all = part.answers; topic = part.topic + " (" + part.source + ")";
+      all = part.answers; topic = part.source === "AI" ? "answers from AI" : part.topic + " (" + part.source + ")";
       render();
     }).catch((e) => ({ error: String(e.message || e) }));
     if (p !== current) return; // prompt changed while waiting
     if (res.error) return render(res.error);
-    all = res.answers; topic = res.topic + " (" + res.source + ")";
+    all = res.answers; topic = res.source === "AI" ? "answers from AI" : res.topic + " (" + res.source + ")";
     render();
   }
 
