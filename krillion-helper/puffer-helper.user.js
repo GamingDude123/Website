@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Krillion Puffer Helper
 // @namespace    https://github.com/GamingDude123/Website
-// @version      0.8.3
+// @version      0.8.5
 // @description  Shows suggested answers for the current Puffer Party category in a small sidebar.
 // @match        https://krillion.io/*
 // @match        https://*.krillion.io/*
@@ -113,7 +113,9 @@ async function withRetry(fn) {
 function parseList(text) {
   const t = (text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^[^\n:]{0,60}:\s*(?=.*,)/, "");
   return [...new Set(
-    t.split(/[,\n;]/).map((x) => x.replace(/^[\s\-*\d.)"'`]+|[\s."'`]+$/g, "").trim()).filter((x) => x && x.length <= 40)
+    t.split(/[,\n;]/)
+      .map((x) => x.replace(/\([^)]*\)/g, " ").replace(/^[\s\-*\d.)"'`]+|[\s."'`]+$/g, "").replace(/\s+/g, " ").trim())
+      .filter((x) => x && x.length <= 40)
   )];
 }
 
@@ -124,7 +126,7 @@ async function askModel(key, model, prompt) {
     max_tokens: 1500,
     messages: [
       { role: "system", content: "You answer a party game. Reply with only a comma-separated list of answers. No numbering, no explanation. Categories often contain conditions (dates, places, people, counts, spelling); every answer must satisfy ALL of them. Before including an answer, check it against each condition and leave it out if you are not sure." },
-      { role: "user", content: `Category: "${prompt}". Give up to 30 different valid answers. Put the most obvious, certain ones first and the rarer ones later.` }
+      { role: "user", content: `Category: "${prompt}". Give up to 30 different valid answers. Keep each answer as short as a player would type it (for "Oreo flavor" say "Mint", not "Mint Oreo (limited edition)"), with no parentheses or notes. Put the most obvious, certain ones first and the rarer ones later.` }
     ]
   }));
   const items = parseList(reply.choices?.[0]?.message?.content);
@@ -161,25 +163,68 @@ async function ask(prompt) {
 }
 
 // Built-in lists answer instantly. Otherwise show the closest list right away, then upgrade it with the AI's answer.
+// Spelling rules in a prompt ("starts with B", "ends in the letter A", "5 letters") are enforced locally,
+// because language models get them wrong. Returns a predicate for an answer, or null if the prompt has no such rule.
+function spellingRule(prompt) {
+  const lower = prompt.toLowerCase();
+  const letters = (a) => a.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z]/g, "");
+  // The single letter right after the keyword: must be written as "letter X" or as a capital X (so "starts with a vowel" is ignored).
+  const letterAfter = (re) => {
+    const m = re.exec(lower);
+    if (!m) return null;
+    const rm = prompt.slice(m.index + m[0].length).match(/^\s*(?:the\s+)?(letters?\s+)?["“']?([A-Za-z])(?![A-Za-z])/i);
+    return rm && (rm[1] || rm[2] === rm[2].toUpperCase()) ? rm[2].toLowerCase() : null;
+  };
+  const rules = [];
+  const start = letterAfter(/(?:start|begin)\w*\s+(?:with|in)\b/);
+  const end = letterAfter(/\bend\w*\s+(?:with|in)\b/);
+  const has = letterAfter(/(?:contain\w*|includ\w*|has|have|with|using)\s+(?:the\s+)?(?=letters?\s)/);
+  const len = lower.match(/(\d+)[\s-]*letters?\b/);
+  if (start) rules.push((a) => letters(a)[0] === start);
+  if (end) rules.push((a) => letters(a).slice(-1) === end);
+  if (has) rules.push((a) => letters(a).includes(has));
+  if (len) rules.push((a) => letters(a).length === +len[1]);
+  return rules.length ? (a) => rules.every((r) => r(a)) : null;
+}
+
 async function suggest(prompt, onPartial) {
+  const rule = spellingRule(prompt);
+  const keep = (list) => (rule ? list.filter(rule) : list);
   const { strict, loose } = matchCategory(prompt);
-  if (strict) return { answers: strict.items, topic: strict.name, source: "built-in" };
-  const closest = (why) => loose && { answers: loose.items, topic: loose.name, source: `closest list, may not fit. ${why}` };
+  const base = strict || loose;
+  const baseItems = base ? keep(base.items) : [];
+  const ruled = rule ? ", letter rule applied" : "";
+  if (strict && (!rule || baseItems.length >= 3)) return { answers: baseItems, topic: strict.name, source: "built-in" + ruled };
+
+  // With a spelling rule, the filtered built-in list is trustworthy on its own; without one it's only the closest guess.
+  const fallback = (why) =>
+    rule && baseItems.length ? { answers: baseItems, topic: base.name, source: `built-in${ruled}. ${why}` }
+    : !rule && loose ? { answers: loose.items, topic: loose.name, source: `closest list, may not fit. ${why}` }
+    : null;
+
   const key = `ai:${prompt}`;
   const cached = GM_getValue(key);
-  if (cached) return { answers: cached, topic: prompt, source: "AI" };
+  if (cached) {
+    const merged = [...new Set([...baseItems, ...keep(cached)])];
+    if (merged.length) return { answers: rule ? merged : cached, topic: prompt, source: "AI" + ruled };
+  }
   if (!GM_getValue("groqKey")) {
-    if (loose) return closest('NO AI KEY: click "key" and paste your Groq key');
+    const f = fallback('NO AI KEY: click "key" and paste your Groq key');
+    if (f) return f;
     throw new Error('No list for this category. Click "key" and paste your free Groq key.');
   }
-  if (loose) onPartial(closest("asking AI..."));
+  const early = fallback("asking AI...");
+  if (early) onPartial(early);
   try {
-    const answers = await ask(prompt);
-    GM_setValue(key, answers);
-    return { answers, topic: prompt, source: "AI" };
+    const raw = await ask(prompt);
+    GM_setValue(key, raw);
+    const answers = rule ? [...new Set([...baseItems, ...keep(raw)])] : raw;
+    if (!answers.length) throw new Error("the AI gave no answers that fit the spelling rule");
+    return { answers, topic: prompt, source: "AI" + ruled };
   } catch (e) {
     const hint = /HTTP 40[13]/.test(e.message) ? ' Your Groq key was rejected: make a new key at console.groq.com, then click "key" and paste it.' : "";
-    if (loose) return closest(`AI FAILED (${e.message}).${hint}`);
+    const f = fallback(`AI FAILED (${e.message}).${hint}`);
+    if (f) return f;
     throw new Error(`AI lookup failed (${e.message}).${hint}`);
   }
 }
@@ -195,7 +240,7 @@ async function suggest(prompt, onPartial) {
   root.innerHTML = `
     <style>
       .box{width:236px;max-height:calc(100vh - 150px);overflow:auto;box-sizing:border-box;font:13px ui-monospace,monospace;color:#e8f6ff;background:#0a2a45ee;border:1px solid #3cc8ff;border-radius:8px;padding:8px}
-      .row{display:flex;justify-content:space-between;align-items:center;gap:6px;position:sticky;top:-8px;margin:-8px -8px 0;padding:8px;background:#0a2a45;z-index:1}
+      .row{display:flex;justify-content:space-between;align-items:center;gap:6px;position:sticky;top:0;margin:-8px -8px 0;padding:8px;background:#0a2a45;z-index:1}
       .p{margin:6px 0;color:#7fd8ff;word-break:break-word}
       button{font:inherit;background:#12466e;color:inherit;border:1px solid #3cc8ff;border-radius:4px;padding:2px 6px;cursor:pointer}
       .a{display:block;width:100%;text-align:left;margin:3px 0}
@@ -204,7 +249,7 @@ async function suggest(prompt, onPartial) {
       .err{color:#ff9a9a}
     </style>
     <div class="box">
-      <div class="row"><span style="white-space:nowrap"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.3</span></span><span style="white-space:nowrap"><button id="key">key</button> <button id="min">_</button></span></div>
+      <div class="row"><span style="white-space:nowrap"><b>Puffer helper</b> <span style="opacity:.6;font-size:10px">v0.8.5</span></span><span style="white-space:nowrap"><button id="key">key</button> <button id="min">_</button></span></div>
       <div id="body"><div class="p" id="prompt"></div><div id="out"></div></div>
     </div>`;
   document.documentElement.appendChild(HOST);
@@ -343,12 +388,12 @@ async function suggest(prompt, onPartial) {
     $("out").textContent = "";
     const res = await suggest(p, (part) => {
       if (p !== current) return;
-      all = part.answers; topic = part.source === "AI" ? "answers from AI" : part.topic + " (" + part.source + ")";
+      all = part.answers; topic = /^AI/.test(part.source) ? "answers from AI" : part.topic + " (" + part.source + ")";
       render();
     }).catch((e) => ({ error: String(e.message || e) }));
     if (p !== current) return; // prompt changed while waiting
     if (res.error) return render(res.error);
-    all = res.answers; topic = res.source === "AI" ? "answers from AI" : res.topic + " (" + res.source + ")";
+    all = res.answers; topic = /^AI/.test(res.source) ? "answers from AI" : res.topic + " (" + res.source + ")";
     render();
   }
 
