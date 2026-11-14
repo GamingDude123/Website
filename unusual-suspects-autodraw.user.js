@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.5.0
+// @version      1.5.1
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -733,7 +733,7 @@ LAYOUT TEMPLATES (adapt to the character)
 - Face: eyes around the middle of the head, nose below them, mouth in the lower third INSIDE the head outline. Ears and hair belong on the head, never on the body. Never draw two heads or duplicate shapes.
 - The figure should fill 80-95% of the canvas height. Show the whole body from head to feet unless only a face is described.
 
-STYLE: bold, simplified, high-contrast cartoon. Big clear shapes beat tiny details. Use real silhouettes (polygons with "smooth":true) for hands, feet, ears, hair, tails, hats and clothes instead of plain ellipses. Patterns such as stripes or spots are separate filled shapes drawn ON TOP of the body fill with "outline":false and kept inside the body outline. Aim for 80-200 ops.
+STYLE: bold, simplified, high-contrast cartoon. Big clear shapes beat tiny details. Use real silhouettes (polygons with "smooth":true) for hands, feet, ears, hair, tails, hats and clothes instead of plain ellipses. Patterns such as stripes or spots are separate filled shapes drawn ON TOP of the body fill with "outline":false and kept inside the body outline. Aim for 40-80 ops and keep the whole reply short (under about 3000 tokens): numbers with 2 decimals, polygons with at most 12 points, no commentary.
 
 OPS (all coordinates 0..1)
 - {"t":"ellipse","c":"orange","cx":0.5,"cy":0.5,"rx":0.2,"ry":0.15,"rot":0}  filled + black outline (rot in degrees, optional)
@@ -748,10 +748,25 @@ Example 2, an upright animal with a tail: ${EX_TIGER}
 COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with a black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements and to the character's iconic colours.`;
 
   // Turns are provider-neutral: { role: 'user' | 'assistant', text, image?: base64 png }.
-  function httpJson(url, headers, body, timeout = 280000) {
+  let TIME_SCALE = 1; // multiplies every network time limit (tests shrink it)
+  const activeReqs = new Set();
+  function abortAll() { for (const abort of [...activeReqs]) abort(); }
+
+  function httpJson(url, headers, body, timeout = 90000) {
     return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'POST', url, headers, timeout, data: JSON.stringify(body),
+      let finished = false;
+      let req = null;
+      let timer = null;
+      const finish = (fn, v) => { if (finished) return; finished = true; clearTimeout(timer); activeReqs.delete(abort); fn(v); };
+      const abort = () => { try { if (req && req.abort) req.abort(); } catch (e) { /* ignore */ } finish(reject, new Error('stopped')); };
+      activeReqs.add(abort);
+      // watchdog: some userscript managers ignore `timeout`, and a hung request must never stall the whole run
+      timer = setTimeout(() => {
+        try { if (req && req.abort) req.abort(); } catch (e) { /* ignore */ }
+        finish(reject, new Error('timed out'));
+      }, timeout * TIME_SCALE + 3000 * TIME_SCALE);
+      req = GM_xmlhttpRequest({
+        method: 'POST', url, headers, timeout: timeout * TIME_SCALE, data: JSON.stringify(body),
         onload: (r) => {
           try {
             if (r.status === 429 || r.status >= 500) {
@@ -761,11 +776,11 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
             }
             const j = JSON.parse(r.responseText);
             if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
-            resolve(j);
-          } catch (e) { reject(e); }
+            finish(resolve, j);
+          } catch (e) { finish(reject, e); }
         },
-        onerror: () => reject(new Error('network error')),
-        ontimeout: () => reject(new Error('timed out')),
+        onerror: () => finish(reject, new Error('network error')),
+        ontimeout: () => finish(reject, new Error('timed out')),
       });
     });
   }
@@ -835,7 +850,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   // How much hidden "thinking" Gemini may do before answering. Quick lookups get none, drawing a little.
   // The options are tried in order until the model accepts one (field names differ between model generations).
   const THINK_FAST = [{ thinkingBudget: 0 }, { thinkingLevel: 'low' }, { thinkingBudget: 128 }, null];
-  const THINK_PLAN = [{ thinkingBudget: 2048 }, { thinkingLevel: 'low' }, null];
+  const THINK_PLAN = [{ thinkingBudget: 1024 }, { thinkingLevel: 'low' }, null];
   const thinkMemo = new Map();
 
   async function callGemini(c, system, turns, opts) {
@@ -843,7 +858,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const memoKey = c.model + (opts.fast ? ':fast' : ':plan');
     let lastErr = new Error('no answer');
     for (let k = thinkMemo.get(memoKey) || 0; k < tries.length; k++) {
-      const generationConfig = { maxOutputTokens: opts.maxTokens || 16000, temperature: opts.fast ? 0.2 : 0.7, responseMimeType: 'application/json' };
+      const generationConfig = { maxOutputTokens: opts.maxTokens || 7000, temperature: opts.fast ? 0.2 : 0.6, responseMimeType: 'application/json' };
       if (tries[k]) generationConfig.thinkingConfig = tries[k];
       try {
         const j = await httpJson(
@@ -875,7 +890,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const j = await httpJson('https://api.anthropic.com/v1/messages',
       { 'content-type': 'application/json', 'x-api-key': c.key, 'anthropic-version': '2023-06-01' },
       {
-        model: c.model, max_tokens: opts.maxTokens || 16000, system,
+        model: c.model, max_tokens: opts.maxTokens || 7000, system,
         messages: turns.map((t) => ({
           role: t.role,
           content: t.images.length
@@ -887,25 +902,34 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   }
 
   // Tries every candidate; a busy/failed/garbled answer just moves on to the next model. Gives up only after several full rounds.
-  // opts: { fast: quick lookup (no thinking, fast models first), timeout: ms per request, maxTokens }
+  // opts: { fast: quick lookup (no thinking, fast models first), timeout: ms per request, deadline: ms for the whole chain,
+  //         maxTokens, label: what the status line says the AI is doing }
   async function callLLM(keysRaw, selected, system, turns, validate, opts = {}) {
     turns = turns.map((t) => ({ ...t, images: t.images || (t.image ? [{ data: t.image, mime: 'image/png' }] : []) }));
     const cands = await buildCandidates(keysRaw, selected, !!opts.fast);
     if (!cands.length) throw new Error('no API key');
     const dead = new Set();
+    const tStart = Date.now();
     let lastErr = new Error('no model answered');
     for (let round = 0; ; round++) {
       let busy = false;
       for (const c of cands) {
         if (!drawing) throw new Error('stopped');
         if (dead.has(c.id) || deadModels.has(c.id)) continue;
-        setStatus('Asking ' + c.model + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
+        let callOpts = opts;
+        if (opts.deadline) { // the whole chain must finish within the deadline: later models only get the time that is left
+          const left = opts.deadline * TIME_SCALE - (Date.now() - tStart);
+          if (left < 2500 * TIME_SCALE) throw new Error('the AI took too long (' + Math.round((Date.now() - tStart) / 1000) + 's)');
+          callOpts = { ...opts, timeout: Math.min(opts.timeout || Infinity, left / TIME_SCALE) };
+        }
+        setStatus((opts.label || 'Asking') + ' · ' + c.model + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
         try {
-          const text = await callOne(c, system, turns, opts);
+          const text = await callOne(c, system, turns, callOpts);
           if (validate) validate(text);
           return text;
         } catch (e) {
           lastErr = e;
+          if (e.message === 'stopped') throw e;
           if (KEY_BAD.test(e.message) && !BUSY.test(e.message)) { for (const d of cands) if (d.key === c.key) dead.add(d.id); }
           else if (MODEL_GONE.test(e.message) || /limit:\s*0\b/.test(e.message)) { dead.add(c.id); deadModels.add(c.id); }
           else if (BUSY.test(e.message)) { busy = true; setStatus(c.model + ' is busy — trying the next model…'); await sleep(700); }
@@ -919,17 +943,40 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     throw new Error(lastErr.message);
   }
 
+  // A reply cut off by the token limit still holds many complete shapes: keep those.
+  function salvageOps(raw) {
+    const i = raw.indexOf('"ops"');
+    const start = raw.indexOf('[', i === -1 ? 0 : i);
+    const out = [];
+    if (start === -1) return out;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let objStart = -1;
+    for (let k = start + 1; k < raw.length; k++) {
+      const ch = raw[k];
+      if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') { if (depth === 0) objStart = k; depth++; }
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0 && objStart >= 0) { try { out.push(JSON.parse(raw.slice(objStart, k + 1))); } catch (e) { /* skip a broken shape */ } objStart = -1; }
+      } else if (ch === ']' && depth === 0) break;
+    }
+    return out;
+  }
+
   function parseOps(raw) {
+    let obj = null;
     const a = raw.indexOf('{');
     const b = raw.lastIndexOf('}');
-    let obj;
-    if (a !== -1 && b > a) {
-      try { obj = JSON.parse(raw.slice(a, b + 1)); } catch (e) { obj = null; }
-    }
+    if (a !== -1 && b > a) { try { obj = JSON.parse(raw.slice(a, b + 1)); } catch (e) { obj = null; } }
+    if (!obj && raw.trim().startsWith('[')) { try { obj = { ops: JSON.parse(raw.trim()) }; } catch (e) { obj = null; } }
     if (!obj) {
-      const i = raw.indexOf('[');
-      const j = raw.lastIndexOf(']');
-      obj = { ops: JSON.parse(raw.slice(i, j + 1)) };
+      const salvaged = salvageOps(raw);
+      if (salvaged.length < 5) throw new Error('could not read a drawing from the reply');
+      const pick = (k) => (raw.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*)"')) || [])[1];
+      obj = { ops: salvaged, identity: pick('identity'), wikipedia_title: pick('wikipedia_title'), confidence: pick('confidence') };
     }
     const ops = (obj.ops || []).filter((o) => o && ['ellipse', 'poly', 'line'].includes(o.t));
     if (!ops.length) throw new Error('no drawing ops in reply');
@@ -1160,7 +1207,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       // Step 1: a short call just to work out who the suspect is
       setStatus('Working out who the suspect is…');
       const tId = Date.now();
-      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId, { fast: true, timeout: 25000, maxTokens: 600 }));
+      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId, { fast: true, timeout: 20000, deadline: 40000, maxTokens: 600, label: 'Identifying the suspect' }));
       lap('identify', tId);
       setStatus('Suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ' confidence)');
       note('suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ')');
@@ -1186,7 +1233,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const refImg = ref ? bitmapToImage(ref.bmp) : null;
     setStatus('Planning the drawing…');
     const tPlan = Date.now();
-    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps, { timeout: 120000 });
+    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps, { timeout: 75000, deadline: 110000, label: 'Planning the drawing' });
     lap('AI drawing', tPlan);
     let ops = parseOps(first);
     if (hint) { ops.identity = ops.identity || hint.identity; ops.wiki = ops.wiki || hint.wiki; ops.confidence = ops.confidence || hint.confidence; }
@@ -1207,7 +1254,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           + '(1) would it be instantly recognisable as that character' + (refImg ? ' (compare it with the reference)' : '') + '? (2) are the proportions and layout right: head size, tall enough body, limbs attached, face features inside the head, mouth in the lower face? '
           + '(3) is every witness trait visible, large enough and the right colour? (4) remove duplicate or overlapping shapes that make a mess, and add the iconic details that are missing. '
           + 'Reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff).' },
-      ], parseOps, { timeout: 120000 });
+      ], parseOps, { timeout: 75000, deadline: 110000, label: 'Checking the drawing' });
       lap('self-check', tChk);
       const better = parseOps(second);
       better.identity = better.identity || ops.identity;
@@ -1580,7 +1627,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   }
 
   async function run(forceBasic = false) {
-    if (drawing) { drawing = false; return; }
+    if (drawing) { drawing = false; abortAll(); return; }
     const text = document.querySelector('#usad-prompt').value.trim();
     if (!text) { setStatus('No prompt text.'); return; }
     const canvas = findCanvas();
@@ -1600,6 +1647,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           ops = await planWithClaude(text, key, document.querySelector('#usad-model').value,
             document.querySelector('#usad-refine').checked);
         } catch (e) {
+          if (e.message === 'stopped') { setStatus('Stopped.'); return; }
           setStatus('AI FAILED: ' + e.message + ' — nothing drawn. Click Draw to retry, or Basic for the keyword drawer.');
           return;
         }
@@ -1709,7 +1757,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const p = document.createElement('div');
     p.id = 'usad-panel';
     p.innerHTML = `
-      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.5.0</span><span class="g"></span>
+      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.5.1</span><span class="g"></span>
         <button id="usad-gear" title="Settings">⚙</button><button id="usad-min" title="Minimise">–</button></div>
       <div id="usad-body">
         <div id="usad-row">
@@ -1792,5 +1840,5 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   else window.addEventListener('DOMContentLoaded', init);
 
   // Exposed for testing outside the browser.
-  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, traceToStrokes, setRetryDelays: (a) => { ROUND_DELAYS = a; } };
+  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, traceToStrokes, setRetryDelays: (a) => { ROUND_DELAYS = a; }, setTimeScale: (x) => { TIME_SCALE = x; } };
 })();
