@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.4.0
+// @version      1.5.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -59,6 +59,7 @@
   // ---- witness statements: "Witness #1/#2/#3" cards stepped through with "Next →" ----
   let gathering = false;
   let lastCount = 0;
+  let readMs = 0; // how long reading the witnesses took (for the time breakdown)
 
   // Visible text with whitespace collapsed (templates pad elements with newlines/indentation).
   const norm = (el) => (el.textContent || '').replace(/[\s\u00a0\u200b]+/g, ' ').trim();
@@ -141,25 +142,35 @@
   }
 
   // Greyed-out Next = still typing, or last witness.
-  function nextDisabled(el) {
+  function looksDisabled(el) {
     if (!el) return true;
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
     if (/disabled|inactive/i.test(el.className + ' ' + (el.parentElement ? el.parentElement.className : ''))) return true;
     const cs = getComputedStyle(el);
-    if (cs.pointerEvents === 'none' || Number(cs.opacity) < 0.6) return true;
+    return cs.pointerEvents === 'none' || Number(cs.opacity) < 0.6;
+  }
+
+  // The game's "Done" button lights up once the last witness has finished talking.
+  const doneReady = () => { const b = document.querySelector('#btn-reveal'); return !!b && !looksDisabled(b); };
+
+  function nextDisabled(el) {
+    if (looksDisabled(el)) return true;
+    const cs = getComputedStyle(el);
     const m = cs.color.match(/\d+/g);
     return !!m && Math.max(+m[0], +m[1], +m[2]) - Math.min(+m[0], +m[1], +m[2]) < 30 && +m[0] > 110; // grey text
   }
 
   // Resolves once getTexts() has stopped changing for `quiet` ms (the game types statements out letter by letter).
-  async function settle(getTexts, quiet = 1100, max = 20000) {
+  async function settle(getTexts, quiet = 800, max = 20000, done = null) {
     let prev = getTexts().join('|');
     let since = Date.now();
     const t0 = since;
-    while (Date.now() - since < quiet && Date.now() - t0 < max) {
-      await sleep(250);
+    while (Date.now() - t0 < max) {
+      await sleep(150);
       const cur = getTexts().join('|');
-      if (cur !== prev) { prev = cur; since = Date.now(); }
+      if (cur !== prev) { prev = cur; since = Date.now(); continue; }
+      const idle = Date.now() - since;
+      if (idle >= quiet || (done && idle >= 350 && done())) break; // the game enables Next / Done once the typing has finished
     }
   }
 
@@ -172,7 +183,7 @@
     const addNew = async () => {
       if (!unseen().length) return false;
       setStatus('Waiting for the witness to finish talking…');
-      await settle(() => unseen().map((w) => w.text));
+      await settle(() => unseen().map((w) => w.text), 800, 20000, () => { const w = unseen()[0]; return !!w && (!nextDisabled(findNext(w.card)) || doneReady()); });
       const found = unseen();
       for (const w of found) { seen.set(w.n || seen.size + 1, w.text); last = w; }
       return found.length > 0;
@@ -180,7 +191,7 @@
     await addNew();
     for (let i = 0; i < 6 && last; i++) {
       let next = findNext(last.card);
-      for (let k = 0; k < 10 && nextDisabled(next); k++) { await sleep(250); next = findNext(last.card); } // enabled once typing ends
+      for (let k = 0; k < 4 && nextDisabled(next) && !doneReady(); k++) { await sleep(250); next = findNext(last.card); } // enabled once typing ends
       if (nextDisabled(next)) break; // still greyed after the text is done = last witness
       setStatus('Read witness ' + seen.size + '… clicking Next');
       clickEl(next);
@@ -207,7 +218,9 @@
     gathering = true;
     try {
       setStatus('Reading witness statements…');
+      const tRead = Date.now();
       const text = await gatherWitnesses();
+      readMs = Date.now() - tRead;
       lastKey = key;
       if (text && text !== lastPrompt) {
         lastPrompt = text;
@@ -735,10 +748,10 @@ Example 2, an upright animal with a tail: ${EX_TIGER}
 COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink, orange, white. Pick the closest (light skin = pink, tan skin = orange, dark skin = brown, light grey = white with a black outline, dark grey = black, gold = yellow). Colour matters a lot: match each part's colour to the statements and to the character's iconic colours.`;
 
   // Turns are provider-neutral: { role: 'user' | 'assistant', text, image?: base64 png }.
-  function httpJson(url, headers, body) {
+  function httpJson(url, headers, body, timeout = 280000) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
-        method: 'POST', url, headers, timeout: 280000, data: JSON.stringify(body),
+        method: 'POST', url, headers, timeout, data: JSON.stringify(body),
         onload: (r) => {
           try {
             if (r.status === 429 || r.status >= 500) {
@@ -803,57 +816,81 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     return out;
   }
 
-  async function buildCandidates(keysRaw, selected) {
+  async function buildCandidates(keysRaw, selected, fast = false) {
     const cands = [];
+    const wantPro = !fast && /pro/.test(selected);
     for (const key of splitKeys(keysRaw)) {
       if (/^sk-ant/.test(key)) {
-        const model = selected.startsWith('claude') ? selected : 'claude-sonnet-5-5';
+        const model = !fast && selected.startsWith('claude') ? selected : 'claude-sonnet-5-5';
         cands.push({ key, provider: 'anthropic', model, id: key.slice(-6) + model });
       } else {
-        let names = rankGemini(await listGeminiModels(key), /pro/.test(selected));
-        if (!names.length) names = ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
+        let names = rankGemini(await listGeminiModels(key), wantPro);
+        if (!names.length) names = wantPro ? ['gemini-pro-latest', 'gemini-flash-latest', 'gemini-flash-lite-latest'] : ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-pro-latest'];
         for (const model of names) cands.push({ key, provider: 'gemini', model, id: key.slice(-6) + model });
       }
     }
     return cands;
   }
 
-  async function callOne(c, system, turns) {
-    if (c.provider === 'gemini') {
-      const j = await httpJson(
-        `https://generativelanguage.googleapis.com/v1beta/models/${c.model}:generateContent?key=${encodeURIComponent(c.key)}`,
-        { 'content-type': 'application/json', 'x-goog-api-key': c.key },
-        {
-          systemInstruction: { parts: [{ text: system }] },
-          contents: turns.map((t) => ({
-            role: t.role === 'assistant' ? 'model' : 'user',
-            parts: [...t.images.map((im) => ({ inline_data: { mime_type: im.mime, data: im.data } })), { text: t.text }],
-          })),
-          generationConfig: { maxOutputTokens: 32000, temperature: 0.7, responseMimeType: 'application/json' },
-        });
-      const cand = (j.candidates || [])[0] || {};
-      const text = ((cand.content || {}).parts || []).map((x) => x.text || '').join('');
-      if (!text) throw new Error('empty reply (' + (cand.finishReason || (j.promptFeedback && j.promptFeedback.blockReason) || 'unknown') + ')');
-      return text;
+  // How much hidden "thinking" Gemini may do before answering. Quick lookups get none, drawing a little.
+  // The options are tried in order until the model accepts one (field names differ between model generations).
+  const THINK_FAST = [{ thinkingBudget: 0 }, { thinkingLevel: 'low' }, { thinkingBudget: 128 }, null];
+  const THINK_PLAN = [{ thinkingBudget: 2048 }, { thinkingLevel: 'low' }, null];
+  const thinkMemo = new Map();
+
+  async function callGemini(c, system, turns, opts) {
+    const tries = opts.fast ? THINK_FAST : THINK_PLAN;
+    const memoKey = c.model + (opts.fast ? ':fast' : ':plan');
+    let lastErr = new Error('no answer');
+    for (let k = thinkMemo.get(memoKey) || 0; k < tries.length; k++) {
+      const generationConfig = { maxOutputTokens: opts.maxTokens || 16000, temperature: opts.fast ? 0.2 : 0.7, responseMimeType: 'application/json' };
+      if (tries[k]) generationConfig.thinkingConfig = tries[k];
+      try {
+        const j = await httpJson(
+          `https://generativelanguage.googleapis.com/v1beta/models/${c.model}:generateContent?key=${encodeURIComponent(c.key)}`,
+          { 'content-type': 'application/json', 'x-goog-api-key': c.key },
+          {
+            systemInstruction: { parts: [{ text: system }] },
+            contents: turns.map((t) => ({
+              role: t.role === 'assistant' ? 'model' : 'user',
+              parts: [...t.images.map((im) => ({ inline_data: { mime_type: im.mime, data: im.data } })), { text: t.text }],
+            })),
+            generationConfig,
+          }, opts.timeout);
+        const cand = (j.candidates || [])[0] || {};
+        const text = ((cand.content || {}).parts || []).map((x) => x.text || '').join('');
+        if (!text) throw new Error('empty reply (' + (cand.finishReason || (j.promptFeedback && j.promptFeedback.blockReason) || 'unknown') + ')');
+        thinkMemo.set(memoKey, k);
+        return text;
+      } catch (e) {
+        lastErr = e;
+        if (!/thinking|budget/i.test(e.message) || k === tries.length - 1) throw e; // only a thinking-setting complaint moves to the next option
+      }
     }
+    throw lastErr;
+  }
+
+  async function callOne(c, system, turns, opts = {}) {
+    if (c.provider === 'gemini') return callGemini(c, system, turns, opts);
     const j = await httpJson('https://api.anthropic.com/v1/messages',
       { 'content-type': 'application/json', 'x-api-key': c.key, 'anthropic-version': '2023-06-01' },
       {
-        model: c.model, max_tokens: 16000, system,
+        model: c.model, max_tokens: opts.maxTokens || 16000, system,
         messages: turns.map((t) => ({
           role: t.role,
           content: t.images.length
             ? [...t.images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.data } })), { type: 'text', text: t.text }]
             : t.text,
         })),
-      });
+      }, opts.timeout);
     return j.content.map((b) => b.text || '').join('');
   }
 
   // Tries every candidate; a busy/failed/garbled answer just moves on to the next model. Gives up only after several full rounds.
-  async function callLLM(keysRaw, selected, system, turns, validate) {
+  // opts: { fast: quick lookup (no thinking, fast models first), timeout: ms per request, maxTokens }
+  async function callLLM(keysRaw, selected, system, turns, validate, opts = {}) {
     turns = turns.map((t) => ({ ...t, images: t.images || (t.image ? [{ data: t.image, mime: 'image/png' }] : []) }));
-    const cands = await buildCandidates(keysRaw, selected);
+    const cands = await buildCandidates(keysRaw, selected, !!opts.fast);
     if (!cands.length) throw new Error('no API key');
     const dead = new Set();
     let lastErr = new Error('no model answered');
@@ -864,7 +901,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
         if (dead.has(c.id) || deadModels.has(c.id)) continue;
         setStatus('Asking ' + c.model + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
         try {
-          const text = await callOne(c, system, turns);
+          const text = await callOne(c, system, turns, opts);
           if (validate) validate(text);
           return text;
         } catch (e) {
@@ -1122,11 +1159,15 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     if (useRef) {
       // Step 1: a short call just to work out who the suspect is
       setStatus('Working out who the suspect is…');
-      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId));
+      const tId = Date.now();
+      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId, { fast: true, timeout: 25000, maxTokens: 600 }));
+      lap('identify', tId);
       setStatus('Suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ' confidence)');
       note('suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ')');
       if (/^(high|medium)/i.test(hint.confidence) && drawing) {
+        const tPic = Date.now();
         ref = await getReference(hint);
+        lap('picture', tPic);
         if (ref && referenceIsIllustration(ref.bmp)) {
           note('picture: ' + ref.title + ' → traced');
           // clean character art: trace it directly, no drawing call needed
@@ -1144,13 +1185,16 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     }
     const refImg = ref ? bitmapToImage(ref.bmp) : null;
     setStatus('Planning the drawing…');
-    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps);
+    const tPlan = Date.now();
+    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps, { timeout: 120000 });
+    lap('AI drawing', tPlan);
     let ops = parseOps(first);
     if (hint) { ops.identity = ops.identity || hint.identity; ops.wiki = ops.wiki || hint.wiki; ops.confidence = ops.confidence || hint.confidence; }
     showPreview(opsToStrokes(ops));
     if (!refine || !drawing) return ops;
     try {
       setStatus('Checking its own drawing…');
+      const tChk = Date.now();
       const shot = document.createElement('canvas');
       shot.width = shot.height = 512;
       renderStrokes(opsToStrokes(ops), shot);
@@ -1163,7 +1207,8 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           + '(1) would it be instantly recognisable as that character' + (refImg ? ' (compare it with the reference)' : '') + '? (2) are the proportions and layout right: head size, tall enough body, limbs attached, face features inside the head, mouth in the lower face? '
           + '(3) is every witness trait visible, large enough and the right colour? (4) remove duplicate or overlapping shapes that make a mess, and add the iconic details that are missing. '
           + 'Reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff).' },
-      ], parseOps);
+      ], parseOps, { timeout: 120000 });
+      lap('self-check', tChk);
       const better = parseOps(second);
       better.identity = better.identity || ops.identity;
       better.wiki = better.wiki || ops.wiki;
@@ -1542,6 +1587,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     if (!canvas) { setStatus('Could not find a drawing canvas.'); return; }
     drawing = true;
     clearNotes();
+    stages.length = 0;
+    const runRead = readMs;
+    readMs = 0;
     document.querySelector('#usad-go').textContent = 'Stop';
     try {
       let strokes = null;
@@ -1564,7 +1612,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       } else { strokes = composeProcedural(text); showPreview(strokes); }
       if (clear) await clearCanvas();
       setStatus(`Drawing ${strokes.length} strokes…` + (ops && ops.reference ? ' Tracing the picture of ' + ops.referenceTitle + '.' : ops && ops.identity ? ' Looks like: ' + ops.identity : ''));
+      const tDraw = Date.now();
       await drawStrokes(strokes, canvas);
+      if (drawing) note('time: ' + [runRead ? 'read ' + Math.round(runRead / 1000) + 's' : '', ...stages, 'draw ' + Math.round((Date.now() - tDraw) / 1000) + 's'].filter(Boolean).join(' · '));
       if (drawing && forceBasic && key) setStatus('Done — drew with the BASIC drawer (no AI).');
       else if (drawing && !key) setStatus('Done — BASIC drawer only (no API key). Add a free Gemini API key (or an Anthropic key) above for detailed drawings.');
       else if (drawing) setStatus('Done.' + (ops && ops.reference ? ' Traced: ' + ops.referenceTitle : ops && ops.identity ? ' Guess: ' + ops.identity : ''));
@@ -1597,6 +1647,8 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   }
 
   // Short facts about how the last drawing was made (suspect, picture used or why not); they stay on screen.
+  const stages = []; // per-step timings shown at the end of a run
+  const lap = (name, since) => stages.push(name + ' ' + Math.round((Date.now() - since) / 1000) + 's');
   const notes = [];
   function note(msg) {
     if (msg) notes.push(msg);
@@ -1605,10 +1657,21 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   }
   function clearNotes() { notes.length = 0; note(''); }
 
+  let statusBase = '';
+  let statusSince = 0;
   function setStatus(t) {
+    statusBase = t;
+    statusSince = Date.now();
     const el = document.querySelector('#usad-status');
     if (el) el.textContent = t;
   }
+  // While something is running, show how long the current step has taken.
+  setInterval(() => {
+    const el = document.querySelector('#usad-status');
+    if (!el || !statusBase || !(drawing || gathering)) return;
+    const secs = Math.floor((Date.now() - statusSince) / 1000);
+    if (secs >= 4) el.textContent = statusBase + ' · ' + secs + 's';
+  }, 1000);
 
   function refreshPrompt(force) {
     const text = readPrompt();
@@ -1646,7 +1709,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const p = document.createElement('div');
     p.id = 'usad-panel';
     p.innerHTML = `
-      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.4.0</span><span class="g"></span>
+      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.5.0</span><span class="g"></span>
         <button id="usad-gear" title="Settings">⚙</button><button id="usad-min" title="Minimise">–</button></div>
       <div id="usad-body">
         <div id="usad-row">
@@ -1661,7 +1724,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           <label><input type="checkbox" id="usad-auto"> Draw automatically</label>
           <label><input type="checkbox" id="usad-clear"> Clear canvas first</label>
           <label title="When the character is recognised, fetch its Wikipedia picture and trace it in the game's colours"><input type="checkbox" id="usad-trace"> Trace the real picture</label>
-          <label title="The AI looks at its own drawing and fixes it"><input type="checkbox" id="usad-refine"> AI self-check</label>
+          <label title="The AI looks at its own drawing and fixes it (adds a whole extra AI call)"><input type="checkbox" id="usad-refine"> AI self-check (slower)</label>
           <label>Delay <input type="range" id="usad-speed" min="0" max="30" value="3" style="flex:1;min-width:0"></label>
           <input id="usad-key" type="password" placeholder="API key(s), comma-separated">
           <select id="usad-model"><option value="gemini-pro-latest">Gemini Pro (best)</option><option value="gemini-flash-latest">Gemini Flash (fast)</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
@@ -1710,7 +1773,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     clr.checked = store.get('clear', true);
     clr.onchange = () => store.set('clear', clr.checked);
     const refine = p.querySelector('#usad-refine');
-    refine.checked = store.get('refine', true);
+    refine.checked = store.get('refine', false);
     refine.onchange = () => store.set('refine', refine.checked);
   }
 
@@ -1718,8 +1781,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     buildPanel();
     // Witness cards are found automatically; the picked selector is only a fallback.
     setInterval(() => {
+      if (drawing || gathering) return; // never overwrite the status of a running job
       if (visibleWitnesses().length) autoDetect();
-      else if (!store.get('promptSelector', '')) setStatus('Looking for witness statements…');
+      else if (!store.get('promptSelector', '') && (!statusBase || /^(Waiting|Looking)/.test(statusBase))) setStatus('Looking for witness statements…'); // keep results/errors on screen
       else if (store.get('promptSelector', '')) refreshPrompt(false);
     }, 800);
   }
