@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.5.1
+// @version      1.6.0
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -1215,13 +1215,12 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
         const tPic = Date.now();
         ref = await getReference(hint);
         lap('picture', tPic);
-        if (ref && referenceIsIllustration(ref.bmp)) {
-          note('picture: ' + ref.title + ' → traced');
-          // clean character art: trace it directly, no drawing call needed
+        if (ref) {
+          // art is traced as flat colour, photos as an engraving-style tonal drawing; either way no AI drawing call is needed
+          note('picture: ' + ref.title + (referenceIsIllustration(ref.bmp) ? ' (art)' : ' (photo)') + ' → traced');
           return Object.assign([], { reference: ref.bmp, referenceTitle: ref.title, identity: hint.identity, wiki: hint.wiki, confidence: hint.confidence });
         }
       }
-      if (ref) note('picture: ' + ref.title + ' is a photo → used as AI reference');
       if (!/^(high|medium)/i.test(hint.confidence)) { note('not sure who it is → drawing from the description'); hint = null; }
     }
     // Step 2: the AI plans the drawing (guided by the reference photo when there is one)
@@ -1410,6 +1409,10 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const palLab = names.map((n) => srgbToLab(...hexToRgb(PAL[n])));
     const WHITE = names.indexOf('white');
     const BLACK = names.indexOf('black');
+    const inkIdx = names.map((n, k) => k).filter((k) => k !== WHITE);
+    const inkVec = inkIdx.map((k) => [palLab[k][0] - 100, palLab[k][1], palLab[k][2]]); // each ink relative to white paper
+    const inkDen = inkVec.map((v) => v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    const RANK = [0, 2, 1, 3]; // which rows get painted first as coverage grows: 1/4 -> rows 0, 2/4 -> +2, 3/4 -> +1, full
 
     let cell = Math.max(fillGap(), Math.max(dw, dh) / 200);
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -1436,21 +1439,71 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       const px = fg.getImageData(0, 0, cols, rows).data;
       const N = cols * rows;
 
-      const flood = floodBackground(px, cols, rows);
+      // clean art on a uniform backdrop: drop the backdrop. A photo's background is part of the picture: keep it.
+      const art = referenceIsIllustration(bmp);
+      const flood = floodBackground(px, cols, rows, art ? 40 : 0);
       const bg = flood.bg;
       if (flood.count > N * 0.97) bg.fill(0); // the "background" swallowed the subject: keep everything
 
-      // snap every cell to the nearest palette colour (-1 = leave blank paper)
-      const q = new Int8Array(N).fill(-1);
+      // Pigment-on-paper model: every cell gets the ink, and the coverage (0-4 of every 4 rows), that best explains
+      // its colour when printed on white paper. Photos become engraving-like line screens, flat art stays solid.
+      const labs = new Float32Array(N * 3);
+      const Ls = [];
       for (let i = 0; i < N; i++) {
         if (bg[i]) continue;
         const lab = srgbToLab(px[i * 4], px[i * 4 + 1], px[i * 4 + 2]);
-        let best = 0; let bd = Infinity;
-        for (let k = 0; k < names.length; k++) {
-          const d = (lab[0] - palLab[k][0]) ** 2 + (lab[1] - palLab[k][1]) ** 2 + (lab[2] - palLab[k][2]) ** 2;
-          if (d < bd) { bd = d; best = k; }
+        labs[i * 3] = lab[0]; labs[i * 3 + 1] = lab[1]; labs[i * 3 + 2] = lab[2];
+        Ls.push(lab[0]);
+      }
+      Ls.sort((m, n) => m - n);
+      const p2 = Ls.length ? Ls[Math.floor(Ls.length * 0.02)] : 0;
+      const p98 = Ls.length ? Ls[Math.floor(Ls.length * 0.98)] : 100;
+      const stretch = p98 - p2 > 5 && p98 - p2 < 70; // dim or flat picture: use the full tonal range
+      // photos: balance the exposure (median tone to mid-grey) so dark or bright shots keep their mid-tone detail
+      let gamma = 1;
+      let medN = 0.5;
+      if (!art && Ls.length) {
+        medN = Math.min(0.95, Math.max(0.05, (Ls[Math.floor(Ls.length * 0.5)] - p2) / Math.max(1, p98 - p2)));
+        gamma = 1 + 0.55 * (Math.min(2.2, Math.max(0.45, Math.log(0.5) / Math.log(medN))) - 1); // only partly: keep the picture's contrast
+      }
+      traceToStrokes.stats = { art, p2: Math.round(p2), p98: Math.round(p98), medN: +medN.toFixed(2), gamma: +gamma.toFixed(2) };
+      const q = new Int8Array(N).fill(-1);
+      const lv = new Uint8Array(N);
+      for (let i = 0; i < N; i++) {
+        if (bg[i]) continue;
+        let L = labs[i * 3];
+        if (!art) L = 4 + 92 * Math.pow(Math.min(1, Math.max(0, (L - p2) / Math.max(1, p98 - p2))), gamma);
+        else if (stretch) L = Math.min(100, Math.max(0, 5 + ((L - p2) / (p98 - p2)) * 90));
+        const w0 = L - 100; const w1 = labs[i * 3 + 1]; const w2 = labs[i * 3 + 2];
+        let best = -1; let bestR = Infinity; let bestA = 0;
+        for (let k = 0; k < inkVec.length; k++) {
+          const v = inkVec[k];
+          const a = Math.min(1, Math.max(0, (w0 * v[0] + w1 * v[1] + w2 * v[2]) / inkDen[k]));
+          const r = (w0 - a * v[0]) ** 2 + (w1 - a * v[1]) ** 2 + (w2 - a * v[2]) ** 2;
+          if (r < bestR) { bestR = r; best = k; bestA = a; }
         }
-        q[i] = best === WHITE ? -1 : best;
+        const level = bestA < 0.12 ? 0 : bestA < 0.37 ? 1 : bestA < 0.62 ? 2 : bestA < 0.87 ? 3 : 4;
+        if (level > 0) { q[i] = inkIdx[best]; lv[i] = level; }
+      }
+      // photos: ink the strongest tonal edges with black, the way a pen artist would outline shapes
+      if (!art) {
+        const Lm = new Float32Array(N);
+        for (let i = 0; i < N; i++) Lm[i] = labs[i * 3];
+        const mag = new Float32Array(N);
+        const mags = [];
+        for (let y = 1; y < rows - 1; y++) {
+          for (let x = 1; x < cols - 1; x++) {
+            const i = y * cols + x;
+            if (bg[i]) continue;
+            const gx = -Lm[i - cols - 1] - 2 * Lm[i - 1] - Lm[i + cols - 1] + Lm[i - cols + 1] + 2 * Lm[i + 1] + Lm[i + cols + 1];
+            const gy = -Lm[i - cols - 1] - 2 * Lm[i - cols] - Lm[i - cols + 1] + Lm[i + cols - 1] + 2 * Lm[i + cols] + Lm[i + cols + 1];
+            mag[i] = Math.hypot(gx, gy);
+            mags.push(mag[i]);
+          }
+        }
+        mags.sort((m, n) => m - n);
+        const edgeT = Math.max(45, mags.length ? mags[Math.floor(mags.length * 0.9)] : 0); // top 10% and clearly contrasty
+        for (let i = 0; i < N; i++) if (mag[i] >= edgeT) { q[i] = BLACK; lv[i] = 4; }
       }
       // majority filter: edge anti-aliasing leaves stray fringe colours; snap a cell to its neighbourhood's majority
       {
@@ -1493,9 +1546,9 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
         let x = 0;
         while (x < cols) {
           const id = q[y * cols + x];
-          if (id < 0) { x++; continue; }
+          if (id < 0 || RANK[y & 3] >= lv[y * cols + x]) { x++; continue; }
           let x1 = x;
-          while (x1 + 1 < cols && q[y * cols + x1 + 1] === id) x1++;
+          while (x1 + 1 < cols && q[y * cols + x1 + 1] === id && RANK[y & 3] < lv[y * cols + x1 + 1]) x1++;
           let a = ox + x * cell + brushUnit / 2;
           let b = ox + (x1 + 1) * cell - brushUnit / 2;
           if (b <= a) { const m = (a + b) / 2; a = m - 0.0004; b = m + 0.0004; }
@@ -1757,7 +1810,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const p = document.createElement('div');
     p.id = 'usad-panel';
     p.innerHTML = `
-      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.5.1</span><span class="g"></span>
+      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.6.0</span><span class="g"></span>
         <button id="usad-gear" title="Settings">⚙</button><button id="usad-min" title="Minimise">–</button></div>
       <div id="usad-body">
         <div id="usad-row">
@@ -1840,5 +1893,5 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   else window.addEventListener('DOMContentLoaded', init);
 
   // Exposed for testing outside the browser.
-  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, traceToStrokes, setRetryDelays: (a) => { ROUND_DELAYS = a; }, setTimeScale: (x) => { TIME_SCALE = x; } };
+  if (typeof module !== 'undefined') module.exports = { composeProcedural, opsToStrokes, parseOps, renderStrokes, planWithClaude, traceToStrokes, traceStats: () => traceToStrokes.stats, setRetryDelays: (a) => { ROUND_DELAYS = a; }, setTimeScale: (x) => { TIME_SCALE = x; } };
 })();
