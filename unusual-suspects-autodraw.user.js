@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Unusual Suspects Auto Draw
 // @namespace    https://github.com/gamingdude123
-// @version      1.6.0
+// @version      1.6.1
 // @updateURL    https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @downloadURL  https://raw.githubusercontent.com/gamingdude123/website/claude/wonderful-goodall-v4zskp/unusual-suspects-autodraw.user.js
 // @description  Reads the suspect description on neal.fun/unusual-suspects and draws it part by part (colors, eyes, mouth, teeth, antenna, legs...).
@@ -752,14 +752,15 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   const activeReqs = new Set();
   function abortAll() { for (const abort of [...activeReqs]) abort(); }
 
-  function httpJson(url, headers, body, timeout = 90000) {
+  function httpJson(url, headers, body, timeout = 90000, registerAbort = null) {
     return new Promise((resolve, reject) => {
       let finished = false;
       let req = null;
       let timer = null;
       const finish = (fn, v) => { if (finished) return; finished = true; clearTimeout(timer); activeReqs.delete(abort); fn(v); };
-      const abort = () => { try { if (req && req.abort) req.abort(); } catch (e) { /* ignore */ } finish(reject, new Error('stopped')); };
+      const abort = () => { if (finished) return; try { if (req && req.abort) req.abort(); } catch (e) { /* ignore */ } finish(reject, new Error('stopped')); };
       activeReqs.add(abort);
+      if (registerAbort) registerAbort(abort);
       // watchdog: some userscript managers ignore `timeout`, and a hung request must never stall the whole run
       timer = setTimeout(() => {
         try { if (req && req.abort) req.abort(); } catch (e) { /* ignore */ }
@@ -871,7 +872,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
               parts: [...t.images.map((im) => ({ inline_data: { mime_type: im.mime, data: im.data } })), { text: t.text }],
             })),
             generationConfig,
-          }, opts.timeout);
+          }, opts.timeout, opts.registerAbort);
         const cand = (j.candidates || [])[0] || {};
         const text = ((cand.content || {}).parts || []).map((x) => x.text || '').join('');
         if (!text) throw new Error('empty reply (' + (cand.finishReason || (j.promptFeedback && j.promptFeedback.blockReason) || 'unknown') + ')');
@@ -897,12 +898,13 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
             ? [...t.images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.data } })), { type: 'text', text: t.text }]
             : t.text,
         })),
-      }, opts.timeout);
+      }, opts.timeout, opts.registerAbort);
     return j.content.map((b) => b.text || '').join('');
   }
 
   // Tries every candidate; a busy/failed/garbled answer just moves on to the next model. Gives up only after several full rounds.
-  // opts: { fast: quick lookup (no thinking, fast models first), timeout: ms per request, deadline: ms for the whole chain,
+  // opts: { fast: quick lookup (no thinking, fast models first), timeout: ms per request, deadline: ms for the whole call,
+  //         hedge: ms of waiting before the next model is started IN PARALLEL (the slow one keeps running),
   //         maxTokens, label: what the status line says the AI is doing }
   async function callLLM(keysRaw, selected, system, turns, validate, opts = {}) {
     turns = turns.map((t) => ({ ...t, images: t.images || (t.image ? [{ data: t.image, mime: 'image/png' }] : []) }));
@@ -910,37 +912,77 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     if (!cands.length) throw new Error('no API key');
     const dead = new Set();
     const tStart = Date.now();
+    const deadlineAt = opts.deadline ? tStart + opts.deadline * TIME_SCALE : Infinity;
+    const history = []; // every failed attempt as "model: reason"
+    const summary = () => [...new Set(history)].slice(-3).join('; ');
     let lastErr = new Error('no model answered');
-    for (let round = 0; ; round++) {
+
+    // One round: models start one after another (the next starts when the previous one fails, or when it has been slow
+    // for `hedge` ms) and the first valid answer wins. A slow request is never cancelled by a newer one.
+    const race = (list, round) => new Promise((resolve) => {
+      let next = 0;
+      let pending = 0;
+      let over = false;
       let busy = false;
-      for (const c of cands) {
-        if (!drawing) throw new Error('stopped');
-        if (dead.has(c.id) || deadModels.has(c.id)) continue;
-        let callOpts = opts;
-        if (opts.deadline) { // the whole chain must finish within the deadline: later models only get the time that is left
-          const left = opts.deadline * TIME_SCALE - (Date.now() - tStart);
-          if (left < 2500 * TIME_SCALE) throw new Error('the AI took too long (' + Math.round((Date.now() - tStart) / 1000) + 's)');
-          callOpts = { ...opts, timeout: Math.min(opts.timeout || Infinity, left / TIME_SCALE) };
-        }
-        setStatus((opts.label || 'Asking') + ' · ' + c.model + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
-        try {
-          const text = await callOne(c, system, turns, callOpts);
-          if (validate) validate(text);
-          return text;
-        } catch (e) {
-          lastErr = e;
-          if (e.message === 'stopped') throw e;
-          if (KEY_BAD.test(e.message) && !BUSY.test(e.message)) { for (const d of cands) if (d.key === c.key) dead.add(d.id); }
-          else if (MODEL_GONE.test(e.message) || /limit:\s*0\b/.test(e.message)) { dead.add(c.id); deadModels.add(c.id); }
-          else if (BUSY.test(e.message)) { busy = true; setStatus(c.model + ' is busy — trying the next model…'); await sleep(700); }
-        }
-      }
-      if (!busy || round >= ROUND_DELAYS.length) break;
+      let hedgeTimer = null;
+      let deadlineTimer = null;
+      const live = new Set();
+      const aborts = new Set();
+      const finish = (res) => {
+        if (over) return;
+        over = true;
+        clearTimeout(hedgeTimer);
+        clearTimeout(deadlineTimer);
+        for (const abort of [...aborts]) abort();
+        resolve({ busy, ...res });
+      };
+      const showStatus = () => setStatus((opts.label || 'Asking') + ' · ' + [...live].join(' + ') + (round ? ' (round ' + (round + 1) + ')' : '') + '…');
+      const launch = () => {
+        clearTimeout(hedgeTimer);
+        while (next < list.length && (dead.has(list[next].id) || deadModels.has(list[next].id))) next++; // skip models already known to be unusable
+        if (over || next >= list.length) { if (!over && pending === 0) finish({}); return; }
+        if (!drawing) { finish({ stopped: true }); return; }
+        const left = deadlineAt - Date.now();
+        if (left < 2500 * TIME_SCALE) { finish({ late: true }); return; }
+        const c = list[next++];
+        pending++;
+        live.add(c.model);
+        showStatus();
+        const callOpts = { ...opts, timeout: Math.min(opts.timeout || Infinity, left / TIME_SCALE), registerAbort: (fn) => aborts.add(fn) };
+        callOne(c, system, turns, callOpts)
+          .then((text) => { if (validate) validate(text); return text; }) // a reply that cannot be used counts as a failure of this model
+          .then((text) => finish({ text }), (e) => {
+            pending--;
+            live.delete(c.model);
+            if (over) return;
+            if (e.message === 'stopped') { finish({ stopped: true }); return; }
+            lastErr = e;
+            history.push(c.model + ': ' + e.message.slice(0, 70));
+            if (KEY_BAD.test(e.message) && !BUSY.test(e.message)) { for (const d of cands) if (d.key === c.key) dead.add(d.id); }
+            else if (MODEL_GONE.test(e.message) || /limit:\s*0\b/.test(e.message)) { dead.add(c.id); deadModels.add(c.id); }
+            else if (BUSY.test(e.message)) busy = true;
+            showStatus();
+            if (next < list.length) launch(); else if (pending === 0) finish({});
+          });
+        if (next < list.length && opts.hedge) hedgeTimer = setTimeout(launch, opts.hedge * TIME_SCALE);
+      };
+      if (Number.isFinite(deadlineAt)) deadlineTimer = setTimeout(() => finish({ late: true }), Math.max(0, deadlineAt - Date.now()));
+      launch();
+    });
+
+    for (let round = 0; ; round++) {
+      const alive = cands.filter((c) => !dead.has(c.id) && !deadModels.has(c.id));
+      if (!alive.length) break;
+      const res = await race(alive, round);
+      if (res.text !== undefined) return res.text;
+      if (res.stopped) throw new Error('stopped');
+      if (res.late) throw new Error('the AI took too long (' + Math.round((Date.now() - tStart) / 1000) + 's)' + (history.length ? ' — ' + summary() : ' — no model answered'));
+      if (!res.busy || round >= ROUND_DELAYS.length) break;
       const wait = ROUND_DELAYS[round];
       setStatus('Every model is busy — retrying in ' + Math.round(wait / 1000) + 's (round ' + (round + 2) + '/' + (ROUND_DELAYS.length + 1) + ')…');
       await sleep(wait);
     }
-    throw new Error(lastErr.message);
+    throw new Error(lastErr.message + (history.length > 1 ? ' (' + summary() + ')' : ''));
   }
 
   // A reply cut off by the token limit still holds many complete shapes: keep those.
@@ -1207,7 +1249,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
       // Step 1: a short call just to work out who the suspect is
       setStatus('Working out who the suspect is…');
       const tId = Date.now();
-      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId, { fast: true, timeout: 20000, deadline: 40000, maxTokens: 600, label: 'Identifying the suspect' }));
+      hint = parseId(await callLLM(key, model, ID_PROMPT, [{ role: 'user', text: user }], parseId, { fast: true, timeout: 45000, deadline: 60000, hedge: 6000, maxTokens: 600, label: 'Identifying the suspect' }));
       lap('identify', tId);
       setStatus('Suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ' confidence)');
       note('suspect: ' + hint.identity + ' (' + (hint.confidence || '?') + ')');
@@ -1232,7 +1274,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const refImg = ref ? bitmapToImage(ref.bmp) : null;
     setStatus('Planning the drawing…');
     const tPlan = Date.now();
-    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps, { timeout: 75000, deadline: 110000, label: 'Planning the drawing' });
+    const first = await callLLM(key, model, SYSTEM_PROMPT, [{ role: 'user', text: userMsg, images: refImg ? [refImg] : [] }], parseOps, { timeout: 90000, deadline: 120000, hedge: 30000, label: 'Planning the drawing' });
     lap('AI drawing', tPlan);
     let ops = parseOps(first);
     if (hint) { ops.identity = ops.identity || hint.identity; ops.wiki = ops.wiki || hint.wiki; ops.confidence = ops.confidence || hint.confidence; }
@@ -1253,7 +1295,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           + '(1) would it be instantly recognisable as that character' + (refImg ? ' (compare it with the reference)' : '') + '? (2) are the proportions and layout right: head size, tall enough body, limbs attached, face features inside the head, mouth in the lower face? '
           + '(3) is every witness trait visible, large enough and the right colour? (4) remove duplicate or overlapping shapes that make a mess, and add the iconic details that are missing. '
           + 'Reply with the COMPLETE corrected JSON object (same format, full ops list, not a diff).' },
-      ], parseOps, { timeout: 75000, deadline: 110000, label: 'Checking the drawing' });
+      ], parseOps, { timeout: 90000, deadline: 120000, hedge: 30000, label: 'Checking the drawing' });
       lap('self-check', tChk);
       const better = parseOps(second);
       better.identity = better.identity || ops.identity;
@@ -1701,7 +1743,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
             document.querySelector('#usad-refine').checked);
         } catch (e) {
           if (e.message === 'stopped') { setStatus('Stopped.'); return; }
-          setStatus('AI FAILED: ' + e.message + ' — nothing drawn. Click Draw to retry, or Basic for the keyword drawer.');
+          setStatus('AI FAILED: ' + e.message + ' — nothing drawn. Click Draw to retry, or Basic for the keyword drawer.' + (/took too long|timed out|network error/.test(e.message) ? ' Open ⚙ and press Test AI to see which models respond.' : ''));
           return;
         }
       }
@@ -1731,6 +1773,35 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
   // ======================================================================
   // UI
   // ======================================================================
+  // Times every model once with a tiny request (and checks Wikipedia), so slow or blocked connections show up.
+  async function testAI() {
+    if (drawing || gathering) return;
+    const keys = document.querySelector('#usad-key').value.trim();
+    if (!keys) { setStatus('Enter an API key first.'); return; }
+    drawing = true;
+    clearNotes();
+    try {
+      const cands = (await buildCandidates(keys, document.querySelector('#usad-model').value, true)).slice(0, 4);
+      const turns = [{ role: 'user', text: 'ping', images: [] }];
+      for (const c of cands) {
+        if (!drawing) break;
+        setStatus('Testing ' + c.model + '…');
+        const t0 = Date.now();
+        try {
+          await callOne(c, 'Reply with the JSON {"ok":true}', turns, { fast: true, timeout: 40000, maxTokens: 50 });
+          note(c.model + ' ' + ((Date.now() - t0) / 1000).toFixed(1) + 's ✓');
+        } catch (e) { note(c.model + ' ✗ ' + e.message.slice(0, 48)); }
+      }
+      if (drawing) {
+        setStatus('Testing Wikipedia…');
+        const t0 = Date.now();
+        try { await httpGet('https://en.wikipedia.org/w/api.php?action=query&format=json&titles=Tony_the_Tiger'); note('wikipedia ' + ((Date.now() - t0) / 1000).toFixed(1) + 's ✓'); }
+        catch (e) { note('wikipedia ✗ ' + e.message.slice(0, 48)); }
+      }
+      setStatus(drawing ? 'Test finished.' : 'Stopped.');
+    } finally { drawing = false; }
+  }
+
   function debugDump() {
     const hits = [];
     for (const el of document.querySelectorAll('body *')) {
@@ -1810,7 +1881,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     const p = document.createElement('div');
     p.id = 'usad-panel';
     p.innerHTML = `
-      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.6.0</span><span class="g"></span>
+      <div id="usad-bar"><span class="t">Auto Draw</span><span class="v">v1.6.1</span><span class="g"></span>
         <button id="usad-gear" title="Settings">⚙</button><button id="usad-min" title="Minimise">–</button></div>
       <div id="usad-body">
         <div id="usad-row">
@@ -1830,7 +1901,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
           <input id="usad-key" type="password" placeholder="API key(s), comma-separated">
           <select id="usad-model"><option value="gemini-pro-latest">Gemini Pro (best)</option><option value="gemini-flash-latest">Gemini Flash (fast)</option><option value="claude-opus-5-5">Claude Opus 5.5</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
           <canvas id="usad-preview" width="240" height="240"></canvas>
-          <div id="usad-row2"><button id="usad-debug" title="Copies page structure for troubleshooting">Debug</button><button id="usad-pick" title="Only needed if witnesses aren't detected">Pick text</button></div>
+          <div id="usad-row2"><button id="usad-test" title="Check how fast each AI model and Wikipedia answer">Test AI</button><button id="usad-debug" title="Copies page structure for troubleshooting">Debug</button><button id="usad-pick" title="Only needed if witnesses aren't detected">Pick text</button></div>
         </div>
       </div>`;
     document.body.appendChild(p);
@@ -1852,6 +1923,7 @@ COLOURS: only these names: black, red, yellow, green, blue, purple, brown, pink,
     p.querySelector('#usad-basic').onclick = () => run(true);
     p.querySelector('#usad-pick').onclick = pickPrompt;
     p.querySelector('#usad-debug').onclick = debugDump;
+    p.querySelector('#usad-test').onclick = testAI;
     p.querySelector('#usad-read').onclick = () => { lastKey = null; lastPrompt = ''; gathering = false; autoDetect(); };
     const auto = p.querySelector('#usad-auto');
     auto.checked = store.get('auto', true);
