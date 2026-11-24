@@ -90,6 +90,10 @@ each portal was last checked.
   inside an extension, which can't be tested without a Dashlane account. If it doesn't fill the
   login there, click **Open in a tab** (top right of any portal) to sign in normally, then come back.
   Because the hub reuses the same browser sessions, you stay signed in.
+- **Some portals won't take your password inside the page.** Sign-in pages can behave differently when shown inside
+  another page (especially ones that hand off to a school-wide sign-in). If one says your password is wrong when
+  it isn't, click **Open in a tab**, sign in there, and come back: the extension uses the same sign-in, and
+  everything else works from then on.
 - **It can't make a portal remember you.** Staying signed in is up to each portal. Some sign you out
   after a short time, or after you close Chrome. That is what **Sign in needed** is for.
 - **Some portals won't work in a frame** even with the framing headers removed (for example ones

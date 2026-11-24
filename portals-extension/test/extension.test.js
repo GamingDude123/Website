@@ -314,6 +314,20 @@ check("the zip unzips to a folder Chrome can load", fs.existsSync(path.join(LOAD
   check("the graphic: Locked has no progress to show", (await hub.$$(".card:nth-child(5) li.now, .card:nth-child(5) li.done")).length === 0);
   await hub.screenshot({ path: path.join(OUT, "overview-1.png") });
 
+  // ---- a portal that won't take a sign-in inside the page: sign in in an ordinary tab instead
+  const tab = await ctx.newPage();
+  await tab.goto(BASE + "/locked/login");
+  await tab.fill('input[name="u"]', "jack");
+  await tab.fill('input[name="p"]', TEST_PASSWORD);
+  await tab.click("#go");
+  await tab.waitForURL("**/locked/status");
+  await tab.close();
+  check("before that, the card asks for a sign-in and says what to do if it won't work here", /Sign in needed/.test(await cardText(5)) && /Open in a tab/.test(await cardText(5)));
+  await hub.click("#btn-refresh");
+  await until(async () => (await hub.$eval("#btn-refresh", (b) => b.textContent)) === "Check all", 60000, "check after signing in in a tab");
+  const locked2 = await cardText(5);
+  check("after signing in in an ordinary tab, the hub uses that sign-in and reads the status", /Under review/.test(locked2) && /Checked just now/.test(locked2) && !/Sign in needed/.test(locked2), locked2.replace(/\n/g, " | "));
+
   // ---- a change is spotted and shown
   status.duke = "Admitted";
   status.plain = "Under review";

@@ -277,7 +277,7 @@
     let note = null;
     if (s.busy.has(p.id)) note = h("p", { class: "note" }, "Checking…");
     else if (!p.selector) note = h("p", { class: "note" }, "Not set up yet. Open it and pick the status.");
-    else if (r.state === "login") note = h("p", { class: "note warn" }, "Sign in needed" + (r.text ? " — showing the last status" : ""));
+    else if (r.state === "login") note = h("p", { class: "note warn" }, "Sign in needed" + (r.text ? " — showing the last status" : "") + ". If it won't take your password here, sign in with Open in a tab instead.");
     else if (r.state === "missing") note = h("p", { class: "note warn" }, "Couldn't find the status on the page. Open it and pick it again.");
     else if (r.at) note = h("p", { class: "note" }, "Checked " + Portals.timeAgo(r.at, Date.now()));
     if (note) el.append(note);
@@ -332,7 +332,8 @@
     $("guide").hidden = !s.guided;
     if (s.guided) {
       $("guide-text").textContent = (s.saved ? s.saved + " " : "") + "Setting up " + p.name + " (" + unconfigured().length + " left). " +
-        "Sign in if it asks, go to the page that shows your application status, then click Pick the status and click those words.";
+        "Sign in if it asks (if it won't accept your password here, click Open in a tab, sign in there, then come back: this page shares that sign-in), " +
+        "go to the page that shows your application status, then click Pick the status and click those words.";
     }
   }
 
