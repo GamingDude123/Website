@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>College Portals</title>
+  <link rel="stylesheet" href="hub.css">
+</head>
+<body>
+
+<header class="top">
+  <h1>College Portals</h1>
+  <button id="btn-refresh" type="button" hidden>Check all</button>
+  <button id="btn-edit" type="button">Edit list</button>
+</header>
+
+<main id="v-overview">
+  <div class="cards" id="cards"></div>
+  <div id="empty" hidden>
+    <h2>Add your portals</h2>
+    <p>Click <b>Edit list</b>, then type one per line: the name, then its web address.</p>
+  </div>
+</main>
+
+<section id="v-viewer" hidden>
+  <div class="bar">
+    <button id="btn-overview" type="button">All portals</button>
+    <button class="arrow" id="btn-prev" type="button" aria-label="Previous portal" title="Previous (left arrow key)">&larr;</button>
+    <div class="now"><strong id="v-name"></strong> <span class="fine" id="v-count"></span></div>
+    <button class="arrow" id="btn-next" type="button" aria-label="Next portal" title="Next (right arrow key)">&rarr;</button>
+    <span class="grow"></span>
+    <button id="btn-pick" type="button">Pick the status</button>
+    <a class="button" id="btn-tab" target="_blank" rel="noopener noreferrer">Open in a tab</a>
+  </div>
+  <div class="help" id="pick-help" hidden>
+    Click the status on the page below (for example &ldquo;Under review&rdquo;).
+    <button id="btn-pick-cancel" type="button">Cancel</button>
+  </div>
+  <div class="help" id="v-note" hidden></div>
+</section>
+
+<section id="v-editor" hidden>
+  <h2>Your portals</h2>
+  <p>One per line: the name, then its web address.</p>
+  <textarea id="list" rows="10" spellcheck="false" autocapitalize="off" placeholder="Duke apply.duke.edu&#10;University of Michigan admissions.umich.edu"></textarea>
+  <p class="error" id="e-list" role="alert"></p>
+  <p>
+    <button class="main" id="btn-save" type="button">Save</button>
+    <button id="btn-cancel" type="button">Cancel</button>
+  </p>
+</section>
+
+<!-- One frame, shared. In the overview it is parked off screen and used to read
+     each portal's status; in the viewer it fills the page. -->
+<div id="frame-box" class="parked">
+  <iframe id="frame" title="Portal" sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals"></iframe>
+</div>
+
+<script src="portals.js"></script>
+<script src="hub.js"></script>
+</body>
+</html>

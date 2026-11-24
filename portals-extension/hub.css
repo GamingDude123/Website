@@ -1,0 +1,107 @@
+/* Plain on purpose: white page, the browser's own buttons, one column of cards.
+ * The only colour is each college's own, on its own card. */
+
+:root {
+  color-scheme: light;
+  --line: #d3d7de;
+  --muted: #5b6370;
+}
+
+/* `display: flex` outranks the user-agent rule behind `hidden`. */
+[hidden] { display: none !important; }
+
+html, body { height: 100%; margin: 0; }
+body {
+  font: 16px/1.5 system-ui, sans-serif;
+  color: #1b1f24;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 { font-size: 1.2em; margin: 0; flex: 1; }
+h2 { font-size: 1.1em; margin: 0 0 6px; }
+button, .button { font: inherit; padding: 0.4em 0.9em; cursor: pointer; }
+.button {
+  display: inline-block; text-decoration: none; color: ButtonText;
+  background: ButtonFace; border: 1px solid ButtonBorder; border-radius: 3px;
+}
+.main { font-weight: bold; }
+.fine { font-size: 0.85em; color: var(--muted); }
+.error { color: crimson; min-height: 1.5em; white-space: pre-line; }
+
+.top { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+
+/* ------------------------------------------------------------ the overview */
+
+#v-overview { padding: 16px; max-width: 960px; width: 100%; box-sizing: border-box; margin: 0 auto; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+
+.card {
+  --brand: #1a5fb4;   /* set per college from its icon, or from a colour you typed */
+  --accent: #1a5fb4;
+  border: 1px solid var(--line);
+  border-left: 6px solid var(--brand);
+  border-radius: 6px;
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.card-head strong { font-size: 1.05em; overflow-wrap: anywhere; }
+.said { margin: 2px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.said::before { content: "\201C"; }
+.said::after { content: "\201D"; }
+.note { margin: 0; font-size: 0.85em; color: var(--muted); }
+.note.warn { color: #9a5b00; font-weight: 600; }
+.note.changed { color: #14672d; font-weight: 600; }
+.pill { align-self: flex-start; font-size: 0.8em; font-weight: 600; color: #9a5b00; border: 1px solid #9a5b00; border-radius: 99px; padding: 0 0.6em; }
+.card .button, .card button { align-self: flex-start; margin-top: 6px; }
+
+/* The four-step graphic. */
+.steps { display: flex; list-style: none; margin: 10px 0 6px; padding: 0; }
+.steps li { flex: 1; position: relative; text-align: center; font-size: 0.78em; color: var(--muted); }
+.steps .dot {
+  position: relative; z-index: 1; display: block; box-sizing: border-box;
+  width: 22px; height: 22px; margin: 0 auto 4px;
+  border-radius: 50%; border: 3px solid var(--line); background: #fff;
+  color: #fff; font-size: 13px; line-height: 16px; font-weight: 700;
+}
+/* The line from the previous step to this one. */
+.steps li + li::before { content: ""; position: absolute; top: 10px; left: -50%; width: 100%; height: 3px; background: var(--line); }
+.steps li.done, .steps li.now { color: #1b1f24; font-weight: 600; }
+.steps li.done::before, .steps li.now::before { background: var(--brand); }
+.steps li.done .dot, .steps li.now .dot { background: var(--brand); border-color: var(--brand); }
+.steps li.now .dot { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent); }
+.steps.dim { opacity: 0.45; }
+
+/* The last step says how it went. Green, amber and red mean the same everywhere,
+ * so they stay the same whatever the college's colours are. */
+.steps li.admitted .dot { background: #1a7f37; border-color: #1a7f37; box-shadow: 0 0 0 4px rgba(26, 127, 55, 0.25); }
+.steps li.admitted .dot::after { content: "\2713"; }
+.steps li.waitlisted .dot { background: #b26a00; border-color: #b26a00; box-shadow: 0 0 0 4px rgba(178, 106, 0, 0.25); }
+.steps li.waitlisted .dot::after { content: "!"; }
+.steps li.denied .dot { background: #b3261e; border-color: #b3261e; box-shadow: 0 0 0 4px rgba(179, 38, 30, 0.25); }
+.steps li.denied .dot::after { content: "\2715"; }
+
+#empty { padding: 24px 0; text-align: center; color: var(--muted); }
+
+/* ------------------------------------------------------------ the portal view */
+
+#v-viewer .bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.arrow { font-size: 1.3em; line-height: 1; padding: 0.3em 0.7em; }
+.now { min-width: 0; overflow-wrap: anywhere; }
+.grow { flex: 1; }
+.help { padding: 8px 16px; background: #eef4fc; border-bottom: 1px solid #b7cbe8; font-size: 0.95em; }
+.help button { margin-left: 8px; }
+
+/* One frame, shared: parked off screen to read statuses, full size to look at. */
+#frame-box.parked { position: fixed; left: -9999px; top: 0; width: 1100px; height: 800px; }
+#frame-box.shown { flex: 1; min-height: 0; }
+#frame { width: 100%; height: 100%; border: 0; background: #fff; }
+
+/* -------------------------------------------------------------- the editor */
+
+#v-editor { padding: 16px; max-width: 640px; width: 100%; box-sizing: border-box; margin: 0 auto; }
+textarea { width: 100%; box-sizing: border-box; font: 15px/1.5 ui-monospace, Menlo, Consolas, monospace; padding: 8px; }

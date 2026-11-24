@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "College Portals",
+  "version": "1.0.0",
+  "description": "See the status of every college application in one place, and flip through the portals without leaving the page. Your password manager fills the logins.",
+  "minimum_chrome_version": "116",
+  "action": { "default_title": "College Portals" },
+  "background": { "service_worker": "background.js" },
+  "permissions": ["storage", "declarativeNetRequest"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "all_frames": true,
+      "js": ["reader.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
