@@ -23,20 +23,28 @@ Chrome will say the extension can "read and change data on all websites". See *W
 below for exactly what that is for. Chrome may also show a "disable developer mode extensions"
 notice now and then; that is normal for an extension loaded this way.
 
-## Set it up (once per college)
+## Set it up (once)
 
-1. Click **Edit list**. Type one college per line, its name and then the web address of its
-   application portal, and click **Save**:
+1. Click **Edit list** and type one college per line. A college this extension already knows needs
+   **only its name**; for any other, put its name and then the web address of its application portal:
    ```
+   Yale University
    Duke apply.duke.edu
-   University of Michigan admissions.umich.edu/status
    ```
-2. Click **Set up** on a college. Its portal opens inside the page. **Sign in** (Dashlane
-   fills it in) and ideally tick "remember me" if the portal offers it.
-3. Go to the page that shows your application status. Click **Pick the status**, then click the
-   words that show it (for example "Under review").
+   (A copy built for one person, see *A copy for one person* below, already knows their colleges and
+   starts with them in the list, so there's nothing to type.)
+2. Click **Start setup**. It walks you through the colleges one after another. For each: sign in
+   (your password manager fills it in), go to the page that shows your application status, click
+   **Pick the status**, and click those words (for example "Under review"). It saves that and moves
+   straight on to the next college. **Skip this one** leaves a college for later; **Stop setup** ends
+   the walk-through.
 
-From then on the extension reads those words by itself. Do this once for each college.
+Picking also remembers **which page** you were on, so later checks go straight to that page. That means a
+college's starting address only has to get you into its portal; it doesn't have to be the page with the status
+(a menu or home page is fine). **Start page** in the portal view takes you back to where it starts.
+
+I can't do step 2 for you: it needs you signed in to your own portals. It takes about a minute per
+college, and only once.
 
 ## Every day
 
@@ -44,6 +52,12 @@ Open the extension. It checks every college for you, one after another, and the 
 **Check all** does it again on demand. A card says **Sign in needed** if a portal has logged you
 out; click it, sign in, and it is read again next time. If a portal's status changes, the card
 says what it changed from.
+
+**It updates by itself while it's open.** Anything not looked at in the last 15 minutes is checked
+again, every minute or so it asks whether anything is due, and it also checks when you come back to the
+tab. It leaves the portal alone while you're looking at one. Right-click the tab and choose **Pin**
+to keep it open and out of the way. Your list, what you set up, and the last status of each college
+are saved in the browser, so reopening picks up where you left off.
 
 The graphic has four steps: Submitted, Received, In review, Decision. The last step becomes
 **Admitted** (green tick), **Waitlisted** (amber !) or **Not admitted** (red cross) when the
@@ -66,9 +80,9 @@ One colour, or two (the second is used for the glow around the current step).
 ## Can I close my computer?
 
 Not for this. It checks the portals **in your browser**, so it only works while Chrome is open
-on a computer that is awake, with the extension's tab open. Closing the lid stops it. Nothing
-runs in the background, and nothing is checked while you're away. Opening the extension again
-checks everything straight away, and the cards show when each portal was last checked.
+on a computer that is awake, with the extension's tab open (pinned is fine). Closing the lid stops
+it. Opening it again checks everything that is out of date straight away, and the cards show when
+each portal was last checked.
 
 ## What it can't do
 
@@ -103,18 +117,49 @@ checks everything straight away, and the cards show when each portal was last ch
 - The permissions are `storage` (to keep the list) and `declarativeNetRequest` (the framing rule).
   No cookies, history or tabs permission.
 
+## A copy for one person
+
+The download ships with no colleges in it. To make a copy that already knows someone's colleges (so
+a line can be just a name) and starts with them in the list, write a small file and build it:
+
+```json
+{ "colleges": [ { "name": "Yale University",
+                  "aliases": ["Yale"],
+                  "url": "https://apply.yale.edu/status",
+                  "colors": ["#00356b"] } ] }
+```
+
+```sh
+python3 portals-extension/pack.py --personal mine.json --out mine.zip
+```
+
+Keep `mine.json` out of the repo: a repo that is public would then say which colleges someone applied
+to. The check in `pack.py --check` fails if the committed `colleges.js` or `starter.js` isn't empty.
+A name is matched whole (ignoring capitals and punctuation), so "Rice College" can never be taken for
+"Rice University". An address typed on a line wins over the directory's, and keeps its colours.
+
+## Keeping it
+
+Leave the `portals-extension` folder where it is: Chrome runs the extension from it, and your list and
+setup are stored against it. To update, replace the files in that same folder and click the reload
+arrow on the extension's card in `chrome://extensions`. Your list and setup are kept. (Removing the
+extension, or loading it from a different folder, starts you from nothing.)
+
 ## Tests
 
 ```sh
-node portals-extension/test/portals.test.js     # the list, what a status means, colours
+node portals-extension/test/portals.test.js     # the list, the directory, what a status means, colours
 node portals-extension/test/extension.test.js   # the real extension in a real browser
+node portals-extension/test/personal.test.js    # a copy built for one person: seeding, guided setup, auto-update
 ```
 
 The second needs playwright and Chromium (`npm i -D playwright && npx playwright install chromium`).
 It runs pretend portals that behave like real ones (they refuse framing, want a login, keep a
 `SameSite=Lax` cookie, hop between hosts, draw their status late, change their status) and
 checks the whole flow, including that the manifest asks for nothing more than it should and
-that no network call has been added without the test noticing.
+that no network call has been added without the test noticing. The personal-copy test uses made-up
+colleges (`test/fixtures/example-colleges.json`) and fast-forwards the clock to check the cards
+refresh by themselves.
 
 To rebuild the zip after changing anything: `python3 portals-extension/pack.py`
 (`--check` verifies it is up to date; the extension test does this too).

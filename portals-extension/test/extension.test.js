@@ -22,21 +22,16 @@ const { chromium } = (function () {
   console.error("playwright not found — install it with `npm i -D playwright`");
   process.exit(2);
 })();
-const http = require("http");
-const zlib = require("zlib");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const Portals = require("../portals.js");
+const { PORT, BASE, TEST_PASSWORD, status, startServer } = require("./fakeportals.js");
 
 const EXT = path.resolve(__dirname, "..");
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "portals-ext-test-"));
-const PORT = 9201;
-// Not a famous one: Chrome shows a "this password was in a data breach" bubble for those after a
-// login form is submitted, and in the test browser the bubble swallows every mouse and key event.
-const TEST_PASSWORD = "plum-Harbor-4821-Kite";
-const BASE = "http://127.0.0.1:" + PORT;
+
 
 let fails = 0;
 const errors = [];   // page and console errors from the hub, shown if the run falls over
@@ -96,73 +91,6 @@ const UNZIPPED = fs.mkdtempSync(path.join(os.tmpdir(), "portals-ext-unzipped-"))
 spawnSync("python3", ["-m", "zipfile", "-e", ZIP, UNZIPPED]);
 const LOAD = path.join(UNZIPPED, "portals-extension");
 check("the zip unzips to a folder Chrome can load", fs.existsSync(path.join(LOAD, "manifest.json")) && fs.existsSync(path.join(LOAD, "hub.html")));
-
-// ------------------------------------------------------------------ pretend portals
-
-function crc32(buf) {
-  let c, crc = 0xffffffff;
-  for (let n = 0; n < buf.length; n++) {
-    c = (crc ^ buf[n]) & 0xff;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    crc = (crc >>> 8) ^ c;
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-function png(w, h, fn) {
-  const raw = Buffer.alloc((w * 4 + 1) * h);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) Buffer.from(fn(x, y)).copy(raw, y * (w * 4 + 1) + 1 + x * 4);
-  const chunk = (type, data) => {
-    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
-    const body = Buffer.concat([Buffer.from(type), data]);
-    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
-    return Buffer.concat([len, body, crc]);
-  };
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
-}
-const CRIMSON_PNG = png(32, 32, (x, y) => ((x - 16) ** 2 + (y - 16) ** 2 < 100 ? [255, 255, 255, 255] : [200, 16, 46, 255]));
-const PURPLE_PNG = png(32, 32, () => [79, 38, 131, 255]);
-const DUKE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#001a57"/><rect y="40" width="64" height="24" fill="#ffb81c"/></svg>';
-
-const status = { duke: "Under review", spa: "Application received", plain: "Submitted", hop: "Waitlisted", locked: "Under review" };
-const GATED = new Set(["duke", "spa", "plain", "locked"]);
-const ICON_LINK = { duke: '<link rel="icon" href="/duke/icon.svg">', plain: '<link rel="apple-touch-icon" href="/plain/touch.png">' };
-
-function startServer() {
-  const server = http.createServer((req, res) => {
-    const u = new URL(req.url, BASE);
-    const [name, sub] = u.pathname.split("/").filter(Boolean);
-    const cookies = req.headers.cookie || "";
-    const signedIn = cookies.includes("sid_" + name + "=ok");
-    // Like most real portals: no framing, by both mechanisms.
-    const base = { "X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'" };
-    const html = (body) => res.writeHead(200, Object.assign({ "Content-Type": "text/html" }, base)).end("<!doctype html><title>" + name + "</title>" + (ICON_LINK[name] || "") + body);
-    const go = (to, extra) => res.writeHead(302, Object.assign({ Location: to }, base, extra)).end();
-
-    if (u.pathname === "/favicon.ico") {
-      // Only the 127.0.0.1 host has one, so a portal that ends up on "localhost" has none.
-      if (req.headers.host.startsWith("127.0.0.1")) return res.writeHead(200, { "Content-Type": "image/x-icon" }).end(PURPLE_PNG);
-      return res.writeHead(404).end();
-    }
-    if (u.pathname === "/duke/icon.svg") return res.writeHead(200, { "Content-Type": "image/svg+xml" }).end(DUKE_SVG);
-    if (u.pathname === "/plain/touch.png") return res.writeHead(200, { "Content-Type": "image/png" }).end(CRIMSON_PNG);
-    if (!(name in status)) return res.writeHead(404).end("not found");
-
-    if (!sub) return name === "hop" ? go("http://localhost:" + PORT + "/hop/status") : go("/" + name + (signedIn ? "/status" : "/login"));
-    if (sub === "login") {
-      if (req.method === "POST") { req.resume(); return req.on("end", () => go("/" + name + "/status", { "Set-Cookie": "sid_" + name + "=ok; Path=/; SameSite=Lax; Max-Age=3600" })); }
-      return html('<h1>Sign in</h1><form method="post"><input name="u" aria-label="user"><input type="password" name="p" aria-label="password"><button id="go">Sign in</button></form>');
-    }
-    if (sub === "status") {
-      if (GATED.has(name) && !signedIn) return go("/" + name + "/login");
-      if (name === "spa") return html('<h1>Applicant portal</h1><div id="root"></div><script>setTimeout(function(){document.getElementById("root").innerHTML="<b id=appstatus>' + status.spa + '</b>"},700)</script>');
-      if (name === "plain") return html('<div class="box"><p>Welcome back</p><p class="x-998877">' + status.plain + "</p></div>");
-      return html('<h1>Applicant portal</h1><p>Application status: <b id="appstatus">' + status[name] + "</b></p>");
-    }
-    return res.writeHead(404).end();
-  });
-  return new Promise((r) => server.listen(PORT, () => r(server)));
-}
 
 // ------------------------------------------------------------------------- the run
 
@@ -374,7 +302,7 @@ function startServer() {
   check("Duke: signed in from the saved session, status read", /Under review/.test(ct[1]) && /Checked just now/.test(ct[1]), ct[1].replace(/\n/g, " | "));
   check("Spa: its late status was waited for", /Application received/.test(ct[2]) && /Checked just now/.test(ct[2]));
   check("Plain: read", /Submitted/.test(ct[3]));
-  check("Hop: read across the host change", /Waitlisted/.test(ct[4]));
+  check("Hop: read, from the other host its status page is on", /Waitlisted/.test(ct[4]));
   check("Locked: not signed in, so it says so rather than guessing", /Sign in needed/.test(ct[5]) && !/Checked/.test(ct[5]), ct[5].replace(/\n/g, " | "));
   check("the portal is not left running in the background afterwards", (await hub.$eval("#frame", (f) => f.getAttribute("src"))) === "about:blank");
 
@@ -416,6 +344,43 @@ function startServer() {
   const after = await stored();
   check("renaming keeps the pick, the reading and the colours", after.portals[0].id === before[0].id && after.portals[0].selector === "#appstatus" && after.portals[0].name === "Duke University" && !!after.portals[0].colors.primary && after.readings[before[0].id].text === "Admitted");
   check("removing a portal removes its saved reading too", after.portals.length === 4 && !(before[4].id in after.readings) && (await hub.$$(".card")).length === 4);
+
+  // ---- a portal whose start page is not the page with the status: the pick remembers the page
+  // "Deep" starts on a home page; the status is one click away. If checks loaded the start page the
+  // status would never be found.
+  await hub.click("#btn-edit");
+  await hub.fill("#list", (await hub.inputValue("#list")) + "\nDeep " + BASE + "/deep/");
+  await hub.click("#btn-save");
+  await hub.waitForSelector(".card:nth-child(5)");
+  const deepId = (await stored()).portals[4].id;
+  await clickCard(5);
+  await until(async () => pframe() && pframe().url().includes("/deep/login") && (await pframe().locator("#go").count()) === 1, 10000, "deep login form");
+  await pframe().fill('input[name="u"]', "jack");
+  await pframe().fill('input[name="p"]', TEST_PASSWORD);
+  await pframe().click("#go");
+  await until(async () => pframe() && pframe().url() === BASE + "/deep/" && (await pframe().locator("#go").count()) === 1, 10000, "deep home page");
+  check("the start page of that portal has no status on it", (await pframe().locator("#appstatus").count()) === 0);
+  await pframe().click("#go");        // the link to "Your application status"
+  await until(async () => pframe() && pframe().url().endsWith("/deep/application/status") && (await pframe().locator("#appstatus").count()) === 1, 10000, "deep status page");
+  await hub.click("#btn-pick");
+  await pframe().click("#appstatus");
+  await until(async () => (await stored()).portals[4].selector, 5000, "deep picked");
+  const deep = (await stored()).portals[4];
+  check("picking remembers the page it was on, not only where it started", deep.checkUrl === BASE + "/deep/application/status" && deep.url === BASE + "/deep/", JSON.stringify([deep.url, deep.checkUrl]));
+  check("the card still shows the portal's own address, not the page it was picked on", (await hub.$eval(".card:nth-child(5) .fine", (e) => e.textContent)) === "127.0.0.1:" + PORT);
+  await hub.click("#btn-start");
+  await until(() => pframe() && pframe().url() === BASE + "/deep/", 10000, "back to the start page");
+  check("the Start page button goes back to where it starts", pframe().url() === BASE + "/deep/");
+  await hub.click("#btn-overview");
+  await hub.click("#btn-refresh");
+  await until(async () => (await hub.$eval("#btn-refresh", (b) => b.textContent)) === "Check all", 60000, "check all with the deep portal");
+  const deepCard = await cardText(5);
+  check("checking loads the remembered page, so the status is found", /Application complete/.test(deepCard) && /Checked just now/.test(deepCard) && !/Couldn't find/.test(deepCard), deepCard.replace(/\n/g, " | "));
+  check("…and the card says Open, not Set up", /Open/.test(deepCard));
+  await hub.click("#btn-edit");
+  await hub.click("#btn-save");
+  await hub.waitForSelector("#v-overview:not([hidden])");
+  check("saving the list unchanged keeps the remembered page and the pick", (await stored()).portals[4].checkUrl === BASE + "/deep/application/status" && (await stored()).portals[4].selector === "#appstatus" && (await stored()).portals[4].id === deepId);
 
   // ---- a viewer screenshot, then clean up
   await clickCard(1);

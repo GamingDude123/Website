@@ -15,10 +15,14 @@
 </header>
 
 <main id="v-overview">
+  <div class="banner" id="setup-banner" hidden>
+    <span id="setup-text"></span>
+    <button class="main" id="btn-setup" type="button">Start setup</button>
+  </div>
   <div class="cards" id="cards"></div>
   <div id="empty" hidden>
     <h2>Add your portals</h2>
-    <p>Click <b>Edit list</b>, then type one per line: the name, then its web address.</p>
+    <p>Click <b>Edit list</b> and type one college per line. A college this extension knows needs only its name; for any other, type its name and then the web address of its application portal.</p>
   </div>
 </main>
 
@@ -29,8 +33,14 @@
     <div class="now"><strong id="v-name"></strong> <span class="fine" id="v-count"></span></div>
     <button class="arrow" id="btn-next" type="button" aria-label="Next portal" title="Next (right arrow key)">&rarr;</button>
     <span class="grow"></span>
+    <button id="btn-start" type="button" hidden title="Go back to where this portal starts">Start page</button>
     <button id="btn-pick" type="button">Pick the status</button>
     <a class="button" id="btn-tab" target="_blank" rel="noopener noreferrer">Open in a tab</a>
+  </div>
+  <div class="help guide" id="guide" hidden>
+    <span id="guide-text"></span>
+    <button id="btn-skip" type="button">Skip this one</button>
+    <button id="btn-stop-setup" type="button">Stop setup</button>
   </div>
   <div class="help" id="pick-help" hidden>
     Click the status on the page below (for example &ldquo;Under review&rdquo;).
@@ -41,7 +51,8 @@
 
 <section id="v-editor" hidden>
   <h2>Your portals</h2>
-  <p>One per line: the name, then its web address.</p>
+  <p>One college per line. A college this extension knows needs only its name. For any other, put its name and then the web address of its application portal, and optionally the colours to draw it in:</p>
+  <pre class="eg">Duke apply.duke.edu #001a57</pre>
   <textarea id="list" rows="10" spellcheck="false" autocapitalize="off" placeholder="Duke apply.duke.edu&#10;University of Michigan admissions.umich.edu"></textarea>
   <p class="error" id="e-list" role="alert"></p>
   <p>
@@ -57,6 +68,8 @@
 </div>
 
 <script src="portals.js"></script>
+<script src="colleges.js"></script>
+<script src="starter.js"></script>
 <script src="hub.js"></script>
 </body>
 </html>

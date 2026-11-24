@@ -113,7 +113,7 @@
     if (!text) { bar.textContent = "There's no text there. Click the words themselves."; return; }
     const selector = selectorFor(el);
     stopPicker();
-    tell({ type: "picked", selector: selector, text: text });
+    tell({ type: "picked", selector: selector, text: text, href: location.href });
   }
 
   function onKey(e) {

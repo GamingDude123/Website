@@ -1,0 +1,7 @@
+{
+  "colleges": [
+    { "name": "Alpha College", "aliases": ["Alpha"], "url": "http://127.0.0.1:9201/duke/", "colors": ["#0b6e4f"] },
+    { "name": "Beta University", "aliases": ["Beta", "BT"], "url": "http://127.0.0.1:9201/spa/", "colors": ["#4f2683", "#ffb81c"] },
+    { "name": "Gamma Institute", "aliases": ["Gamma"], "url": "http://127.0.0.1:9201/plain/", "colors": ["#c8102e"] }
+  ]
+}

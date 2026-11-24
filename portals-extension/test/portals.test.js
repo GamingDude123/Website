@@ -56,6 +56,9 @@ check("no portals doesn't blow up", Portals.cycle(0, 1, 0) === 0);
   const again = Portals.parseList("Duke (renamed) apply.duke.edu\nNew school.edu\nMichigan umich.edu", first);
   check("an unchanged address keeps its id and picked status", again.portals[0].id === first[0].id && again.portals[0].selector === "#status");
   check("…even when the name changes", again.portals[0].name === "Duke (renamed)");
+  const placed = [Object.assign({}, first[0], { checkUrl: "https://apply.duke.edu/portal/status" })];
+  check("the page a status was picked on is kept when the list is edited", Portals.parseList("Duke apply.duke.edu", placed).portals[0].checkUrl === "https://apply.duke.edu/portal/status");
+  check("…and a portal with none has an empty one", Portals.parseList("Duke apply.duke.edu").portals[0].checkUrl === "");
   check("a new address gets a new id", again.portals[1].id !== first[0].id && again.portals[1].id !== first[1].id && again.portals[1].selector === "");
   check("the other known one is kept too", again.portals[2].id === first[1].id);
   const dup = Portals.parseList("A same.edu\nB same.edu", [first[0]]);
@@ -126,6 +129,47 @@ const WHITE = [255, 255, 255, 255], CLEAR = [0, 0, 0, 0], BLUE = [0, 39, 76, 255
   const b = Portals.brandFor({ primary: "#00274c", secondary: "#ffcb05" });
   check("two colours give a main and an accent", b.main === "#00274c" && b.accent !== b.main && Portals.contrast(b.accent, "#ffffff") >= 3);
   check("one colour is used for both", Portals.brandFor({ primary: "#bb0000", secondary: null }).accent === "#bb0000");
+}
+
+// ---- the college directory: a line can be just a name
+const DIR = [
+  { name: "Harvard University", aliases: ["Harvard"], url: "https://apply.harvard.edu/status", colors: ["#003478"] },
+  { name: "Rice University", aliases: ["RU"], url: "https://apply.rice.edu/status", colors: ["#cc0000", "#2d2926"] },
+  { name: "Yale University", aliases: ["Yale"], url: "https://apply.yale.edu/status.html", colors: ["#005a43"] },
+];
+{
+  const r = Portals.parseList("Harvard University\nRU\n  yale  \nyale-UNIVERSITY", [], DIR);
+  check("a known college needs only its name", r.errors.length === 0 && r.portals.length === 4, JSON.stringify(r.errors));
+  check("…and gets its address from the directory", r.portals[0].url === "https://apply.harvard.edu/status" && r.portals[1].url === "https://apply.rice.edu/status");
+  check("…its full name, whatever you typed", r.portals.map((p) => p.name).join() === "Harvard University,Rice University,Yale University,Yale University");
+  check("…and its colours", r.portals[1].colors.primary === "#cc0000" && r.portals[1].colors.secondary === "#2d2926" && r.portals[0].colors.secondary === null);
+  check("directory colours are not 'typed' ones", r.portals[0].colors.manual !== true && r.portals[0].colors.from === "directory");
+  check("short names, abbreviations, case and punctuation all match", r.portals[2].name === "Yale University" && r.portals[3].name === "Yale University");
+}
+{
+  const bc = Portals.parseList("Rice College", [], DIR);
+  check("a college that is not in the directory is not mistaken for one that is", bc.portals.length === 0 && bc.errors.length === 1 && /don't know that college/.test(bc.errors[0].why), JSON.stringify(bc));
+  check("part of a name doesn't match", Portals.parseList("Rice", [], DIR).portals.length === 0 && Portals.parseList("Harvard University of Waltham", [], DIR).portals.length === 0);
+  check("without a directory a bare name is still an error, as before", Portals.parseList("Harvard University").errors.length === 1);
+  check("findCollege finds by name or alias, and nothing for nonsense", Portals.findCollege("ru", DIR).name === "Rice University" && Portals.findCollege("", DIR) === null && Portals.findCollege("Duke", DIR) === null && Portals.findCollege("RU", []) === null && Portals.findCollege("RU", null) === null);
+}
+{
+  const own = Portals.parseList("Harvard https://portal.example.edu/mine\nRice University #112233 #445566", [], DIR);
+  check("an address you type wins over the directory's", own.portals[0].url === "https://portal.example.edu/mine" && own.errors.length === 0);
+  check("…and the college keeps its directory colours", own.portals[0].colors.primary === "#003478");
+  check("colours you type win over the directory's", own.portals[1].colors.primary === "#112233" && own.portals[1].colors.secondary === "#445566" && own.portals[1].colors.manual === true && own.portals[1].url === "https://apply.rice.edu/status");
+  check("a college you type an address for that the directory doesn't know works as before", Portals.parseList("Duke apply.duke.edu", [], DIR).portals[0].url === "https://apply.duke.edu/");
+}
+{
+  const r = Portals.parseList("Harvard University\nRice University\nHarvard https://portal.example.edu/mine\nDuke apply.duke.edu #001a57", [], DIR);
+  const box = Portals.formatList(r.portals, DIR);
+  check("the list box shows a known college as just its name", box.split("\n")[0] === "Harvard University" && box.split("\n")[1] === "Rice University", box);
+  check("…and anything else with its address (and typed colours)", box.split("\n")[2] === "Harvard portal.example.edu/mine" && box.split("\n")[3] === "Duke apply.duke.edu #001a57", box);
+  const again = Portals.parseList(box, r.portals, DIR);
+  check("editing the list changes nothing, and every portal keeps its id", again.errors.length === 0 && again.portals.every((q, i) => q.id === r.portals[i].id && q.url === r.portals[i].url && q.name === r.portals[i].name), JSON.stringify(again.errors));
+  const typedColors = Portals.parseList("Rice University #112233", [], DIR);
+  check("a known college with typed colours is its name and the colours", Portals.formatList(typedColors.portals, DIR) === "Rice University #112233");
+  check("without the directory the same list shows addresses, so nothing is lost", Portals.formatList(r.portals, []).split("\n")[0] === "Harvard University apply.harvard.edu/status");
 }
 
 // ---- what a status means: [text, stage, outcome, action needed]
