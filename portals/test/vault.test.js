@@ -4,7 +4,6 @@
  */
 
 const Vault = require(__dirname + "/../js/vault.js");
-const Model = require(__dirname + "/../js/model.js");
 
 let fails = 0;
 function check(name, cond, extra) {
@@ -27,7 +26,7 @@ function memoryStorage() {
 
 (async () => {
   const PASS = "correct horse battery";
-  const data = Model.emptyData();
+  const data = { v: 1, portals: [] };
   data.portals.push({ id: "a1", name: "Canvas", url: "https://canvas.example.edu/", username: "jsmith", password: "Sup3r-S3cret!pw" });
 
   // ---- round trip

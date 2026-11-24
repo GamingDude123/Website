@@ -3,10 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <!-- No network access for this page at all (connect-src and form-action are
-       'none'), so a bug can't send a login anywhere. Portals may only be framed,
-       never scripted: frame-src is the one door left open. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src https: http:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <!-- This page can't make network requests or submit forms at all, so a bug
+       can't send a login anywhere. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <meta name="theme-color" content="#0d0b14">
@@ -18,45 +17,34 @@
 
 <header class="top">
   <a class="back" href="../index.html" title="Back to the site">&#8592;</a>
-  <h1>College&nbsp;Portals <em>every login, one arrow apart</em></h1>
-  <div class="top-actions" id="top-actions" hidden>
-    <button class="ghost" id="btn-manage" type="button">Manage</button>
-    <button class="ghost" id="btn-lock" type="button">Lock</button>
-  </div>
+  <h1>College Portals</h1>
+  <button class="ghost" id="btn-lock" type="button" hidden>Lock</button>
 </header>
 
 <main>
 
-  <!-- The browser can't encrypt, or can't keep anything. -->
-  <section class="panel narrow" id="v-unsupported" hidden>
+  <section class="panel" id="v-unsupported" hidden>
     <h2>This browser can't keep a vault</h2>
     <p id="unsupported-why"></p>
   </section>
 
-  <!-- First visit: choose the passphrase that locks everything. -->
-  <section class="panel narrow" id="v-setup" hidden>
-    <h2>Set a passphrase</h2>
+  <section class="panel" id="v-setup" hidden>
+    <h2>Choose a passphrase</h2>
     <p>
-      Your logins are encrypted with this passphrase and kept in this browser
-      only &mdash; they are never uploaded and never part of the website. You'll
-      type it once each time you open this page.
-    </p>
-    <p class="warn">
-      There is no way to recover a forgotten passphrase. Pick something you'll
-      remember (a few random words works well).
+      Your logins are saved in this browser, locked with this passphrase.
+      Nothing is uploaded. If you forget it, there's no way back.
     </p>
     <form id="f-setup" autocomplete="off">
-      <label for="i-setup-1">Passphrase <span class="fine">at least 8 characters</span></label>
+      <label for="i-setup-1">Passphrase <span class="fine">8+ characters</span></label>
       <input id="i-setup-1" type="password" autocomplete="new-password" required minlength="8">
-      <label for="i-setup-2">Type it again</label>
+      <label for="i-setup-2">Again</label>
       <input id="i-setup-2" type="password" autocomplete="new-password" required minlength="8">
       <p class="error" id="e-setup" role="alert"></p>
-      <button class="btn primary" id="b-setup" type="submit">Create my vault</button>
+      <button class="btn primary" id="b-setup" type="submit">Create</button>
     </form>
   </section>
 
-  <!-- Every later visit. -->
-  <section class="panel narrow" id="v-locked" hidden>
+  <section class="panel" id="v-locked" hidden>
     <h2>Locked</h2>
     <form id="f-unlock" autocomplete="off">
       <label for="i-unlock">Passphrase</label>
@@ -64,37 +52,13 @@
       <p class="error" id="e-unlock" role="alert"></p>
       <button class="btn primary" id="b-unlock" type="submit">Unlock</button>
     </form>
-    <p class="fine forgot">
-      Forgot it? <button class="link" id="btn-forgot" type="button">Erase everything and start over</button>
-    </p>
+    <p class="fine forgot">Forgot it? <button class="link" id="btn-erase" type="button">Erase everything and start over</button></p>
   </section>
 
-  <!-- Under either of the two above: bring a backup from another device. -->
-  <section class="panel narrow" id="v-restore" hidden>
-    <details>
-      <summary>Restore from a backup</summary>
-      <p class="fine">
-        Use the file from <b>Manage &rarr; Download encrypted backup</b> on another
-        device, and the passphrase it was made with. This replaces whatever is
-        saved here.
-      </p>
-      <form id="f-restore" autocomplete="off">
-        <label for="i-restore-file">Backup file</label>
-        <input id="i-restore-file" type="file" accept=".json,application/json" required>
-        <label for="i-restore-pass">Its passphrase</label>
-        <input id="i-restore-pass" type="password" autocomplete="off" required>
-        <p class="error" id="e-restore" role="alert"></p>
-        <button class="btn" id="b-restore" type="submit">Restore</button>
-      </form>
-    </details>
-  </section>
-
-  <!-- The checker. -->
-  <section class="viewer" id="v-viewer" hidden>
-
-    <div class="panel narrow" id="empty" hidden>
+  <section id="v-viewer" hidden>
+    <div class="panel" id="empty" hidden>
       <h2>No portals yet</h2>
-      <p>Add the first one &mdash; a name, its web address, and the login to use there.</p>
+      <p>Add your first one: a name, its web address, and your login.</p>
       <button class="btn primary" id="btn-first" type="button">Add a portal</button>
     </div>
 
@@ -103,8 +67,7 @@
         <button class="arrow" id="btn-prev" type="button" aria-label="Previous portal" title="Previous (left arrow key)">
           <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <div class="now" id="now">
-          <div class="avatar big" id="now-avatar" aria-hidden="true"></div>
+        <div class="now">
           <h2 id="now-name"></h2>
           <p class="count" id="now-count"></p>
         </div>
@@ -113,14 +76,8 @@
         </button>
       </div>
 
-      <div class="dots" id="dots" role="group" aria-label="Portals"></div>
-
-      <article class="card" id="card">
-        <header class="card-head">
-          <span class="host" id="card-host"></span>
-          <button class="pill" id="btn-check" type="button" aria-pressed="false"></button>
-        </header>
-
+      <article class="card">
+        <p class="host" id="card-host"></p>
         <dl class="creds">
           <div class="cred">
             <dt>Username</dt>
@@ -128,49 +85,25 @@
             <button class="small" id="btn-copy-user" type="button">Copy</button>
           </div>
           <div class="cred">
-            <dt>Password</dt>
-            <dd class="val mono" id="c-pass"></dd>
-            <button class="small" id="btn-reveal" type="button" aria-pressed="false">Show</button>
+            <dt>Password <span class="fine">tap to show</span></dt>
+            <dd><button class="val mono reveal" id="btn-pass" type="button" aria-label="Show or hide password"></button></dd>
             <button class="small" id="btn-copy-pass" type="button">Copy</button>
           </div>
         </dl>
-
-        <div class="actions">
-          <a class="btn primary" id="btn-open" target="_blank" rel="noopener noreferrer">Open portal &#8599;</a>
-          <button class="btn" id="btn-done" type="button">Done &middot; next &#8250;</button>
-        </div>
-        <p class="fine" id="open-note"></p>
+        <a class="btn primary" id="btn-open" target="_blank" rel="noopener noreferrer">Open portal &#8599;</a>
+        <p class="fine" id="open-note">Also copies your password &mdash; just paste it into the login.</p>
       </article>
 
-      <label class="switch">
-        <input type="checkbox" id="chk-embed">
-        <span>Show the portal inside this page <span class="fine">(only works for sites that allow it)</span></span>
-      </label>
-
-      <div class="embed" id="embed" hidden>
-        <p class="fine">
-          Blank, or &ldquo;refused to connect&rdquo;? That portal doesn't allow being
-          shown inside another page &mdash; most don't. Use <b>Open portal</b> instead.
-        </p>
-        <div class="frame-box" id="frame-box"></div>
-      </div>
-
-      <p class="progress" id="progress"></p>
+      <p class="links">
+        <button class="link" id="btn-edit" type="button">Edit</button>
+        <button class="link" id="btn-add" type="button">Add another</button>
+      </p>
     </div>
   </section>
 
-  <!-- The list, the settings, the backup. -->
-  <section class="manage" id="v-manage" hidden>
-    <div class="bar">
-      <h2>Manage portals</h2>
-      <button class="btn" id="btn-manage-done" type="button">Back to checking</button>
-    </div>
-
-    <ul class="plist" id="plist"></ul>
-    <button class="btn primary" id="btn-add" type="button">Add a portal</button>
-
-    <form class="panel" id="f-portal" hidden autocomplete="off">
-      <h3 id="f-portal-title">Add a portal</h3>
+  <section class="panel" id="v-form" hidden>
+    <h2 id="form-title">Add a portal</h2>
+    <form id="f-portal" autocomplete="off">
       <label for="i-name">Name</label>
       <input id="i-name" type="text" maxlength="80" required placeholder="Canvas" autocomplete="off">
       <label for="i-url">Web address</label>
@@ -186,42 +119,12 @@
       <div class="actions">
         <button class="btn primary" type="submit">Save</button>
         <button class="btn" id="btn-form-cancel" type="button">Cancel</button>
+        <button class="btn danger" id="btn-delete" type="button" hidden>Delete</button>
       </div>
     </form>
-
-    <div class="panel">
-      <h3>When I open a portal</h3>
-      <label for="sel-copy">Copy to my clipboard</label>
-      <select id="sel-copy">
-        <option value="password">The password</option>
-        <option value="username">The username</option>
-        <option value="nothing">Nothing</option>
-      </select>
-      <p class="fine">
-        A web page can't type into another site's login box, so this is the
-        closest it gets: open the portal and paste.
-      </p>
-    </div>
-
-    <div class="panel">
-      <h3>Backup</h3>
-      <p class="fine">
-        The file is encrypted with your passphrase, so it's safe to keep in
-        email or a drive. Restore it from the lock screen on any device.
-      </p>
-      <button class="btn" id="btn-export" type="button">Download encrypted backup</button>
-    </div>
-
-    <div class="panel danger">
-      <h3>Erase</h3>
-      <p class="fine">Deletes the vault from this browser. A backup file, if you made one, still works.</p>
-      <button class="btn danger" id="btn-erase" type="button">Erase everything on this device</button>
-    </div>
   </section>
 
 </main>
-
-<div class="toast" id="status" role="status" aria-live="polite"></div>
 
 <script src="js/model.js"></script>
 <script src="js/vault.js"></script>
