@@ -162,7 +162,7 @@
     });
   }
 
-  async function checkAll() {
+  async function checkAll(only) {
     if (s.checking) return;
     s.checking = true;
     s.abort = false;
@@ -170,6 +170,7 @@
     for (const p of s.portals.slice()) {
       if (s.abort) break;
       if (!p.selector) continue;
+      if (typeof only === "function" && !only(p)) continue;
       s.busy.add(p.id);
       renderOverview();
       const r = await readOne(p);
@@ -277,7 +278,7 @@
     let note = null;
     if (s.busy.has(p.id)) note = h("p", { class: "note" }, "Checking…");
     else if (!p.selector) note = h("p", { class: "note" }, "Not set up yet. Open it and pick the status.");
-    else if (r.state === "login") note = h("p", { class: "note warn" }, "Sign in needed" + (r.text ? " — showing the last status" : "") + ". If it won't take your password here, sign in with Open in a tab instead.");
+    else if (r.state === "login") note = h("p", { class: "note warn" }, "Sign in needed" + (r.text ? " — showing the last status" : "") + ". Click Sign in (it opens a tab, where your password manager works), then come back.");
     else if (r.state === "missing") note = h("p", { class: "note warn" }, "Couldn't find the status on the page. Open it and pick it again.");
     else if (r.at) note = h("p", { class: "note" }, "Checked " + Portals.timeAgo(r.at, Date.now()));
     if (note) el.append(note);
@@ -285,8 +286,11 @@
       el.append(h("p", { class: "note changed" }, "Changed " + Portals.timeAgo(r.changedAt, Date.now()) + ", was “" + r.prev + "”"));
     }
 
-    const label = !p.selector ? "Set up" : r.state === "login" ? "Sign in" : r.state === "missing" ? "Pick again" : "Open";
-    el.append(h("button", { type: "button", onclick: function () { openViewer(i); } }, label));
+    const signIn = p.selector && r.state === "login";
+    const label = !p.selector ? "Set up" : signIn ? "Sign in" : r.state === "missing" ? "Pick again" : "Open";
+    // Signing in happens in an ordinary tab: password managers don't fill sign-in forms shown inside
+    // another page. The hub shares that tab's sign-in and re-checks when you come back.
+    el.append(h("button", { type: "button", onclick: function () { if (signIn) chrome.tabs.create({ url: pageOf(p) }); else openViewer(i); } }, label));
     return el;
   }
 
@@ -323,6 +327,7 @@
     $("btn-prev").disabled = $("btn-next").disabled = s.portals.length < 2;
     $("btn-tab").setAttribute("href", pageOf(p));
     $("btn-start").hidden = !(p.checkUrl && p.checkUrl !== p.url);
+    $("btn-tab").classList.toggle("main", s.guided && !p.selector);   // the first thing to do while setting up
     $("btn-pick").textContent = p.selector ? "Pick the status again" : "Pick the status";
     const r = s.readings[p.id];
     const note = $("v-note");
@@ -332,8 +337,9 @@
     $("guide").hidden = !s.guided;
     if (s.guided) {
       $("guide-text").textContent = (s.saved ? s.saved + " " : "") + "Setting up " + p.name + " (" + unconfigured().length + " left). " +
-        "Sign in if it asks (if it won't accept your password here, click Open in a tab, sign in there, then come back: this page shares that sign-in), " +
-        "go to the page that shows your application status, then click Pick the status and click those words.";
+        "1. Click Open in a tab and sign in there (your password manager works in a tab). " +
+        "2. Come back here: the page reloads, signed in. " +
+        "3. Go to the page that shows your application status, click Pick the status, and click those words.";
     }
   }
 
@@ -453,7 +459,7 @@
   }
 
   function wire() {
-    $("btn-refresh").addEventListener("click", checkAll);
+    $("btn-refresh").addEventListener("click", function () { checkAll(); });
     $("btn-edit").addEventListener("click", openEditor);
     $("btn-save").addEventListener("click", saveEditor);
     $("btn-cancel").addEventListener("click", showOverview);
@@ -487,6 +493,26 @@
 
   /* Keeps the cards fresh while the hub is open. It never takes over the frame while you are
    * looking at a portal; it waits until you are back at the overview. */
+  /* The hub is back in front, usually after signing in in another tab. Re-read the colleges that were
+   * asking for a sign-in, and reload the page being set up so it shows signed in. This uses tab
+   * switching, not window focus: clicking inside the portal's frame also moves window focus, and
+   * reloading the frame under someone's hands would lose their place. */
+  let hiddenAt = 0;
+  function cameBack() {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (Date.now() - hiddenAt < 3000) return;                 // a flicker, not a visit to another tab
+    if (s.view === "viewer") {
+      const p = s.portals[s.current];
+      if (p && s.guided && !s.picking && !p.selector) frame.src = pageOf(p);
+      return;
+    }
+    if (s.view === "overview" && !s.checking) {
+      const asked = function (p) { const r = s.readings[p.id]; return !!(p.selector && r && r.state === "login"); };
+      if (s.portals.some(asked)) checkAll(asked);
+      else maybeCheck();
+    }
+  }
+
   function maybeCheck() {
     if (s.view === "overview" && !s.checking && due()) checkAll();
   }
@@ -507,7 +533,7 @@
     findColors();
     maybeCheck();
     setInterval(maybeCheck, WATCH_MS);
-    document.addEventListener("visibilitychange", function () { if (!document.hidden) maybeCheck(); });
+    document.addEventListener("visibilitychange", cameBack);
   }
 
   init();

@@ -2,7 +2,7 @@
 
 One page that shows the **status of every college application** as a simple graphic,
 and lets you flip through the portals with arrows **without leaving the page**. Your
-password manager (Dashlane, etc.) does the signing in, as it does anywhere else.
+password manager (Dashlane, etc.) does the signing in, in an ordinary tab, where it works.
 
 ```
  ●━━━━━●━━━━━◉─────○        Duke                    "Under review"
@@ -33,11 +33,14 @@ notice now and then; that is normal for an extension loaded this way.
    ```
    (A copy built for one person, see *A copy for one person* below, already knows their colleges and
    starts with them in the list, so there's nothing to type.)
-2. Click **Start setup**. It walks you through the colleges one after another. For each: sign in
-   (your password manager fills it in), go to the page that shows your application status, click
-   **Pick the status**, and click those words (for example "Under review"). It saves that and moves
-   straight on to the next college. **Skip this one** leaves a college for later; **Stop setup** ends
-   the walk-through.
+2. Click **Start setup**. It walks you through the colleges one after another. For each:
+   1. Click **Open in a tab** and sign in there. Your password manager fills it in as it does anywhere else.
+   2. Come back to this tab. The page reloads, signed in.
+   3. Go to the page that shows your application status, click **Pick the status**, and click those words
+      (for example "Under review").
+
+   It saves that and moves straight on to the next college. **Skip this one** leaves a college for later;
+   **Stop setup** ends the walk-through.
 
 Picking also remembers **which page** you were on, so later checks go straight to that page. That means a
 college's starting address only has to get you into its portal; it doesn't have to be the page with the status
@@ -50,7 +53,8 @@ college, and only once.
 
 Open the extension. It checks every college for you, one after another, and the cards update.
 **Check all** does it again on demand. A card says **Sign in needed** if a portal has logged you
-out; click it, sign in, and it is read again next time. If a portal's status changes, the card
+out; click **Sign in**, which opens the portal in an ordinary tab. Sign in there, come back, and the hub reads
+it again straight away. If a portal's status changes, the card
 says what it changed from.
 
 **It updates by itself while it's open.** Anything not looked at in the last 15 minutes is checked
@@ -86,14 +90,11 @@ each portal was last checked.
 
 ## What it can't do
 
-- **Dashlane is untested.** Autofill inside the page depends on how Dashlane treats pages shown
-  inside an extension, which can't be tested without a Dashlane account. If it doesn't fill the
-  login there, click **Open in a tab** (top right of any portal) to sign in normally, then come back.
-  Because the hub reuses the same browser sessions, you stay signed in.
-- **Some portals won't take your password inside the page.** Sign-in pages can behave differently when shown inside
-  another page (especially ones that hand off to a school-wide sign-in). If one says your password is wrong when
-  it isn't, click **Open in a tab**, sign in there, and come back: the extension uses the same sign-in, and
-  everything else works from then on.
+- **Your password manager doesn't fill sign-in forms inside the page.** (Tested with Dashlane: it doesn't notice
+  them.) That's why signing in always happens in an ordinary tab, where it works. The hub uses the same browser
+  sign-in, so once you're signed in in a tab it can read the portal.
+- **Some portals won't take a sign-in inside the page at all** (especially ones that hand off to a school-wide
+  sign-in), which is another reason to sign in through a tab.
 - **It can't make a portal remember you.** Staying signed in is up to each portal. Some sign you out
   after a short time, or after you close Chrome. That is what **Sign in needed** is for.
 - **Some portals won't work in a frame** even with the framing headers removed (for example ones

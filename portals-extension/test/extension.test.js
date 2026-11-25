@@ -314,19 +314,26 @@ check("the zip unzips to a folder Chrome can load", fs.existsSync(path.join(LOAD
   check("the graphic: Locked has no progress to show", (await hub.$$(".card:nth-child(5) li.now, .card:nth-child(5) li.done")).length === 0);
   await hub.screenshot({ path: path.join(OUT, "overview-1.png") });
 
-  // ---- a portal that won't take a sign-in inside the page: sign in in an ordinary tab instead
-  const tab = await ctx.newPage();
-  await tab.goto(BASE + "/locked/login");
+  // ---- signing in happens in an ordinary tab (password managers don't fill forms shown inside another page)
+  check("a college that needs a sign-in says what to do", /Sign in needed/.test(await cardText(5)) && /opens a tab/.test(await cardText(5)));
+  check("…and its button says Sign in", (await hub.$eval(".card:nth-child(5) button", (b) => b.textContent)) === "Sign in");
+  const readingsBefore = (await stored()).readings;
+  const firstId = (await stored()).portals[0].id;
+  const [tab] = await Promise.all([ctx.waitForEvent("page"), clickCard(5)]);
+  await tab.waitForURL("**/locked/login");
+  check("Sign in opens the college in an ordinary tab", /^https?:/.test(tab.url()) && !tab.url().startsWith("chrome-extension:"), tab.url());
   await tab.fill('input[name="u"]', "jack");
   await tab.fill('input[name="p"]', TEST_PASSWORD);
   await tab.click("#go");
   await tab.waitForURL("**/locked/status");
   await tab.close();
-  check("before that, the card asks for a sign-in and says what to do if it won't work here", /Sign in needed/.test(await cardText(5)) && /Open in a tab/.test(await cardText(5)));
-  await hub.click("#btn-refresh");
-  await until(async () => (await hub.$eval("#btn-refresh", (b) => b.textContent)) === "Check all", 60000, "check after signing in in a tab");
+  // Coming back to the hub's tab (the browser fires this when you switch to it).
+  await hub.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await until(async () => /Under review/.test(await cardText(5)) && !/Sign in needed/.test(await cardText(5)), 60000, "re-check after coming back");
   const locked2 = await cardText(5);
-  check("after signing in in an ordinary tab, the hub uses that sign-in and reads the status", /Under review/.test(locked2) && /Checked just now/.test(locked2) && !/Sign in needed/.test(locked2), locked2.replace(/\n/g, " | "));
+  check("coming back, the hub notices the sign-in and reads the status, without anyone pressing Check all", /Under review/.test(locked2) && /Checked just now/.test(locked2), locked2.replace(/\n/g, " | "));
+  await until(async () => (await hub.$eval("#btn-refresh", (b) => b.textContent)) === "Check all", 60000, "re-check finishing");
+  check("…and re-read only the college that was asking, not all of them", (await stored()).readings[firstId].tried === readingsBefore[firstId].tried);
 
   // ---- a change is spotted and shown
   status.duke = "Admitted";
